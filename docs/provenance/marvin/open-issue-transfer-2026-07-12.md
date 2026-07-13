@@ -77,3 +77,7 @@ Before building each stage, inspect and make an explicit extract/rewrite/discard
 - Build recovery, PR-base verification, validator invocation, and run-log helpers referenced by the archived Phase 1–3 artifacts.
 
 No implementation issue is ready until its source audit and provenance entry exist.
+
+## Permanent system boundary
+
+This archive is a one-time, read-only source extraction. IssueForge does not sync changes back to MARVIN and will not update MARVIN files, state, skills, ledgers, configuration, or generated artifacts for MARVIN's use. IssueForge is self-contained and authoritative for its own workflow data. MARVIN and other systems may query IssueForge's documented outputs when they need status or evidence.

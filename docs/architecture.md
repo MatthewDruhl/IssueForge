@@ -51,6 +51,8 @@ Before an IssueForge stage is designed or implemented, inspect every correspondi
 
 Prefer extracting and refactoring proven scripts behind clean IssueForge interfaces when their contracts remain applicable. Rewrite only when coupling or assumptions make extraction unsafe; never reimplement a safeguard merely because its current code lives in MARVIN. Port the tests that explain the safeguard alongside reused code. IssueForge must have no runtime dependency on a MARVIN checkout.
 
+The relationship is permanently one-way. MARVIN is read-only migration provenance, not a host or persistence adapter. IssueForge never writes MARVIN skills, context, state, ledgers, configuration, or generated files for MARVIN's use. IssueForge owns its registry, runs, approvals, logs, and artifacts. MARVIN and other consumers may read or query IssueForge through documented CLI/JSON, event, and artifact interfaces; consumers pull from IssueForge rather than IssueForge pushing into their private storage.
+
 Initial source map:
 
 - Shape: `findings-to-issues`, `prd-to-issues`, and spec-up readiness rules.

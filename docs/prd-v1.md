@@ -124,6 +124,8 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - [ ] Applicable scripts are extracted and refactored behind IssueForge interfaces when safe; rewrites document why extraction was unsuitable.
 - [ ] Tests explaining reused safeguards are ported with the code and remain traceable to the source behavior.
 - [ ] IssueForge runs without a MARVIN checkout or MARVIN runtime dependency.
+- [ ] IssueForge never writes MARVIN skills, context, state, ledgers, configuration, or generated files for MARVIN's use.
+- [ ] MARVIN and other systems consume IssueForge information through documented read/query interfaces; IssueForge remains the sole owner of its run state and artifacts.
 
 ## Module Design
 
@@ -143,6 +145,7 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 
 - Version one supports any explicitly registered local GitHub clone but executes only one active run; a persistent queue and explicit parking are included.
 - Stage design is refactor-first: inspect corresponding MARVIN skills, scripts, tests, and recorded fixes before writing replacement code, while keeping IssueForge runtime-independent.
+- Integration is one-way: source systems and future consumers may read IssueForge interfaces, but IssueForge does not maintain consumer-specific files or push state into MARVIN.
 - One branch contains a separately committed approved test contract followed by implementation; only one green PR enters main.
 - Tests must demonstrate an expected behavioral red state, not merely any failure.
 - Approved tests and their discovery/configuration boundary are deterministically frozen; any change requires human authorization.
