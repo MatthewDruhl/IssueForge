@@ -40,6 +40,7 @@ IssueForge pauses for human action when:
 - AI provider layer: configurable start, resume, and authentication commands; Codex is the default v1 adapter.
 - Acceptance contract: meaningful-red evidence, immutable test manifest, and authorized revisions.
 - Verification runner: baseline, acceptance, lint, and build command execution.
+- Observability policy: mandatory diagnostic logging contracts at external boundaries and reviewer judgment elsewhere.
 - GitHub gateway: scoped issue, PR, merge-status, closeout, and remote-branch operations.
 - Run store and queue: one active run, persistent FIFO queue, explicit parking, and atomic events.
 - Interfaces: Typer CLI and Textual TUI over the same engine and event stream.
@@ -61,6 +62,12 @@ Each target repository commits an `.issueforge.toml` containing a mandatory base
 - Provider profiles define executable, start arguments, resume arguments, and authentication checks.
 - AI access uses an already authenticated monthly-plan CLI; IssueForge never falls back to metered model APIs.
 - Author and reviewer roles use separate sessions. Other subscription CLIs and local models are future adapters.
+
+## Target-project observability
+
+Every shaped issue records an observability impact: `required`, `existing coverage sufficient`, or `not applicable`. Logging is required when changed code crosses an HTTP, database, subprocess, filesystem, queue, third-party service, or AI boundary. The issue contract names the important success/failure events and sensitive fields that must never be emitted.
+
+Implementers reuse the target project's logger, levels, formats, and correlation conventions. Libraries do not install global logging configuration. The independent implementation reviewer judges diagnosability for every change, including work without a predefined external-boundary rule. The final PR reports logging added, reused, or intentionally unnecessary.
 
 ## Storage and retention
 

@@ -70,6 +70,9 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - [ ] Codex receives at most two automatic repair attempts for an implementation or review failure before the run pauses.
 - [ ] PR readiness requires green acceptance tests, green full baseline, configured quality gates, approved file scope, and an independent code review with no blocking findings.
 - [ ] IssueForge never calls a metered model API or silently falls back from a subscription-authenticated CLI.
+- [ ] Every shaped issue records `required`, `existing coverage sufficient`, or `not applicable` for observability, with reviewer-confirmed justification.
+- [ ] Logging is required when changed code crosses an HTTP, database, subprocess, filesystem, queue, third-party service, or AI boundary.
+- [ ] Required logging follows the target project's logger, levels, formats, and correlation conventions and excludes contract-listed sensitive fields.
 
 ### US-7: Deliver one green PR
 
@@ -120,6 +123,7 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - **AI provider layer:** owns subscription CLI authentication, start/resume invocation contracts, session identity, role separation, and captured results.
 - **Acceptance contract:** owns meaningful-red evidence, approved snapshots, dependency boundaries, integrity verification, and authorized revisions.
 - **Verification runner:** owns baseline, targeted acceptance, lint, build, timeout, and structured command results.
+- **Observability policy:** classifies boundary changes, adds logging requirements to shaped contracts, and supplies deterministic and reviewer checks for diagnostic coverage and sensitive-data exclusions.
 - **GitHub gateway:** owns scoped issue/epic/PR operations, merge verification, comments, and remote-branch deletion; never merges.
 - **Run store and queue:** owns atomic manifests, locks, append-only events, FIFO order, parking, retention, and recovery.
 - **CLI/TUI interfaces:** render events and submit commands without owning business state.
@@ -133,6 +137,7 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - Codex CLI is the default configurable provider and uses an existing monthly-plan login. Direct model APIs and API-key fallback are prohibited.
 - Independent test and code reviews require fresh sessions and support explicit recorded fallback or human override.
 - Commands are argument arrays without a shell by default.
+- External-boundary changes require a logging contract; independent implementation review judges diagnosability for all other changes. Libraries never introduce global logging configuration.
 - Python 3.12+, uv, pytest, Ruff, Typer, and Textual form the initial implementation stack.
 
 ## Testing Strategy
@@ -143,6 +148,7 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - **AI providers:** fake subprocess adapters covering auth, start/resume syntax, session separation, limits, retries, and prohibited API fallback from US-5–6 and US-9.
 - **Acceptance contract:** fixtures demonstrating meaningful behavioral failure, infrastructure failure rejection, file/config mutation, collection loss, and authorized revisions from US-5–6.
 - **Verification runner:** deterministic subprocess fixtures for pass, fail, timeout, malformed command, and evidence capture from US-4–7.
+- **Observability policy:** fixtures for boundary classification, required event contracts, reuse of target logging conventions, sensitive-field exclusions, and reviewer evidence from US-3 and US-6.
 - **GitHub gateway:** fake `gh` responses proving exact mutation scope, merge verification, epic updates, and idempotent closeout from US-3 and US-7–8.
 - **Run store/UI:** crash recovery, locking, queue order, parking, event replay, retention, and CLI/TUI parity from US-2 and US-9–10.
 - **Prior art:** port behavioral safeguards from MARVIN's merged runner, agent-run atomic store, acceptance-integrity checker, and wave scheduler into focused IssueForge modules rather than copying their orchestration.
