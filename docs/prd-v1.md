@@ -114,6 +114,17 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - [ ] Authentication tokens, credential files, environment-variable values, detected secrets, and hidden model reasoning are never retained.
 - [ ] Retention is configurable and `issueforge purge` removes eligible artifacts without damaging active runs or permanent manifests.
 
+### US-11: Preserve proven MARVIN safeguards
+
+**As a** maintainer, **I want** IssueForge stages derived from MARVIN's lessons and tested scripts, **so that** simplification does not discard failure-driven safeguards or duplicate working code.
+
+**Acceptance criteria:**
+- [ ] Before stage implementation, its design record inventories the corresponding MARVIN skills, scripts, tests, and relevant failure-driven updates.
+- [ ] Every inventoried behavior is classified as deterministic engine policy, AI judgment, human approval, or MARVIN-specific behavior to discard, with a reason.
+- [ ] Applicable scripts are extracted and refactored behind IssueForge interfaces when safe; rewrites document why extraction was unsuitable.
+- [ ] Tests explaining reused safeguards are ported with the code and remain traceable to the source behavior.
+- [ ] IssueForge runs without a MARVIN checkout or MARVIN runtime dependency.
+
 ## Module Design
 
 - **Workflow engine:** owns persistent state transitions, approvals, bounded retries, pause/resume, parking, and queue dispatch; depends only on module interfaces.
@@ -131,6 +142,7 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 ## Implementation Decisions
 
 - Version one supports any explicitly registered local GitHub clone but executes only one active run; a persistent queue and explicit parking are included.
+- Stage design is refactor-first: inspect corresponding MARVIN skills, scripts, tests, and recorded fixes before writing replacement code, while keeping IssueForge runtime-independent.
 - One branch contains a separately committed approved test contract followed by implementation; only one green PR enters main.
 - Tests must demonstrate an expected behavioral red state, not merely any failure.
 - Approved tests and their discovery/configuration boundary are deterministically frozen; any change requires human authorization.
@@ -151,6 +163,7 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - **Observability policy:** fixtures for boundary classification, required event contracts, reuse of target logging conventions, sensitive-field exclusions, and reviewer evidence from US-3 and US-6.
 - **GitHub gateway:** fake `gh` responses proving exact mutation scope, merge verification, epic updates, and idempotent closeout from US-3 and US-7–8.
 - **Run store/UI:** crash recovery, locking, queue order, parking, event replay, retention, and CLI/TUI parity from US-2 and US-9–10.
+- **MARVIN extraction:** provenance fixtures and migrated safeguard tests verify inventory, classification, extraction decisions, and runtime independence from US-11.
 - **Prior art:** port behavioral safeguards from MARVIN's merged runner, agent-run atomic store, acceptance-integrity checker, and wave scheduler into focused IssueForge modules rather than copying their orchestration.
 
 ## Out of Scope

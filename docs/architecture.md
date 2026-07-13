@@ -45,6 +45,21 @@ IssueForge pauses for human action when:
 - Run store and queue: one active run, persistent FIFO queue, explicit parking, and atomic events.
 - Interfaces: Typer CLI and Textual TUI over the same engine and event stream.
 
+## MARVIN extraction rule
+
+Before an IssueForge stage is designed or implemented, inspect every corresponding canonical MARVIN skill, supporting script, test suite, and failure-driven update. Build a traceability record that classifies each applicable behavior as deterministic engine policy, AI judgment, human approval, or MARVIN-specific behavior to discard.
+
+Prefer extracting and refactoring proven scripts behind clean IssueForge interfaces when their contracts remain applicable. Rewrite only when coupling or assumptions make extraction unsafe; never reimplement a safeguard merely because its current code lives in MARVIN. Port the tests that explain the safeguard alongside reused code. IssueForge must have no runtime dependency on a MARVIN checkout.
+
+Initial source map:
+
+- Shape: `findings-to-issues`, `prd-to-issues`, and spec-up readiness rules.
+- Author contract: `spec-up`, write-a-prd acceptance authoring, and acceptance validators.
+- Build: `spec-dev`, `tdd`, and the agent contract.
+- Verify/review: acceptance-integrity, mutation, and pending-marker scripts and tests.
+- Deliver/close: `merged`, `merged_runner.py`, and its tests.
+- Parallelize later: `spec-wave`, `issues_to_findings.py`, and `schedule_waves.py` with their tests.
+
 ## Repository configuration
 
 Repositories already exist locally and are registered explicitly:
