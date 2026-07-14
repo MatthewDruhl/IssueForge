@@ -51,7 +51,7 @@ IssueForge pauses for human action when:
 
 ## MARVIN extraction rule
 
-Before an IssueForge stage is designed or implemented, inspect every corresponding canonical MARVIN skill, supporting script, test suite, and failure-driven update. Build a traceability record that classifies each applicable behavior as deterministic engine policy, AI judgment, human approval, or MARVIN-specific behavior to discard.
+Before an IssueForge stage is designed or implemented, inspect every corresponding canonical MARVIN skill, supporting script, test suite, and failure-driven update. Build a traceability record that classifies each applicable behavior as deterministic engine policy, AI judgment, human approval, or MARVIN-specific behavior to discard. Per D6, the authoritative scope of "corresponding MARVIN artifacts" is a versioned, checked-in **extraction manifest** that lists exactly the build-harness skills, scripts, and tests — not the MARVIN chief-of-staff workspace. MARVIN does not itself draw that line (its harness reaches into workspace state at several seams), so declaring and enforcing the manifest is part of the extraction, and the source map below is a starting index into it, not the authority.
 
 Prefer extracting and refactoring proven scripts behind clean IssueForge interfaces when their contracts remain applicable. Rewrite only when coupling or assumptions make extraction unsafe; never reimplement a safeguard merely because its current code lives in MARVIN. Port the tests that explain the safeguard alongside reused code. IssueForge must have no runtime dependency on a MARVIN checkout.
 
