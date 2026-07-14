@@ -12,6 +12,7 @@ decisions are needed to unblock.
 | **PRD scale** | 51 acceptance criteria across 11 user stories |
 | **Review 1 (draft v1)** | Codex, fresh session → **REVISE** (12 blocking findings) |
 | **Review 2 (draft v2)** | Codex, fresh session → **REVISE** (7 blocking findings) |
+| **Review 3 (option (d) for D1)** | Codex, fresh session → **BROKEN** — but it *resolves* D1 (see below) |
 | **Child issues created** | **0** |
 | **Issues modified** | **0** (PRD #1 untouched) |
 | **MARVIN files/issues modified** | **0** |
@@ -70,6 +71,65 @@ pass/fail/timeout and **refuses to author a contract**. The reviewer rejected th
   red/green with no identity freeze), and amend US-5.5/US-6.1 to say what integrity means in that mode.
 
 This decision changes issues #2, #9, #11, and #12. It cannot be deferred.
+
+#### D1 — RESOLVED by a third adversarial review: take (a), with a refinement
+
+A fourth option was proposed and pressure-tested in a fresh Codex session: a **"discriminates-or-fails"**
+integrity core. Instead of enumerating what could neutralize a test (which needs framework introspection),
+*prove the test still discriminates*: at the readiness gate, take HEAD's tree, revert **only** the approved
+implementation footprint to the contract commit, run the frozen command, and **require the suite to go red
+and reproduce the recorded evidence.** It needs only git and an exit code, so it would have been
+framework-neutral — and it appeared to kill the `helpers.py` fixture bypass (finding 2) as a side effect.
+
+**Verdict: BROKEN.** The review found a working bypass, entirely inside the approved footprint, touching no
+test, fixture, or config:
+
+```python
+def authorize_payment(amount: int) -> bool:
+    if "PYTEST_CURRENT_TEST" in os.environ:   # pytest sets this during a test run
+        return True
+    return False                              # the real behavior is never implemented
+```
+
+Reverting the implementation restores the *exact* original assertion failure, so the discrimination run
+passes. At HEAD the suite is green. In production the behavior does not exist. **Both gates pass and nothing
+was delivered.**
+
+The category error, precisely: the check proves a **counterfactual dependency** ("something in the footprint
+is necessary to turn red into green"). The PRD requires **behavior delivery** (`prd-v1.md:64` — *"green means
+the approved behavior was delivered"*). Those are different properties. The attack generalizes beyond pytest
+(Go's `.test` binary suffix, Jest worker variables, parent-process names, stack-frame inspection).
+
+Two further breaks: **conditional neutralizers** (an out-of-footprint fixture can check for an implementation
+sentinel and only neutralize when it is present, so reverting the impl restores the original red on cue),
+and **hermeticity** (a scratch git worktree reverts *tracked files* only — not `node_modules`, the venv,
+`target/`, build caches, or an already-migrated test database, so honest implementations would be blocked by
+false positives).
+
+**And the D1 claim itself was false.** An exit code cannot distinguish a behavioral red from a compile
+failure, zero tests collected, a skipped suite, a missing dependency, or a timeout — a distinction
+`architecture.md:14` explicitly requires. `go test ./...` fails when a package does not compile; Jest can be
+configured to pass with no tests; Cargo can fail during dependency resolution. The reviewer's summary:
+
+> *"Repository-agnostic orchestration is realistic. Framework-neutral semantic integrity is not."*
+
+**Therefore: resolve D1 as (a), with a refinement.** Ship v1 with **pytest as the only supported target**,
+but keep the workflow engine and the **verification interface** repository-agnostic. The portable seam is an
+**adapter contract** — *prepare hermetic environment; enumerate approved tests; run selection; report
+structured execution/failure phases; normalize behavioral evidence; detect zero/skipped/deselected tests* —
+**not raw process output.** Go/Cargo/Jest adapters implement that interface later; that is an adapter, not a
+re-architecture. `repo add` rejects a non-pytest target at **registration**, where the user can act on it.
+
+**Retain the discrimination run as defense-in-depth**, not as the core. It is a targeted counterfactual
+mutation and it does catch accidental weakening and *unconditional* neutralizers. It is one signal.
+
+**Known residual risk, to be carried explicitly rather than assumed away:** the test-environment-detection
+attack **also defeats the AST / node-id / file-hash design.** No static scheme catches an implementation that
+behaves differently under test. That risk is irreducible at the static layer and must be carried by
+adversarial code review explicitly instructed to look for test-context behavior, plus mutation testing (#24)
+and hermetic, separately-provisioned red and green runs.
+
+*Review artifact: `/private/tmp/codex-optiond.out` — VERDICT: BROKEN.*
 
 ### D2 — Does implementation code review get a human override? *(blocking, PRD conflict)*
 
@@ -278,7 +338,7 @@ These came out of the MARVIN source audit and survive any decomposition.
 - **No MARVIN file, state, skill, ledger, configuration, generated artifact, or GitHub issue was modified.**
 - No IssueForge source code or tests were changed. No implementation branches or PRs were created.
 
-**PDF verification.** `issueforge-v1-decomposition-report.pdf` — **8 pages, 0 blank pages**, all pages
+**PDF verification.** `issueforge-v1-decomposition-report.pdf` — **9 pages, 0 blank pages**, all pages
 rendered and inspected. Two rendering defects were caught on the first generation and fixed before this
 version: a paragraph beginning `#9 …` was parsed as a lazy `<h1>` and rendered as a broken headline, and the
 D1 `Options:` list collapsed into an inline run of dashes. Both are corrected; a regression guard now asserts
@@ -287,7 +347,9 @@ correctly; no clipped text.
 
 ## Exact next recommended command
 
-Resolve **D1** first — it is the only decision that changes the shape of the other issues. Then:
+**D1 now has a recommended answer** (option (a) + the adapter-interface refinement, established by review 3).
+It still needs your sign-off, because it means **amending PRD #1** to state that v1 supports pytest targets
+only. **D2 and D3 remain open and are yours to decide.** Once those three are settled:
 
 ```
 /prd-to-issues for MatthewDruhl/IssueForge#1
