@@ -61,7 +61,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 **As a** developer, **I want** to approve exact tests that fail for the missing behavior, **so that** implementation follows genuine TDD.
 
 **Acceptance criteria:**
-- [ ] Codex authors tests that collect and execute without syntax, import, fixture, configuration, or environment errors.
+- [ ] The primary AI authors tests that collect and execute without syntax, import, fixture, configuration, or environment errors.
 - [ ] The new tests fail for a recorded expected behavioral reason while the preexisting baseline remains green.
 - [ ] An independent fresh AI session reviews coverage and validity before human approval.
 - [ ] Reviewer failure may be explicitly overridden with a fresh same-provider session or human review, and the override is recorded.
@@ -111,7 +111,8 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 - [ ] CLI and Textual TUI invoke the same engine commands and consume the same structured event stream.
 - [ ] The TUI displays queue position, current stage, logs, diffs, approvals, failures, PR status, and cleanup warnings.
 - [ ] Closing either interface does not terminate or corrupt persisted workflow state.
-- [ ] AI provider start, resume, and authentication commands are configuration variables; Codex CLI is only the default v1 profile.
+- [ ] IssueForge defines two AI **roles**, never two vendors: the **primary AI** authors and implements, and the **secondary AI** independently reviews. Each role binds to a provider profile whose executable, start, resume, and authentication commands are **configuration variables**. No provider name is hardcoded anywhere in the engine.
+- [ ] **If no secondary provider is configured, the review role falls back to the primary provider in a brand-new session**, never the authoring session. Independence comes from session and role separation; a different vendor is a strengthening, not a requirement. The role, the provider, and the session identity are recorded on every AI result, and a review whose session identity equals the authoring session's is rejected.
 
 ### US-10: Retain a safe audit trail
 
@@ -160,7 +161,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 - One branch contains a separately committed approved test contract followed by implementation; only one green PR enters main.
 - Tests must demonstrate an expected behavioral red state, not merely any failure.
 - Approved tests and their discovery/configuration boundary are deterministically frozen; any change requires human authorization.
-- Codex CLI is the default configurable provider and uses an existing monthly-plan login. Direct model APIs and API-key fallback are prohibited.
+- The engine speaks of a **primary AI** (authors and implements) and a **secondary AI** (independently reviews). These are roles bound to provider profiles by configuration; the engine names no vendor. Every provider uses an existing subscription login. Direct model APIs and API-key fallback are prohibited. Where no secondary provider is configured, the review role runs on the primary provider in a fresh session — role and session separation is the load-bearing property, and provider diversity is an optional strengthening on top of it.
 - Independent test and code reviews require fresh sessions and support explicit recorded fallback or human override. The override is human-only, per-finding, bound to the reviewed commit, and reported in the PR; it never waives deterministic evidence (US-5, US-6).
 - Retry budgets are engine state, not model discretion. MARVIN expressed its caps as prose that a model session had to remember to honor; IssueForge persists them, increments them under the store lock, and gates the transition, so a budget cannot be forgotten or exceeded by an AI session. It keeps `review_rounds` and `repair_attempts` separate because "iterate on nearly-right code" and "discard the attempt and restart from base" are opposite recoveries; collapsing them lets one transient implementer failure consume the budget intended for review iteration. Both default to 2 and are configurable, so quota pressure is answered by tightening a number rather than by merging the two concepts.
 - Commands are argument arrays without a shell by default.
@@ -185,7 +186,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 
 - Draft-PR lifecycle: deferred until the single-green-PR engine is hardened; it will become an additional GitHub event surface without changing core state.
 - Concurrent issues: file-conflict scheduling within one repository and multi-repository workers are deferred until single-run recovery and safety are proven.
-- Claude Code, local-model, and direct alternate-provider adapters: interfaces are included, but only Codex CLI ships initially.
+- Additional provider profiles (other subscription CLIs, local models): the provider interface and the primary/secondary role split ship in version one, and a second provider is a configuration entry rather than new engine code. Version one is validated against a single default provider profile.
 - Non-pytest target repositories: the verification adapter interface is included, but only a pytest adapter ships initially. Go, Cargo, and Jest adapters are later work, and a repository with no adapter is refused at registration rather than degraded to a weaker contract.
 - Automatic repository cloning or discovery: explicit local registration keeps filesystem authority clear.
 - Automatic PR merge: the human remains the final merge authority.
