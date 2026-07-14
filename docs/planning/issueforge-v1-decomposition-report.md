@@ -13,6 +13,8 @@ decisions are needed to unblock.
 | **Review 1 (draft v1)** | Codex, fresh session → **REVISE** (12 blocking findings) |
 | **Review 2 (draft v2)** | Codex, fresh session → **REVISE** (7 blocking findings) |
 | **Review 3 (option (d) for D1)** | Codex, fresh session → **BROKEN** — but it *resolves* D1 (see below) |
+| **Review 4 (D2)** | Codex, fresh session → **ADD-OVERRIDE** — and it corrects a mistake in Review 2 |
+| **Review 5 (D3)** | Codex, fresh session → **SPLIT-SHAPER** |
 | **Child issues created** | **0** |
 | **Issues modified** | **0** (PRD #1 untouched) |
 | **MARVIN files/issues modified** | **0** |
@@ -36,8 +38,18 @@ no-invented-resolution rule exists to protect. The remaining four are real engin
 fixes, but they cannot be applied in isolation while the PRD conflicts are open, because two of them change
 what the affected issues must contain.
 
-The decomposition work was not wasted: the draft, the criterion inventory, the MARVIN source audit, and both
-review transcripts are the raw material for the next attempt. What is missing is four decisions.
+The decomposition work was not wasted: the draft, the criterion inventory, the MARVIN source audit, and the
+review transcripts are the raw material for the next attempt.
+
+**Three further adversarial reviews (3, 4, 5) were then run to pressure-test the three blocking decisions.
+All three now have evidence-backed recommendations, and all three require amending PRD #1.** They are not
+applied here — the protocol forbids inventing resolutions, and a PRD amendment is the author's call, not the
+decomposer's.
+
+**Review 4 also corrected an error in Review 2 that this report had accepted.** The PRD *does* grant an
+implementation-review override (`prd-v1.md:153`); Review 2 asserted otherwise and was believed without
+checking the source. The review gate is not infallible either, and its claims about the source documents must
+be verified against the source documents. That correction is recorded in D2 below rather than quietly fixed.
 
 ---
 
@@ -131,7 +143,7 @@ and hermetic, separately-provisioned red and green runs.
 
 *Review artifact: `/private/tmp/codex-optiond.out` — VERDICT: BROKEN.*
 
-### D2 — Does implementation code review get a human override? *(blocking, PRD conflict)*
+### D2 — Does implementation code review get a human override? *(blocking; NOT a PRD conflict — an internal inconsistency, see the resolution)*
 
 US-5.4 explicitly grants an override for the **test-contract** review ("reviewer failure may be explicitly
 overridden… and the override is recorded"). **US-6.3 grants no equivalent override for the implementation
@@ -140,6 +152,61 @@ code review** — it flatly requires *"an independent code review with no blocki
 Draft v2 gave the implementation review an override anyway, by symmetry. The reviewer flagged this as
 inventing scope. Either the override is removed (a blocking finding then means the run pauses for a human to
 fix, with no bypass), or US-6.3 is amended to grant one.
+
+#### D2 — RESOLVED by a fourth adversarial review: ADD THE OVERRIDE. **The premise above was wrong.**
+
+**Correction, on the record.** The PRD *does* grant an implementation-review override — just not in US-6.3.
+`prd-v1.md:153` (Implementation Decisions): *"Independent test **and code reviews** require fresh sessions
+and support explicit recorded fallback or **human override**."* Reinforced by `architecture.md`'s Human-gates
+list — *"an independent AI review must be overridden"* (generic, not test-only) — and by US-7.2, which has
+the PR report *"AI review verdicts, **and overrides**"* (plural).
+
+Review 2's finding #3 asserted no such override exists and this report accepted it **without checking the
+PRD**. That was a verification failure on our side: the review gate is not infallible, and its claims about
+the source documents must be checked against the source documents. Draft v2's original instinct — that the
+override belongs there — was correct; it was removed for a bad reason.
+
+**D2 is therefore NOT a PRD conflict. It is an internal specification inconsistency:** the cross-cutting
+Implementation Decision grants the override, and the stage-specific acceptance criterion (US-6.3, the
+enforceable one) omits it. Leaving that contradiction unresolved is worse than either deliberate policy.
+
+**The deadlock is real, and park/cancel is not an escape hatch.** Trace it: implementation completes → tests,
+baseline, gates, integrity, scope all pass → the fresh reviewer raises a *false-positive* blocking finding →
+the two automatic repair attempts (US-6.2) are consumed failing to "fix" a non-problem → the run pauses.
+Resuming returns to the same unmet US-6.3 gate. Parking (US-2.4) preserves the unmet state and frees the
+worker; it does not make the run PR-ready. **US-7.1 then forbids opening the PR.** The "the human can just
+merge it anyway" argument fails: **US-7.3's merge authority is unreachable, because the PR never opens.** The
+only remaining path — park, push by hand, open a PR outside IssueForge, reconcile the stranded run — is
+*routing around the product*, not an escape hatch. Without an override, **a probabilistic reviewer holds an
+unappealable veto over a deterministic workflow.**
+
+**Proposed PRD change.** Add a criterion after US-6.3:
+
+> *"A blocking implementation-review finding or reviewer execution failure may be overridden only by an
+> authenticated human, after one fresh independent same-provider review attempt. The override applies only to
+> identified AI-review findings at the exact reviewed head commit; it cannot waive contract integrity,
+> acceptance tests, the full baseline, configured quality gates, approved file scope, or deterministic
+> observability and sensitive-data requirements. The permanent audit trail records the human identity, commit,
+> reviewer sessions and verdicts, each overridden finding, supporting rationale, and acknowledged risk. Any
+> subsequent code or contract change invalidates the override. The PR prominently reports the overridden
+> findings and rationale for renewed human consideration before merge."*
+
+And soften US-6.3's absolute language: *"…and an independent code review with no blocking findings **except
+findings explicitly overridden under the following criterion**."*
+
+**Non-negotiable properties of the override** (these are the friction that stops it becoming the hole every
+gate leaks through): human-only (never the implementer AI, reviewer AI, engine, or repair loop);
+**per-finding, never a blanket "ignore review"**; bound to the exact reviewed head sha, invalidated by any
+subsequent code or contract change; a fresh replacement reviewer session attempted **first**, so a recoverable
+session failure is distinguished from a conscious acceptance of risk; and **override means "allowed to open
+the PR", not "erase the finding"** — every overridden finding stays visible in the PR for merge review. It
+does **not** authorize merge; US-7.3 is unchanged.
+
+**Residual risk, named:** the failure mode is cultural. Once an override exists, it gets used whenever review
+is inconvenient. The per-finding rationale, sha binding, permanent audit, and PR disclosure add friction
+deliberately. They reduce that risk; they do not eliminate it.
+
+*Review artifact: `/private/tmp/codex-d2.out` — RECOMMENDATION: ADD-OVERRIDE.*
 
 ### D3 — Must shaping (#18) precede contract authoring in the build order? *(blocking, ordering)*
 
@@ -154,6 +221,71 @@ producer of that footprint is #18.** As drafted, #13 could be declared unblocked
 **Options:** make a *buildable-path* shaping slice a hard prerequisite of contract authoring (keeping only
 oversized-issue decomposition, #19, late); or keep the late order and explicitly re-home the approved-file-scope
 producer.
+
+#### D3 — RESOLVED by a fifth adversarial review: SPLIT THE SHAPER
+
+**A "pass-through shaper" is not a real thing.** This is the argument that settles it. At readiness the engine
+must evaluate "approved file scope" (US-6.3) and, with a pass-through shaper, has no approved set to compare
+against. Only three behaviors are possible, and all three are unacceptable:
+
+1. **Fail closed** — every run pauses for missing scope. The claimed "end-to-end buildable path" does not
+   actually work, so the milestone is a fiction.
+2. **Skip the check** — the milestone ships a readiness gate that **cannot enforce US-6.3**.
+3. **Approve after seeing the diff** — *"every diff would approve itself."* Retrospective ratification. This
+   is the deceptive one: the run *looks* compliant while defeating US-6's whole premise
+   (`prd-v1.md:66` — *"AI implementation **constrained by** the approved tests"*).
+
+The same failure hits observability concretely: with no pre-implementation contract naming sensitive fields,
+an implementer adding retry logic may log request headers. US-6.7 requires excluding *"contract-listed
+sensitive fields"* — but with no shaped contract, **there is no list to enforce**. And producing the verdict
+at review time is too late: *"independent implementation review confirms compliance; it should not originate
+the requirement it is supposed to review."*
+
+**A REQUIREMENTS DEFECT surfaced that nobody had named.** The PRD says the shaper owns *"footprint
+estimation"* (`prd-v1.md:133`) and that an *"unknown expected footprint pauses the run"* (US-3.4), and that
+readiness requires *"approved file scope"* (US-6.3). **But it never defines the approval transition between
+them** — who approves the scope, at which human gate, whether it is exact files or path patterns, and how
+expansion is authorized. Note also that **US-5.5's contract-freeze list conspicuously omits file scope**
+(*"the exact test commit, file hashes, collected identifiers, dependent fixtures/configuration, command, and
+red evidence"*). So the claim that scope is "already approved at contract freeze" is **unsupported by the
+text**. This gap must be closed by an explicit design decision, not read into the PRD.
+
+**The resolution: split the shaper.** Epic decomposition and footprint estimation *"share a lifecycle label,
+not an implementation risk profile."*
+
+**New early slice — "Buildability Contract."** Outputs: readiness classification
+(`buildable` / `oversized` / `blocked`); duplicate verdict + evidence; unresolved-design-decision list; the
+**proposed expected footprint** (allowed files/path patterns + justification) and an explicit
+`footprint_known` verdict; the **observability verdict** with reviewer-confirmed justification and, when
+required, the success/failure events and prohibited sensitive fields; and an immutable shape-artifact version.
+Transitions: duplicate / unresolved decision / unknown footprint → **pause**; `oversized` → stop at
+`decomposition_required` (**do not pretend this slice can process it**); `buildable` → **the human approves
+the buildability contract, including file scope, before contract authoring**; later scope expansion → **new
+human authorization**, preserving the prior approval in the audit trail.
+
+**It owns US-3.4 and US-6.5 completely**, plus the producer side of US-6.3's approved file scope and the
+shaped-contract side of US-6.6/6.7 (implementation and review still own *enforcement*). **It does NOT claim
+US-3.1–US-3.3** — in-place revision, epic decomposition, child drafting, and GitHub mutation stay late, where
+their downstream consumers (queue, gateway, closeout, idempotency keys) already exist. The late-shaper
+instinct was right about *those*; it was evasive about footprint and observability.
+
+**Recommended build order for the first five issues:**
+
+1. **Persistent workflow kernel + artifact interfaces** — run state, transitions, pause/resume/park,
+   approvals, event persistence, fake stage adapters. Foundational parts of US-2 and US-10.
+2. **Repository registration + isolated workspace + baseline** — US-1 and US-4. *Built before shaping even
+   though it runs after shaping at runtime.*
+3. **Buildability Contract** (the new slice) — US-3.4, US-6.5, producer side of US-6.3.
+4. **Acceptance-contract authoring and freeze** — US-5. Consumes the approved shape artifact.
+5. **Implementation + integrity + readiness + green PR** — US-6 and the delivery part of US-7.
+
+Then in-place revision, then epic decomposition and child mutation/queueing.
+
+> *"Fail-closed missing artifacts are safer than silently unenforced gates. But the full early shaper wastes
+> risk on decomposition before it is needed. Splitting produces the safer dependency order without
+> front-loading the hardest judgment surface."*
+
+*Review artifact: `/private/tmp/codex-d3.out` — RECOMMENDATION: SPLIT-SHAPER.*
 
 ### D4 — Is the retry budget one counter or two? *(non-blocking, recorded for completeness)*
 
@@ -338,7 +470,7 @@ These came out of the MARVIN source audit and survive any decomposition.
 - **No MARVIN file, state, skill, ledger, configuration, generated artifact, or GitHub issue was modified.**
 - No IssueForge source code or tests were changed. No implementation branches or PRs were created.
 
-**PDF verification.** `issueforge-v1-decomposition-report.pdf` — **9 pages, 0 blank pages**, all pages
+**PDF verification.** `issueforge-v1-decomposition-report.pdf` — **12 pages, 0 blank pages**, all pages
 rendered and inspected. Two rendering defects were caught on the first generation and fixed before this
 version: a paragraph beginning `#9 …` was parsed as a lazy `<h1>` and rendered as a broken headline, and the
 D1 `Options:` list collapsed into an inline run of dashes. Both are corrected; a regression guard now asserts
@@ -347,9 +479,21 @@ correctly; no clipped text.
 
 ## Exact next recommended command
 
-**D1 now has a recommended answer** (option (a) + the adapter-interface refinement, established by review 3).
-It still needs your sign-off, because it means **amending PRD #1** to state that v1 supports pytest targets
-only. **D2 and D3 remain open and are yours to decide.** Once those three are settled:
+**All three blocking decisions now have evidence-backed recommendations** (reviews 3, 4, 5). Each still needs
+your sign-off, because **all three require amending PRD #1**:
+
+- **D1 → (a) + refinement.** v1 supports **pytest targets only**; the engine and the *verification interface*
+  stay repository-agnostic (an adapter contract, not raw process output). `repo add` rejects a non-pytest
+  target at registration.
+- **D2 → add the override.** Reconcile US-6.3 with `prd-v1.md:153`, which already grants it. Human-only,
+  per-finding, sha-bound, reported in the PR. **This corrects an error in Review 2 that this report had
+  accepted.**
+- **D3 → split the shaper.** A new early **Buildability Contract** slice (US-3.4, US-6.5, producer of US-6.3's
+  approved file scope) lands before contract authoring. Epic decomposition and in-place revision stay late.
+  **Also close the newly-found requirements defect:** the PRD never defines how the *expected footprint*
+  becomes the *approved file scope*.
+
+Once the PRD is amended:
 
 ```
 /prd-to-issues for MatthewDruhl/IssueForge#1
