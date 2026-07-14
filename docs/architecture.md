@@ -2,12 +2,14 @@
 
 ## Outcome
 
-IssueForge turns an existing issue in any registered local GitHub repository into one human-approved, TDD-built, green pull request. A regular Python process owns the workflow; subscription-authenticated AI CLIs are replaceable workers.
+IssueForge turns an existing issue in a registered local GitHub repository into one human-approved, TDD-built, green pull request. A regular Python process owns the workflow; subscription-authenticated AI CLIs are replaceable workers.
+
+The engine, store, Git/GitHub layers, and the verification adapter interface are repository-agnostic. Semantic test integrity is per-framework, so a repository is supported only when a verification adapter exists for its test framework. Version one ships a pytest adapter; registration refuses anything else.
 
 ## Lifecycle
 
 1. Queue an existing issue by repository alias and number.
-2. Assess whether it is buildable. After human approval, update a vague issue in place or convert an oversized issue into an epic linked to new child issues.
+2. Assess whether it is buildable and emit a buildability contract: readiness classification, duplicate verdict, unresolved design decisions, the proposed expected file scope, and the observability verdict. The human approves that contract, including the file scope, before any acceptance test is authored; the approved scope is the one enforced at PR readiness and is never derived from the resulting diff. After human approval, update a vague issue in place or convert an oversized issue into an epic linked to new child issues.
 3. Fetch the default branch and create a proven-isolated worktree without touching the normal checkout.
 4. Run the repository's required baseline command. Pause if the baseline is red.
 5. Invoke Codex CLI to author acceptance tests.
@@ -25,6 +27,8 @@ IssueForge turns an existing issue in any registered local GitHub repository int
 IssueForge pauses for human action when:
 
 - an issue revision or decomposition would change GitHub;
+- a buildability contract, including its proposed file scope, is ready for approval;
+- an approved file scope must be expanded during implementation;
 - generated acceptance tests are ready for approval;
 - a PR is ready for human merge review;
 - a step fails after bounded repair attempts;

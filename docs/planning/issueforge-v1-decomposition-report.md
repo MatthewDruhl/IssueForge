@@ -15,6 +15,7 @@ decisions are needed to unblock.
 | **Review 3 (option (d) for D1)** | Codex, fresh session → **BROKEN** — but it *resolves* D1 (see below) |
 | **Review 4 (D2)** | Codex, fresh session → **ADD-OVERRIDE** — and it corrects a mistake in Review 2 |
 | **Review 5 (D3)** | Codex, fresh session → **SPLIT-SHAPER** |
+| **Review 6 (zero-adapter goal)** | Codex, fresh session → **HYBRID** — independently confirms D1 |
 | **Child issues created** | **0** |
 | **Issues modified** | **0** (PRD #1 untouched) |
 | **MARVIN files/issues modified** | **0** |
@@ -142,6 +143,66 @@ adversarial code review explicitly instructed to look for test-context behavior,
 and hermetic, separately-provisioned red and green runs.
 
 *Review artifact: `/private/tmp/codex-optiond.out` — VERDICT: BROKEN.*
+
+#### D1 — independently re-tested against the strongest counter-proposal: **zero adapters**. Verdict: HYBRID.
+
+The goal was stated plainly: *"No adapters for any language. A core set of code that can determine whether a
+red/green result is TRUE red/green."* The strongest mechanism for it — a **universal JUnit XML report**
+(pytest `--junitxml`, `gotestsum --junitfile`, `jest-junit`, `cargo2junit`/`nextest`), which nominally
+supplies per-test identity, `<failure>` vs `<error>` vs `<skipped>`, and a `tests="N"` count — was put to a
+sixth adversarial review. **It does not hold.**
+
+**The `<failure>` / `<error>` distinction is not portable, and it is the thing meaningful-red rests on.**
+Checked against reporter source:
+- **pytest** implements it properly: call phase → `<failure>`; collection/setup/teardown → `<error>`;
+  skip/xfail → `<skipped>`.
+- **gotestsum has NO testcase-level `<error>` element at all.** Failed tests, a failing `TestMain`, and
+  package errors all land as `<failure>` or a top-level count. Go's test protocol does not itself distinguish
+  an assertion failure from a panic from a setup failure.
+- **jest-junit** is inconsistent: module-load failures may be `<error>`, but hook failures (`afterAll`) are
+  synthesized as `<failure>`, and suite-error reporting **can be disabled in config**.
+- **cargo2junit** receives libtest's "failed" and cannot recover assertion-vs-panic-vs-failed-init.
+
+So the rule *"approved ID present + `<failure>` = meaningful red"* is **false in Go**. There is also no
+official JUnit schema — it is *"a family of formats."*
+
+**Second, the report is not independent evidence.** *"A JUnit report written under candidate-tree control is
+not independent evidence."* The implementer can swap the reporter, template fake identities, write the XML
+without running tests, leave a stale report at a static path, collapse a failure into a green via retries, or
+run one green shard. The obvious defense fails: **"a nonce in an environment variable is not authentication —
+candidate code can read it."** Test execution *is* running candidate code; that is irreducible.
+
+**What the zero-adapter core CAN do** (and therefore what belongs in the shared core, not an adapter):
+subprocess isolation, fresh per-run artifact directories, XML parsing, count reconciliation, approved-ID
+presence checks, exit/timeout/signal capture, manifests, approvals, and red/green state transitions. That
+yields **"report-valid pass/fail" — not "true behavioral red/green."**
+
+**Zero-collected detection does work**, but only with artifact hygiene: a fresh output directory outside the
+repository per invocation, never a static configured path (a stale `out.xml` destroys the "no report" vs "no
+tests" distinction), and aggregate counts reconciled against the actual testcase elements.
+
+**The irreducible per-framework surface is thin — five functions**, not a monolithic adapter:
+`probe(toolchain)` → capabilities + pinned versions; `canonical_collect(invocation)` → canonical IDs +
+selection metadata; `classify(native events)` → phase-aware outcomes; `discover_contract_dependencies()` →
+the protected closure; `validate_invocation()` → a frozen, safe execution plan.
+
+**Model correction: it is per-FRAMEWORK-and-REPORTER, not per-language.** pytest and unittest are both
+Python and differ. `cargo2junit` and `nextest` differ within Rust. Jest reporters differ within JavaScript.
+"Add Go support" is really "add gotestsum support."
+
+**This review also killed the paired over-broad-boundary idea** (freeze the whole test tree at the git level
+and drop dependency-closure analysis). It **contradicts US-5's own rule** that a user-supplied path list *"may
+add to the protected boundary but can never shrink it"* — making configuration authoritative reverses exactly
+that. It misses helpers outside the conventional test tree, lockfiles, build scripts, and plugins in
+undeclared paths. It survives only as **defense-in-depth** (*"simpler and safer than an incomplete import
+graph"* for what it does cover), never as a replacement.
+
+**Net effect on the amendments: none.** Review 6 lands independently on the design already drafted —
+adapter-discovered dependencies, and **registration must fail** when a framework's capabilities cannot be
+proven, rather than degrading to a weaker contract. Its one emphasis worth carrying: the capability module is
+**mandatory, not optional**, for contract-grade verification.
+
+*Review artifact: `/private/tmp/codex-zeroadapter.out` — VERDICT: HYBRID.*
 
 ### D2 — Does implementation code review get a human override? *(blocking; NOT a PRD conflict — an internal inconsistency, see the resolution)*
 
@@ -470,7 +531,7 @@ These came out of the MARVIN source audit and survive any decomposition.
 - **No MARVIN file, state, skill, ledger, configuration, generated artifact, or GitHub issue was modified.**
 - No IssueForge source code or tests were changed. No implementation branches or PRs were created.
 
-**PDF verification.** `issueforge-v1-decomposition-report.pdf` — **12 pages, 0 blank pages**, all pages
+**PDF verification.** `issueforge-v1-decomposition-report.pdf` — **14 pages, 0 blank pages**, all pages
 rendered and inspected. Two rendering defects were caught on the first generation and fixed before this
 version: a paragraph beginning `#9 …` was parsed as a lazy `<h1>` and rendered as a broken headline, and the
 D1 `Options:` list collapsed into an inline run of dashes. Both are corrected; a regression guard now asserts

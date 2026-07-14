@@ -6,7 +6,9 @@ Turning an existing GitHub issue into merged code currently requires an AI sessi
 
 ## Solution
 
-IssueForge is a repository-agnostic Python workflow engine with CLI and Textual TUI interfaces. It processes one queued issue at a time, invokes subscription-authenticated AI CLIs for judgment-heavy work, deterministically enforces the TDD and safety contracts, opens one green PR, waits for human merge, and performs idempotent closeout.
+IssueForge is a Python workflow engine with CLI and Textual TUI interfaces. It processes one queued issue at a time, invokes subscription-authenticated AI CLIs for judgment-heavy work, deterministically enforces the TDD and safety contracts, opens one green PR, waits for human merge, and performs idempotent closeout.
+
+The engine, the run store, the Git and GitHub layers, and the **verification adapter interface** are repository-agnostic. Semantic test integrity is not: freezing a contract requires stable test identity, an execution-phase distinction, and a dependency closure, none of which a generic argument-array command can supply. Those capabilities are therefore supplied by a per-framework **verification adapter**, and **version one ships a pytest adapter only** (see US-1 and Out of Scope).
 
 ## User Stories
 
@@ -19,6 +21,7 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - [ ] Alias lookup is case-insensitive while preserving entered spelling for display.
 - [ ] Missing paths, non-Git paths, duplicate aliases, and mismatched remotes are rejected without changing the registry.
 - [ ] IssueForge never clones or automatically registers a repository.
+- [ ] Registration resolves a verification adapter for the repository and **rejects a repository whose test framework has no installed adapter**, naming the unsupported framework. Version one ships a pytest adapter only, so a non-pytest repository is refused **at registration**, not after a run has already been shaped and worktreed.
 
 ### US-2: Queue and resume issue runs
 
@@ -39,6 +42,9 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - [ ] An oversized issue receives a proposed epic and independently deliverable child issues; no issue is created or edited before approval.
 - [ ] Approved decomposition links every child from the epic and each child enters the normal queue independently.
 - [ ] Duplicate open work, unresolved design decisions, and an unknown expected footprint pause the run.
+- [ ] Shaping emits a **buildability contract** before any acceptance test is authored: a readiness classification (`buildable`, `oversized`, or `blocked`), the duplicate verdict, the unresolved-design-decision list, a **proposed expected footprint** expressed as allowed files and path patterns with justification, and the observability verdict required by US-6.
+- [ ] **A human approves the buildability contract — including the file scope — before contract authoring begins.** The approved file scope enforced at PR readiness (US-6) is exactly this approved scope; it is never derived from the resulting diff, because a scope derived from the diff would approve itself.
+- [ ] **Expanding the approved file scope during implementation requires new human authorization** and preserves the prior approval in the audit trail. An implementation that writes outside the approved scope without that authorization pauses the run.
 
 ### US-4: Establish an isolated green baseline
 
@@ -59,7 +65,8 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - [ ] The new tests fail for a recorded expected behavioral reason while the preexisting baseline remains green.
 - [ ] An independent fresh AI session reviews coverage and validity before human approval.
 - [ ] Reviewer failure may be explicitly overridden with a fresh same-provider session or human review, and the override is recorded.
-- [ ] Human approval freezes the exact test commit, file hashes, collected identifiers, dependent fixtures/configuration, command, and red evidence.
+- [ ] Human approval freezes the exact test commit, file hashes, collected identifiers, dependent fixtures/configuration, command, red evidence, **and the approved file scope carried forward from the buildability contract (US-3)**.
+- [ ] The frozen dependency set is **discovered by the verification adapter, not declared by configuration**: it covers the test modules, every fixture provider and configuration file on the collection path, plugins, and their **transitive** dependencies. A user-supplied path list may add to the protected boundary but can never shrink it.
 
 ### US-6: Implement without weakening the contract
 
@@ -68,7 +75,8 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 **Acceptance criteria:**
 - [ ] Implementation cannot proceed to PR readiness when approved contract files, collection, configuration, or command changed without new human authorization.
 - [ ] Codex receives at most two automatic repair attempts for an implementation or review failure before the run pauses.
-- [ ] PR readiness requires green acceptance tests, green full baseline, configured quality gates, approved file scope, and an independent code review with no blocking findings.
+- [ ] PR readiness requires green acceptance tests, green full baseline, configured quality gates, approved file scope, and an independent code review with no blocking findings **except findings explicitly overridden under the following criterion**.
+- [ ] A blocking implementation-review finding, or a reviewer execution failure, **may be overridden only by an authenticated human, and only after one fresh independent same-provider review attempt**. The override applies solely to identified AI-review findings at the exact reviewed head commit. **It can never waive contract integrity, acceptance tests, the full baseline, configured quality gates, approved file scope, or deterministically established observability and sensitive-data requirements.** It is issued per finding; a blanket "ignore review" action does not exist. Any subsequent code or contract change invalidates it. The permanent audit trail records the human identity, the commit, the reviewer sessions and verdicts, each overridden finding, the rationale, and the acknowledged risk. **Override means the PR may open, not that the finding is erased**: the PR reports every overridden finding for renewed human consideration before merge, and the override does not authorize the merge itself (US-7).
 - [ ] IssueForge never calls a metered model API or silently falls back from a subscription-authenticated CLI.
 - [ ] Every shaped issue records `required`, `existing coverage sufficient`, or `not applicable` for observability, with reviewer-confirmed justification.
 - [ ] Logging is required when changed code crosses an HTTP, database, subprocess, filesystem, queue, third-party service, or AI boundary.
@@ -143,14 +151,16 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 
 ## Implementation Decisions
 
-- Version one supports any explicitly registered local GitHub clone but executes only one active run; a persistent queue and explicit parking are included.
+- Version one supports any explicitly registered local GitHub clone **whose test framework has an installed verification adapter**, and executes only one active run; a persistent queue and explicit parking are included. Only a pytest adapter ships in version one; registration refuses anything else.
+- Repository-agnostic orchestration is achievable; framework-neutral semantic test integrity is not. An exit code cannot distinguish a behavioral failure from a compile error, a collection error, zero tests collected, a skipped suite, or a timeout. The portable seam is therefore the **verification adapter interface** — prepare a hermetic environment, enumerate approved tests, run a selection, report structured execution and failure phases, normalize behavioral evidence, and detect zero/skipped/deselected tests — **not raw process output**. Adding Go, Cargo, or Jest support is an adapter, not a re-architecture.
+- An implementation that behaves differently under test (for example, branching on a test-runner environment variable) defeats every static integrity check, including file hashing and import-closure analysis. This residual risk is carried explicitly by the independent code review, which is instructed to look for test-context-dependent behavior, and by hermetic, separately provisioned verification runs. It is not claimed to be eliminated.
 - Stage design is refactor-first: inspect corresponding MARVIN skills, scripts, tests, and recorded fixes before writing replacement code, while keeping IssueForge runtime-independent.
 - Integration is one-way: source systems and future consumers may read IssueForge interfaces, but IssueForge does not maintain consumer-specific files or push state into MARVIN.
 - One branch contains a separately committed approved test contract followed by implementation; only one green PR enters main.
 - Tests must demonstrate an expected behavioral red state, not merely any failure.
 - Approved tests and their discovery/configuration boundary are deterministically frozen; any change requires human authorization.
 - Codex CLI is the default configurable provider and uses an existing monthly-plan login. Direct model APIs and API-key fallback are prohibited.
-- Independent test and code reviews require fresh sessions and support explicit recorded fallback or human override.
+- Independent test and code reviews require fresh sessions and support explicit recorded fallback or human override. The override is human-only, per-finding, bound to the reviewed commit, and reported in the PR; it never waives deterministic evidence (US-5, US-6).
 - Commands are argument arrays without a shell by default.
 - External-boundary changes require a logging contract; independent implementation review judges diagnosability for all other changes. Libraries never introduce global logging configuration.
 - Python 3.12+, uv, pytest, Ruff, Typer, and Textual form the initial implementation stack.
@@ -174,6 +184,7 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - Draft-PR lifecycle: deferred until the single-green-PR engine is hardened; it will become an additional GitHub event surface without changing core state.
 - Concurrent issues: file-conflict scheduling within one repository and multi-repository workers are deferred until single-run recovery and safety are proven.
 - Claude Code, local-model, and direct alternate-provider adapters: interfaces are included, but only Codex CLI ships initially.
+- Non-pytest target repositories: the verification adapter interface is included, but only a pytest adapter ships initially. Go, Cargo, and Jest adapters are later work, and a repository with no adapter is refused at registration rather than degraded to a weaker contract.
 - Automatic repository cloning or discovery: explicit local registration keeps filesystem authority clear.
 - Automatic PR merge: the human remains the final merge authority.
 - Web GUI: the engine/event boundary supports it later; version one ships CLI and Textual TUI.
