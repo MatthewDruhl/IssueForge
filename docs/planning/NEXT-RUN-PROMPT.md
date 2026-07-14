@@ -1,5 +1,21 @@
 # Prompt for the next `/prd-to-issues` run (paste into a fresh session)
 
+> **STATE AS OF 2026-07-14 (read this first).** A second decomposition attempt was also **BLOCKED** by the
+> review gate (report: `docs/planning/issueforge-v1-decomposition-report-v2.md`, 0 issues created). It surfaced
+> two decisions, now **resolved and amended into the PRD as D5 and D6** (PR #2, merge it before re-running so
+> the base is real):
+> - **D5** — file roles are two disjoint scopes: an approved **implementation write scope** and a discovered
+>   **frozen contract set**. The acceptance tests are in the contract set, never in the write scope.
+> - **D6** — the source-audit unit is a **test**, discovered against a **checked-in extraction manifest** that
+>   declares harness vs. workspace; a human approves each stage audit.
+>
+> **The PRD now carries D1–D6 and has 59 acceptance criteria** (was 51). **Reuse `docs/planning/decomposition-draft-v3.md`
+> as the starting point** — it owns 59/59 with a single owner each and is 25 issues (S1–S25). Do **not** start
+> from zero, and do **not** re-derive the source audit (§4 of the v2 report already corrected eight false
+> prior-art claims). **Three mechanical fixes remain**, fully specified in §2 of the v2 report: per-producer
+> redaction canaries (S7/S10/S11/S15); delete S8's contradictory heuristic language; make S25 a hard blocker of
+> S3/S4. Apply D5/D6 to S9/S12/S13/S15 and S2 per the amended criteria, then run the two-round gate again.
+
 Run `/prd-to-issues` for MatthewDruhl/IssueForge#1.
 
 This run is pre-authorized to complete autonomously. Do not pause for human approval. Perform the analysis,
