@@ -17,7 +17,7 @@ The engine, store, Git/GitHub layers, and the verification adapter interface are
 7. Obtain an independent AI review, with explicit fallback to a fresh session or human override.
 8. Ask the human to approve the exact test contract.
 9. Commit and freeze a manifest containing test hashes, collected identifiers, configuration dependencies, command, and expected failure evidence.
-10. Invoke Codex CLI to implement the issue. Permit at most two automatic repair cycles.
+10. Invoke Codex CLI to implement the issue. The engine enforces two separate, persisted repair budgets, each defaulting to 2: `review_rounds` (blocking review findings, fixed in place, worktree preserved) and `repair_attempts` (implementer died or the suite is still red after it reported done — worktree reset to base, fresh session, no prior transcript). Exhausting either pauses the run.
 11. Verify contract integrity, acceptance tests, full baseline, configured quality gates, file scope, and an independent code review.
 12. Push and open one green PR, then wait for the human to merge it.
 13. Verify the merge, close the exact issue, update its parent epic, delete safe local/remote branches, and remove a clean worktree.
