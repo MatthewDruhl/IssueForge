@@ -1,4 +1,4 @@
-# IssueForge v1 — PRD #1 decomposition (draft v5, three attempt-3 findings resolved)
+# IssueForge v1 — PRD #1 decomposition (draft v5, corrected gate candidate)
 
 **Repo:** MatthewDruhl/IssueForge · **Source PRD:** #1 · **Date:** 2026-07-15
 **Supersedes:** `docs/planning/decomposition-draft-v4.md` (attempt 3, BLOCKED after two review rounds).
@@ -235,8 +235,10 @@ deliberate reordering, not an extraction.
 
 Plus **`deferred-v2`**: **D1** blocking mutation / anti-tautology gate · **D2** the invariant lens for shaping.
 
-**Recommended first slice: S3** (`repo add` → `repo list`). Smallest demoable unit.
-**First full tracer bullet, no AI in it at all: S1 → S3 → S4 → S5 → S6** —
+**Recommended build start:** S2 and S25 are the two independent enabling gates; with one worker, build **S2
+then S25**, followed by S1 and only then S3. S3 (`repo add` → `repo list`) is the first user-visible demo, not
+the first buildable issue.
+**First deterministic functional chain after the S2/S25 gates: S1 → S3 → S4 → S5 → S6** —
 `repo add` → enqueue → fetch → isolated worktree → run baseline → pause. Fully deterministic tests, zero
 provider dependency, and it de-risks every seam the rest of the system sits on. Per review 02's fair caveat,
 this is **infrastructure** validation; the first complete *product-lifecycle* tracer needs **S9**.
@@ -355,12 +357,6 @@ capabilities and pinned reporter version — or fails loudly, naming the offendi
 
 **PRD criteria covered.** **US-4.1** (owner). Gaps G1, G2, G8, G12.
 
-> **Open refinement (independent review B1 — resolve at spec-up).** US-4.1 (`prd-v1.md:54`) says the repo
-> **commits** `.issueforge.toml`. This slice must load/validate config from the **committed Git object**, not an
-> untracked or dirty working-tree copy (an untracked file passes validation but is absent from the fresh
-> origin-based worktree). Add tests rejecting an untracked-only file and proving the verified-base worktree uses
-> the committed config.
-
 **Observable acceptance criteria**
 - `CommandResult` frozen dataclass: `argv, returncode, stdout, stderr, duration_ms, timed_out`.
   `run(argv, *, cwd, timeout, env)` **never raises on a non-zero exit** — callers inspect the result.
@@ -373,8 +369,11 @@ capabilities and pinned reporter version — or fails loudly, naming the offendi
   unreachable by construction.
 - **An error result cannot coerce to `False`.** A predicate handed an error **raises**. Tested against every
   MARVIN inversion.
-- `.issueforge.toml`: `baseline` **required** as an argv array (US-4.1); optional `acceptance`/`lint`/`build`
-  (G8); `contract_paths`; `sensitive_fields`. Every command is argv-validated, not just the baseline (G1).
+- `.issueforge.toml` is loaded and validated from the **verified committed Git object**, never from an
+  untracked or dirty working-tree copy. An untracked-only file is rejected, and a dirty working-tree edit cannot
+  change the configuration used by the origin-based worktree. `baseline` is **required** as an argv array
+  (US-4.1); `acceptance`/`lint`/`build` are optional (G8), alongside `contract_paths` and `sensitive_fields`.
+  Every command is argv-validated, not just the baseline (G1).
 - **`VerificationAdapter` Protocol — six functions, mandatory, keyed on (framework, reporter):**
   `probe(toolchain)` → capabilities + **pinned reporter version**;
   `provision_environment(worktree, frozen_deps=None)` → **a hermetic, separately-provisioned authoritative
@@ -563,13 +562,9 @@ can act on it, rather than after a run has already been shaped and worktreed.
 **User-visible outcome.** `issueforge repo add DandD:~/Projects/DandD` → `issueforge repo list` prints the
 alias, absolute path, normalized `owner/repo` slug, default branch, baseline command, and the resolved adapter.
 A Go or unittest repository is **rejected at `repo add`**, naming the unsupported framework.
-**This is the smallest demoable unit in the system and the recommended first slice.**
+**This is the smallest user-visible demo in the system, reached after the S2/S25/S1 enabling work.**
 
 **PRD criteria covered.** **US-1.1, US-1.2, US-1.3, US-1.4, US-1.5** (owner). Integration assertion: US-4.1.
-
-> **Open refinement (independent review B1 — resolve at spec-up).** Registration's `.issueforge.toml` check
-> (integration assertion on US-4.1) must confirm the file is a **committed Git object** in the target repo, not
-> merely present in the working tree — see S1's B1 note. `prd-v1.md:54`.
 
 **Observable acceptance criteria**
 - `repo add` expands `~`; records alias, absolute path, normalized origin slug, and default branch.
@@ -581,7 +576,9 @@ A Go or unittest repository is **rejected at `repo add`**, naming the unsupporte
   reporter) → registration is REFUSED**, naming the framework. **It never degrades to a weaker contract.** A
   probe that cannot prove canonical identity, selection completeness, trustworthy phase information, and
   dependency protection **fails** — capability is **mandatory, not optional**.
-- `.issueforge.toml` is loaded at registration; **a missing baseline command is a registration-time rejection**
+- Registration resolves `.issueforge.toml` from the repository's **verified committed Git object**. A file
+  present only as untracked working-tree content is rejected; dirty working-tree contents cannot influence
+  registration. A missing baseline command in the committed configuration is a registration-time rejection
   (integration assertion on US-4.1), not a runtime surprise.
 - **`default_branch` is a recorded fact, never assumed. No `or "main"` fallback exists anywhere in the source.**
 - The registry is IssueForge-owned (`~/.issueforge/`, one `ISSUEFORGE_HOME` override). **Never a Markdown file
@@ -1036,13 +1033,6 @@ flagged as requiring logging, and a contract-listed sensitive field appearing in
 
 **PRD criteria covered.** **US-6.8, US-6.9** (owner). Gap G3.
 
-> **Open refinement (independent review B4 — resolve at spec-up).** Static call-site presence is **not** proof
-> a log event is emitted (dead/success-only paths) and cannot catch indirectly-formatted secrets. For every
-> `required` verdict, add **executable evidence**: during the authoritative test run, capture emitted logs with
-> **seeded sensitive-field canaries** and assert the named success/failure events actually fire using the
-> target's conventions and that no contract-listed sensitive value appears. Keep static analysis as
-> supplementary. `prd-v1.md:83-84`, and `:80` (non-overridable).
-
 **Observable acceptance criteria**
 - **The boundary TRIGGER is deterministic** — crossing **HTTP, database, subprocess, filesystem, queue,
   third-party service, or AI**. **It must NOT be an LLM judgment, because an LLM judgment cannot be
@@ -1061,11 +1051,16 @@ flagged as requiring logging, and a contract-listed sensitive field appearing in
   but it can NEVER waive "deterministically established observability and sensitive-data requirements"**
   (`prd-v1.md:80`). If a newly-crossed boundary surfaced only as a reviewer's observation, **the override would
   become a legal path to ship an unlogged boundary crossing** — precisely what the PRD forbids. It therefore
-  **halts the run and demands a contract amendment** (S13) with renewed human approval, not an override.
+  **halts the run and demands an observability/buildability amendment through S9** with renewed reviewer
+  confirmation and human approval, not an S13 acceptance-contract amendment and not an override.
 - **US-6.9:** required logging **reuses the target project's** logger, levels, formats, and correlation
   conventions — detected from the target, never imposed.
-- **Contract-listed sensitive fields are excluded** from emitted logs, with concrete tests. The list comes from
-  the **shaped contract** (S9); this slice owns the **exclusion predicate**.
+- **For every `required` verdict, the authoritative run supplies executable log evidence.** It captures emitted
+  logs while seeded sensitive-field canaries traverse the relevant success and failure paths, proves every
+  contract-required event actually emits using the target project's conventions, and proves no canary or
+  contract-listed sensitive value appears. Static call-site analysis is supplementary only; it cannot satisfy
+  the gate by itself. The sensitive-field list comes from the shaped contract (S9), and this slice owns the
+  executable evidence collector and exclusion predicate.
 - **G3 — libraries never install global logging configuration.** (In the PRD prose twice, in no criterion.)
   Same discipline as MARVIN's *"never widen repo-global config to satisfy a hook — fix the narrow cause"*,
   applied to a new domain.
@@ -1076,11 +1071,11 @@ flagged as requiring logging, and a contract-listed sensitive field appearing in
   boundary-crossing set the caller compares — S9 consumes the prospective verdict, S15 reconciles the diff
   verdict. **A module-level tuple of boundary markers backs both; the boundary list is NOT user-configurable in
   v1; it is not a rule engine.**
-- **This slice OWNS the deterministic predicates that evidence US-6.9, so S15 can enforce them without
-  re-deriving anything:** (1) a **logger-convention detector** — given the target's existing call sites, it
-  reports the target's logger factory and the level/format/correlation-id call shape, so S15 can check the diff
-  obtains its logger that way rather than via a new root logger or `basicConfig`; (2) the **sensitive-field
-  exclusion predicate** over emit call sites, run against the contract's `sensitive_fields`. **What remains
+- **This slice OWNS the deterministic evidence APIs that S15 enforces without re-deriving them:** (1) a
+  **logger-convention detector** that reports the target's logger factory and level/format/correlation-id call
+  shape; (2) an **authoritative runtime log capture** that proves required success/failure events emit; and (3)
+  a **sensitive-field canary predicate** over captured output. Static inspection confirms that changed code does
+  not introduce a new root logger or `basicConfig`, but runtime evidence is load-bearing. **What remains
   irreducibly semantic — general diagnosability — is explicitly the AI reviewer's and is therefore overridable;
   it is named, not smuggled** (`architecture.md:91`).
 
@@ -1136,20 +1131,14 @@ the paths the implementer may modify — governing the **implementation commit r
 files are **not** part of it; they are protected by the US-5 freeze (S12) instead, because a path is a protected
 contract input or a permitted implementation target, **never both** (`prd-v1.md:170`).
 
-**This is the first complete product-lifecycle slice.** S1→S6 validate infrastructure; this is where a run
-first becomes a *shaped* run.
+**This is the first product decision point.** S1→S6 validate infrastructure; this is where a run first becomes
+a *shaped* run. The complete lifecycle continues through contract authoring, implementation, PR delivery,
+merge verification, and cleanup in later slices.
 
 **User-visible outcome.** Before any acceptance test is authored, a run emits a buildability contract, and a
 human approves it — **including the implementation write scope** — or the run pauses.
 
 **PRD criteria covered.** **US-3.4, US-3.5, US-3.6, US-6.7** (owner). Gap G11.
-
-> **Open refinement (independent review B3 — resolve at spec-up).** When S15 discovers a boundary the approved
-> observability verdict did not anticipate, the fix must route back **through THIS slice** — recompute with S8,
-> obtain a fresh non-overridable S9 reviewer confirmation + human approval of the revised verdict, then rerun
-> S15 — **not** through S13's acceptance-contract amendment (which never updates the shape artifact's
-> observability verdict). Define this observability/buildability amendment transition distinct from S13's.
-> `prd-v1.md:82`.
 
 **Observable acceptance criteria**
 - **The buildability contract (US-3.5) emits, before any test is authored:** a readiness classification
@@ -1178,6 +1167,11 @@ human approves it — **including the implementation write scope** — or the ru
   confirmation** of the category and justification. **There is no path that proceeds with the justification
   unconfirmed** (a test asserts a run cannot leave S9 with an unconfirmed observability verdict). Importing
   US-5.4's override here would be a legal path to ship a shaped issue whose diagnostic coverage nobody confirmed.
+- **The observability/buildability amendment is a first-class S9 transition distinct from S13's acceptance-
+  contract amendment.** When S15 discovers an unanticipated boundary, the run returns here, recomputes the
+  verdict with S8, obtains a fresh non-overridable secondary-role confirmation, records renewed human approval
+  of the revised shape artifact, and then reruns readiness. The old artifact and approval remain in the audit
+  trail. No path updates observability through S13 or proceeds on the stale verdict.
 - **The footprint vocabulary is explicit path OPERATIONS — `add` / `modify` / `delete` / `rename` — not just
   "allowed paths".** A contract that cannot express a new file cannot approve legitimate work, and people will
   route around it. *(This closes a gap the PRD still leaves open; recorded as a design decision.)*
@@ -1634,11 +1628,6 @@ of how it was written — and a **legitimate amendment has a real, auditable pat
 
 **PRD criteria covered.** **US-6.1** (owner). Delivers the adapter's **`validate_invocation`**.
 
-> **Open refinement (independent review B3 — resolve at spec-up).** S13's amendment path applies to the **frozen
-> acceptance manifest** (contract files, closure, command). A newly-discovered **observability** boundary is a
-> **different** amendment (owned by S9 — recompute + reviewer-confirm + human-approve), not this one. Keep the
-> two amendment transitions distinct so an observability gap never routes through the test-contract amendment.
-
 **Observable acceptance criteria**
 - **The protected-path diff gate is ABSOLUTE.** After the approved commit,
   `git diff --name-only <contract_sha>..HEAD` → **ANY** change under a protected path **fails the build. No
@@ -1676,6 +1665,10 @@ of how it was written — and a **legitimate amendment has a real, auditable pat
   indistinguishable in kind from the attack the guard exists to block."* **An amendment requires: an
   issue-linked reason, the exact diff, RENEWED human approval, and a NEW manifest.** Whole-body equality alone
   is insufficient. **Build the escape hatch with the gate, or the gate gets bypassed.**
+- **This amendment changes only the frozen acceptance manifest**: contract files, dependency closure,
+  collection, configuration, or command. It cannot update an observability verdict. A newly discovered boundary
+  is routed to S9's separate observability/buildability amendment; a transition test rejects routing that state
+  through S13.
 - **US-6.1: implementation cannot proceed to PR readiness** when contract files, collection, configuration,
   command, **or the identity/pinned version of any frozen external plugin or package in the dependency closure**
   changed **without new human authorization** — re-resolved and compared in the authoritative verification
@@ -1839,16 +1832,6 @@ by a human — per finding, on the record, and **still reported in the PR**.
 
 **PRD criteria covered.** **US-3.7, US-6.4, US-6.5** (owner). Gap G15.
 
-> **Open refinements (independent review — resolve at spec-up).**
-> - **B2 (D5 scope expansion).** On every US-3.7 scope expansion, resolve the added files/patterns against the
->   **current frozen contract set** and **fail before updating the scope if any overlap exists** — a later
->   expansion must preserve D5 disjointness, not just the initial freeze. `prd-v1.md:68`, `:47`.
-> - **B3 (observability amendment).** A boundary discovered here that the approved verdict did not anticipate
->   routes to **S9's** observability amendment (recompute + reviewer-confirm + human-approve), **not** S13's
->   acceptance-contract amendment. `prd-v1.md:82`.
-> - **B4 (log-emission evidence).** Replace static "event name present at a call site" with **executable
->   evidence** from the authoritative run (seeded sensitive-field canaries; assert named events actually emit
->   and no sensitive value leaks). Static analysis stays supplementary. `prd-v1.md:83-84`, `:80`.
 Integration assertions: US-6.7, US-6.8, US-6.9 (S8/S9's predicates and verdict, enforced here).
 
 **Observable acceptance criteria**
@@ -1862,19 +1845,21 @@ Integration assertions: US-6.7, US-6.8, US-6.9 (S8/S9's predicates and verdict, 
 - **The observability reconciliation is DETERMINISTIC and NON-OVERRIDABLE.** The gate runs S8's
   `classify_diff(diff)` over the **actual** diff and compares it against the **approved verdict** from S9
   (US-6.7). **A boundary crossing the diff introduces that the approved verdict did not anticipate HALTS the
-  run and requires a contract amendment (S13) with renewed human approval.** It is **not** an AI review finding
+  run and routes to S9's observability/buildability amendment**: recompute with S8, obtain a fresh
+  non-overridable reviewer confirmation and renewed human approval, then rerun readiness. It never routes to
+  S13's acceptance-contract amendment. It is **not** an AI review finding
   and **US-6.5's override cannot waive it** — `prd-v1.md:80` says the override *"can never waive… **deterministically
   established observability and sensitive-data requirements**."* Routing this through the reviewer would make
   the override a legal path to ship an unlogged boundary crossing. **Also deterministically verified here — and
   the EVIDENCE for each is named, not left as "verified":**
-  - **required success/failure events emitted** — evidence: every event name in S9's approved verdict is
-    present at a log/emit call site in the diff (a static match against the recorded required-event list);
-  - **the target project's logging conventions followed (US-6.9)** — evidence: the changed code obtains its
-    logger through the target's detected logger factory (not a new `logging.getLogger` root, not
-    `basicConfig`), and the level/format/correlation-id call shape matches the target's convention sampled by
-    S8 from existing call sites;
-  - **no contract-listed sensitive field appears in any emitted log** — evidence: S8's sensitive-field
-    exclusion predicate over the emit call sites, run against the contract's `sensitive_fields` list.
+  - **required success/failure events emitted** — evidence: S8's authoritative runtime capture observes every
+    named event on the exercised success and failure paths. Static call-site presence is supplementary only;
+  - **the target project's logging conventions followed (US-6.9)** — evidence: captured events match the
+    detected level/format/correlation-id contract, while static inspection confirms the diff does not introduce
+    a new `logging.getLogger` root or `basicConfig`;
+  - **no contract-listed sensitive value appears in emitted output** — evidence: seeded sensitive-field
+    canaries traverse the authoritative run and S8's runtime exclusion predicate finds zero canary or listed
+    sensitive values in captured logs.
 
   **Anything that cannot be reduced to one of these deterministic checks — the qualitative "is this
   diagnosable?" judgment (`architecture.md:91`) — is explicitly the AI reviewer's, and is THEREFORE
@@ -1885,7 +1870,9 @@ Integration assertions: US-6.7, US-6.8, US-6.9 (S8/S9's predicates and verdict, 
   **implementation commit range only** (D5), and the disjoint frozen-contract-path check is question (b) above.
 - **US-3.7 — an implementation that writes OUTSIDE the approved implementation write scope PAUSES the run.**
   **Expanding the scope requires NEW human authorization**, and **the prior approval is preserved in the audit
-  trail**. Defined, tested behavior for `add` / `modify` / `delete` / `rename` (S9's path-operation vocabulary).
+  trail**. Before recording the expanded scope, resolve every added file or pattern against the **current frozen
+  contract set** and fail on any overlap; the rejected expansion leaves the approved scope byte-identical.
+  Defined, tested behavior for `add` / `modify` / `delete` / `rename` (S9's path-operation vocabulary).
 - **The code review runs on a fresh session, against the local candidate sha** (never a pushed branch — S14
   does not push), with execution capability and all inputs materialized to disk (S7).
 - **G15 — the reviewer is EXPLICITLY INSTRUCTED to look for test-context-dependent behavior** (`prd-v1.md:158`):
@@ -2818,26 +2805,28 @@ S1/S25 fix, D5/D6, and the canaries as coherent. Both were verified against the 
 
 ---
 
-## 15. Filing decision and open refinements
+## 15. Correction pass and gate status
 
-After six independent review rounds (D1–D6, the three mechanical fixes, F1–F3, G1, and the round-2 B1/B2 all
-resolved), a further fresh gate round surfaced four more legitimate deep-design refinements. The author elected
-to **file the 27 issues from this draft as starting points** and track those four refinements on the relevant
-issues, to be resolved during each issue's `spec-up`/`spec-dev` build (where they carry their own acceptance
-tests). GitHub issues are implementation starting points, not final specifications; each passes its own build
-gate. The four are recorded inline on the affected slices above and summarized here.
+The prior filing pass received a final **REVISE** verdict and then incorrectly introduced an author-level
+override that the run protocol did not authorize. It also reused stale draft-v3 provenance footers. The 27
+GitHub issues therefore remain quarantined planning artifacts until this corrected draft passes the automatic
+independent review gate; they are not implementation-ready merely because they exist.
 
-| # | Affected slices | Refinement (PRD cite) |
+This correction resolves the four final blocking findings directly in the affected slice contracts:
+
+| # | Affected slices | Resolution |
 |---|---|---|
-| B1 | S1, S3 | Load/validate `.issueforge.toml` from a **committed Git object**, not an untracked working-tree copy (`prd-v1.md:54`). |
-| B2 | S15 | On a US-3.7 scope **expansion**, re-check D5 disjointness against the frozen contract set and fail on overlap before updating scope (`:68`, `:47`). |
-| B3 | S9, S13, S15 | A boundary discovered at readiness routes to an **S9 observability amendment** (recompute + reviewer-confirm + human-approve), not S13's acceptance-contract amendment (`:82`). |
-| B4 | S8, S15 | Prove required logging with **executable evidence** (seeded sensitive-field canaries during the authoritative run), not static call-site presence (`:83-84`, `:80`). |
+| B1 | S1, S3 | Configuration is loaded and validated from the verified **committed Git object**; untracked-only and dirty working-tree copies cannot influence a run. |
+| B2 | S15 | Every scope expansion is checked against the current frozen contract set **before** mutation; overlap fails without changing the approved scope. |
+| B3 | S8, S9, S13, S15 | An unanticipated boundary uses S9's distinct observability/buildability amendment with fresh reviewer confirmation and human approval; S13 cannot handle it. |
+| B4 | S8, S15 | Required logging is proved by executable authoritative-run evidence with seeded canaries; static inspection is supplementary only. |
 
-These are refinements to *how* four slices are built, not gaps in coverage: all 59 criteria remain owned once
-each, and none of the four changes an owner or the dependency graph.
+The correction changes no PRD owner and no dependency edge: all 59 criteria remain singly owned. The filed
+issue bodies must be regenerated from this corrected draft and point to its immutable Git commit. A fresh
+automatic review must return **ACCEPT** before any child enters `spec-up`, `spec-dev`, or direct TDD. If blocking
+findings remain after the allowed review rounds, the issues stay quarantined and implementation does not begin.
 
 ---
 
-*End of draft v5 (F1–F3, G1, B1/B2 resolved; four further refinements B1–B4 filed as tracked open items per the
-author's decision to file the issues as starting points).*
+*End of corrected draft v5 (F1–F3, G1, both earlier B1/B2 findings, and final B1–B4 resolved; pending a fresh
+automatic independent review verdict).*
