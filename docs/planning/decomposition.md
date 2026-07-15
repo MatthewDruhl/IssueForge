@@ -1,17 +1,17 @@
 # IssueForge v1 — PRD #1 decomposition (draft v5, corrected gate candidate)
 
 **Repo:** MatthewDruhl/IssueForge · **Source PRD:** #1 · **Date:** 2026-07-15
-**Supersedes:** `docs/planning/decomposition-draft-v4.md` (attempt 3, BLOCKED after two review rounds).
+**Supersedes:** `docs/planning/reviews/decomposition-attempt-03-draft.md` (attempt 3, BLOCKED after two review rounds).
 
 This draft carries everything the attempt-3 gate **confirmed as resolved** — D5, D6, the three mechanical
 fixes, and the four round-1 repairs — and additionally resolves the **three blocking findings** that survived
-attempt 3's second review round (documented in `issueforge-v1-decomposition-report-v3.md` §1):
+attempt 3's second review round (documented in `reviews/decomposition-attempt-03-blocked.md` §1):
 
-- **F1 — S9 observability confirmation is non-overridable.** US-6.7 (`prd-v1.md:82`) grants no override, unlike
+- **F1 — S9 observability confirmation is non-overridable.** US-6.7 (`prd.md:82`) grants no override, unlike
   US-5.4/US-6.5. The US-5.4-style override the round-1 repair had added is removed; a human may serve as the
   reviewer only by explicitly recording a confirmation, never by waiving it.
 - **F2 — a sixth adapter operation, `provision_environment`, owns the hermetic verification environment.**
-  `prd-v1.md:157` makes "prepare a hermetic environment" part of the adapter seam; **S1** now declares it,
+  `prd.md:157` makes "prepare a hermetic environment" part of the adapter seam; **S1** now declares it,
   **S6** implements and owns it with a testable G14 criterion, and **S10/S13/S14/S15** run their authoritative
   verification and dependency re-resolution inside it.
 - **F3 — S5 splits reorder from cancel.** Reorder is queued-only (US-2.2); cancel applies to **both** a queued
@@ -19,21 +19,21 @@ attempt 3's second review round (documented in `issueforge-v1-decomposition-repo
 
 59/59 criteria remain owned once each. D1–D6 are settled and not reopened.
 
-`docs/prd-v1.md` is the canonical current PRD and includes the approved **D1–D6** amendments. Epic #1 retains
+`docs/prd.md` is the canonical current PRD and includes the approved **D1–D6** amendments. Epic #1 retains
 the original PRD text plus an appended decomposition section; it is intentionally not rewritten or claimed to
 be byte-identical to the amended file. Every child contract cites the canonical file's requirement lines. D5
 and D6 were the two blocking decisions the second decomposition attempt surfaced
-(`issueforge-v1-decomposition-report-v2.md`); they are settled and are **not reopened here**.
+(`reviews/decomposition-attempt-02-blocked.md`); they are settled and are **not reopened here**.
 
 **59 acceptance criteria / 11 user stories. 25 v1 child issues + 2 `deferred-v2`.**
 
 **This draft applies, on top of draft v3:**
-- **D5** (`prd-v1.md:170`) — file roles are **two disjoint scopes**: an approved **implementation write scope**
+- **D5** (`prd.md:170`) — file roles are **two disjoint scopes**: an approved **implementation write scope**
   (the paths the implementer may modify, governing the implementation commit range only) and a **frozen contract
   set** (the acceptance-test files plus their adapter-discovered dependency closure). The acceptance tests are
   delivered in the contract commit and are **never** inside the implementation write scope. Applied to **S9,
   S12, S13, S15** (and US-6.1's external identity/version re-resolution).
-- **D6** (`prd-v1.md:171`) — the source-audit inventory unit is a **test**, discovered against a **versioned,
+- **D6** (`prd.md:171`) — the source-audit inventory unit is a **test**, discovered against a **versioned,
   checked-in extraction manifest** that declares which MARVIN artifacts are build-harness (as distinct from the
   chief-of-staff workspace). A human approves each stage audit. Applied to **S2**.
 - The **three mechanical fixes** the v2 report specified (§2 there): per-producer redaction canaries
@@ -49,7 +49,7 @@ old 51-row matrix silently drops eight; §1 lists them.
 
 1. **The PRD is the authority.** It has been amended; D1–D4 are settled and are not reopened here.
 2. **A reviewer's claim about the PRD is not evidence about the PRD.** Review 02's finding #3 asserted the
-   PRD granted no implementation-review override; `prd-v1.md:153` granted one, and the prior run deleted a
+   PRD granted no implementation-review override; `prd.md:153` granted one, and the prior run deleted a
    correct criterion on that false claim. Every claim in this draft that cites the PRD was re-read against
    the PRD. Every claim that cites MARVIN was re-read against MARVIN's source.
 3. **A false "nothing to port" is as damaging as a false "port this."** The prior draft's source audits were
@@ -115,7 +115,7 @@ command, and collected IDs are all unchanged, and the helper is in *conftest's* 
 modules'*. → **S12**, via `discover_contract_dependencies` (US-5.6).
 
 **E (the half-finding the failure report dropped): draft v2 pushed before the readiness gate.** Its #13 ran
-`diff → commit → push → verify-at-origin` *inside* the implementation stage. **US-7.1 (`prd-v1.md:91`):
+`diff → commit → push → verify-at-origin` *inside* the implementation stage. **US-7.1 (`prd.md:91`):
 "IssueForge pushes and opens a PR automatically only after all readiness gates pass."** Review 02 called this
 a direct contradiction and it is. → **S14 never pushes.** Code review and the readiness gate run against a
 **local immutable candidate sha**. **S16** is the only slice that pushes, and only after S15 passes.
@@ -196,11 +196,11 @@ deliberate reordering, not an extraction.
 | G9 named CLI verbs for queue reorder/cancel | **S5** |
 | G10 PR body reports logging added / reused / intentionally unnecessary | **S16** |
 | G11 a **not-testable** exit (refactor/docs/research issues that cannot carry a TDD contract) | **S9** — US-3.5 fixes the classification to exactly `buildable`/`oversized`/`blocked`, so this lands as **`blocked` with `blocked_reason: not_testable`**. PRD-conformant; no amendment needed. |
-| G12 the six adapter function names are **nowhere in the PRD**, not even in prose | **S1** — they name the capability list at `prd-v1.md:157` (which includes *"prepare a hermetic environment"* → `provision_environment`). Recorded as an **implementation-level naming decision**, not a PRD quotation. |
+| G12 the six adapter function names are **nowhere in the PRD**, not even in prose | **S1** — they name the capability list at `prd.md:157` (which includes *"prepare a hermetic environment"* → `provision_environment`). Recorded as an **implementation-level naming decision**, not a PRD quotation. |
 | G13 zero-collected / skipped / deselected detection | **S6** |
 | G14 hermetic, separately-provisioned verification runs | **S6** |
-| G15 the code review must be **instructed to look for test-context-dependent behavior** (`prd-v1.md:158`) | **S15** |
-| G16 one branch: contract commit **then** implementation commit (`prd-v1.md:161`) | **S12** (commit) / **S14** (ordering) |
+| G15 the code review must be **instructed to look for test-context-dependent behavior** (`prd.md:158`) | **S15** |
+| G16 one branch: contract commit **then** implementation commit (`prd.md:161`) | **S12** (commit) / **S14** (ordering) |
 | G4 author/reviewer session separation | **CLOSED by the amendment** — now US-9.5. |
 
 ---
@@ -350,7 +350,7 @@ its *additional* preserves.
 **Problem.** Every module shells out. MARVIN re-derived "a failed read is not a negative answer" by hand at
 six-plus call sites, each comment marking a shipped bug — and at the one place it forgot (`_parse_pytest_summary`),
 it shipped a false green. And the PRD's portable seam is **the verification adapter interface, not raw process
-output** (`prd-v1.md:157`): an exit code cannot distinguish a behavioral failure from a compile error, a
+output** (`prd.md:157`): an exit code cannot distinguish a behavioral failure from a compile error, a
 collection error, zero tests collected, a skipped suite, or a timeout.
 
 **User-visible outcome.** `issueforge config check <path>` loads and validates a repository's
@@ -379,7 +379,7 @@ capabilities and pinned reporter version — or fails loudly, naming the offendi
 - **`VerificationAdapter` Protocol — six functions, mandatory, keyed on (framework, reporter):**
   `probe(toolchain)` → capabilities + **pinned reporter version**;
   `provision_environment(worktree, frozen_deps=None)` → **a hermetic, separately-provisioned authoritative
-  environment handle** (US decision, `prd-v1.md:157`: the adapter must *"prepare a hermetic environment"*);
+  environment handle** (US decision, `prd.md:157`: the adapter must *"prepare a hermetic environment"*);
   `canonical_collect(invocation)` → canonical IDs + selection metadata; `classify(native events)` →
   **phase-aware** outcomes; `discover_contract_dependencies(collection)` → the protected closure — **in-repo
   file paths AND the immutable identity + pinned version of every external plugin/package in the import
@@ -854,7 +854,7 @@ Delivers the adapter's **`provision_environment`**, **`canonical_collect`**, and
 - **Never run the suite against a stale tree and call it green** — a failed checkout/pull halts and the suite
   is **not** run.
 - **G14 — `provision_environment` owns the hermetic, separately-provisioned AUTHORITATIVE environment**
-  (*attempt-3 fix F2*; `prd-v1.md:157-158`). Before the baseline runs, the adapter **provisions a hermetic
+  (*attempt-3 fix F2*; `prd.md:157-158`). Before the baseline runs, the adapter **provisions a hermetic
   environment separate from the normal checkout**: an isolated interpreter/venv under an **IssueForge-owned**
   root (never the target's site-packages), dependencies **installed by the engine** (the reviewer/implementer
   has no network and cannot install), **network off**, and a **fresh artifact directory per invocation**. The
@@ -1051,7 +1051,7 @@ flagged as requiring logging, and a contract-listed sensitive field appearing in
 - **A boundary the diff crosses that the approved verdict did not anticipate is a DETERMINISTIC FAILURE, not
   an AI review finding.** This distinction is load-bearing: **US-6.5's override can waive an AI review finding,
   but it can NEVER waive "deterministically established observability and sensitive-data requirements"**
-  (`prd-v1.md:80`). If a newly-crossed boundary surfaced only as a reviewer's observation, **the override would
+  (`prd.md:80`). If a newly-crossed boundary surfaced only as a reviewer's observation, **the override would
   become a legal path to ship an unlogged boundary crossing** — precisely what the PRD forbids. It therefore
   **halts the run and demands an observability/buildability amendment through S9** with renewed reviewer
   confirmation and human approval, not an S13 acceptance-contract amendment and not an override.
@@ -1126,12 +1126,12 @@ Redaction of IssueForge's *own* artifacts (S4 — a different concern, the same 
 (US-6.4). With no approved set there are only three possible behaviors and **all three are unacceptable**: fail
 closed (every run pauses — the buildable path does not actually work), skip the check (ship a readiness gate
 that **cannot enforce US-6.4**), or **approve after seeing the diff — and every diff would approve itself.** The
-PRD now says so outright (`prd-v1.md:46`). **A "pass-through shaper" is not a real thing.** The same failure
+PRD now says so outright (`prd.md:46`). **A "pass-through shaper" is not a real thing.** The same failure
 hits observability concretely: with no pre-implementation contract naming sensitive fields, US-6.9 has **no list
 to enforce**. **D5 makes the scope precise:** what this slice approves is the **implementation write scope** —
 the paths the implementer may modify — governing the **implementation commit range only**. The acceptance-test
 files are **not** part of it; they are protected by the US-5 freeze (S12) instead, because a path is a protected
-contract input or a permitted implementation target, **never both** (`prd-v1.md:170`).
+contract input or a permitted implementation target, **never both** (`prd.md:170`).
 
 **This is the first product decision point.** S1→S6 validate infrastructure; this is where a run first becomes
 a *shaped* run. The complete lifecycle continues through contract authoring, implementation, PR delivery,
@@ -1154,7 +1154,7 @@ human approves it — **including the implementation write scope** — or the ru
   **prohibited sensitive fields**; and an **immutable shape-artifact version**.
 - **US-6.7: a missing verdict is a HARD REFUSAL, not a default. An unjustified `not applicable` FAILS
   validation.** (Port the enforcement, not just the vocabulary.)
-- **US-6.7 requires the justification to be REVIEWER-CONFIRMED, not merely author-asserted** (`prd-v1.md:82`).
+- **US-6.7 requires the justification to be REVIEWER-CONFIRMED, not merely author-asserted** (`prd.md:82`).
   Before the human approves the buildability contract, a **fresh secondary-role review session** (the S7
   independent-review capability — session id differs from the authoring session and is **rejected** if equal,
   US-9.5) confirms the **observability category and its justification** (and the duplicate verdict), and that
@@ -1163,7 +1163,7 @@ human approves it — **including the implementation write scope** — or the ru
   self-signed label. *(Resolves the round-1 finding that S9 named "reviewer-confirmed" but invoked no reviewer.)*
 - **The observability confirmation is NON-OVERRIDABLE — US-6.7 grants no override** (*resolves attempt-3
   finding F1*). Unlike US-5.4 (test-contract review) and US-6.5 (implementation review), US-6.7 says *"**Every**
-  shaped issue records … with reviewer-confirmed justification"* (`prd-v1.md:82`) — an unconditional
+  shaped issue records … with reviewer-confirmed justification"* (`prd.md:82`) — an unconditional
   requirement with no waiver clause. A reviewer failure is **recorded and retried with another fresh
   secondary-role session**; a **human may act as the reviewer only by explicitly reviewing and recording a
   confirmation** of the category and justification. **There is no path that proceeds with the justification
@@ -1290,7 +1290,7 @@ prove the semantic correspondence — see the scope boundary below.
   config, environment) vs `failed` (call) distinction **is the mechanical discriminator**, and is exactly
   US-5.1's wording made checkable.
 - **PHASE-BASED, never exception-type-whitelisted — AND import errors are INVALID at every phase** (*v5-round-2
-  fix B1*). US-5.1 (`prd-v1.md:64`) requires tests that *"collect and execute **without** syntax, **import**,
+  fix B1*). US-5.1 (`prd.md:64`) requires tests that *"collect and execute **without** syntax, **import**,
   fixture, configuration, or environment errors"* — so **an `ImportError` is invalid regardless of pytest
   phase**, not only at collection. The module under test **must import successfully**; the missing behavior is
   exercised **through the imported module** and surfaces as a **call-phase behavioral failure** — an
@@ -1393,7 +1393,7 @@ manifest artifact.
 - *Replace:* **The red-proof predicate. NET-NEW. NOTHING TO PORT. This is the single most important line in
   this document.**
 - *Discard:* **MARVIN's PENDING-on-main convention.** One branch, contract commit then implementation commit
-  (`prd-v1.md:161`). Dropping the marker kills the whole marker-downgrade attack class **and dissolves an
+  (`prd.md:161`). Dropping the marker kills the whole marker-downgrade attack class **and dissolves an
   unresolved MARVIN contradiction** (its implementer must remove the marker, which directly contradicts "the
   suite is physically outside the implementer's write scope" — both cannot hold). **IssueForge has no marker to
   flip; do not port the conflict.** Also discard the `ACCEPT:` satellite-issue pattern — **that is
@@ -1520,7 +1520,7 @@ Delivers the adapter's **`discover_contract_dependencies`**.
 **Observable acceptance criteria**
 The manifest freezes, and the engine **DISCOVERS** (never merely accepts a configured glob):
 - the **contract commit sha** — and **the contract is a SEPARATE commit, preceding implementation, on one
-  branch** (`prd-v1.md:161`, G16);
+  branch** (`prd.md:161`, G16);
 - a content hash of **every test file**;
 - **US-5.6 — `discover_contract_dependencies` returns the protected closure. The ROOTS ARE SPECIFIED
   PRECISELY, because the closure is wrong in BOTH directions if they are not:**
@@ -1538,7 +1538,7 @@ The manifest freezes, and the engine **DISCOVERS** (never merely accepts a confi
     exercises is **NOT** a protected dependency. **If it were, S13's absolute protected-path gate would freeze
     the implementation itself and the issue would be UNBUILDABLE.** The closure protects *the code that decides
     a test's outcome*, **not the code the test is about**. **D5 makes the discriminator the two disjoint
-    scopes** (`prd-v1.md:170`): a path inside the **approved implementation write scope** (US-3.6) is a
+    scopes** (`prd.md:170`): a path inside the **approved implementation write scope** (US-3.6) is a
     permitted implementation target and is **expected to change**; a path in the **frozen contract set** (the
     test files plus this discovered closure) is a **protected contract input**. They are **disjoint by
     construction** — the acceptance tests are delivered in the contract commit and are **never** inside the
@@ -1676,7 +1676,7 @@ of how it was written — and a **legitimate amendment has a real, auditable pat
   changed **without new human authorization** — re-resolved and compared in the authoritative verification
   environment, not assumed unchanged.
 - **Enforcement is by the harness, NEVER by the session being policed** (cross-cutting rule 5).
-- **The residual risk is carried, not claimed away** (`prd-v1.md:158`): an implementation that **branches on a
+- **The residual risk is carried, not claimed away** (`prd.md:158`): an implementation that **branches on a
   test-runner environment variable** defeats **every** static check — file hashing and import-closure analysis
   alike. It is carried by S15's code review (explicitly instructed to look for it) and by hermetic runs.
   **This slice must not claim to eliminate it.**
@@ -1772,7 +1772,7 @@ record.
   then **one** confirming full run. *Never loop on the full suite: a failing full run dumps output the agent
   must re-read every cycle, which is where test tokens actually burn.*
 - The contract commit and the implementation commit are **separate commits on one branch**, contract first
-  (`prd-v1.md:161`, G16).
+  (`prd.md:161`, G16).
 
 **Expected footprint.** `src/issueforge/engine.py`, `repair.py`, `workspace.py` (+commit), `verify.py`,
 `store.py` (counters); `tests/test_engine.py`, `test_repair.py`.
@@ -1850,7 +1850,7 @@ Integration assertions: US-6.7, US-6.8, US-6.9 (S8/S9's predicates and verdict, 
   run and routes to S9's observability/buildability amendment**: recompute with S8, obtain a fresh
   non-overridable reviewer confirmation and renewed human approval, then rerun readiness. It never routes to
   S13's acceptance-contract amendment. It is **not** an AI review finding
-  and **US-6.5's override cannot waive it** — `prd-v1.md:80` says the override *"can never waive… **deterministically
+  and **US-6.5's override cannot waive it** — `prd.md:80` says the override *"can never waive… **deterministically
   established observability and sensitive-data requirements**."* Routing this through the reviewer would make
   the override a legal path to ship an unlogged boundary crossing. **Also deterministically verified here — and
   the EVIDENCE for each is named, not left as "verified":**
@@ -1877,7 +1877,7 @@ Integration assertions: US-6.7, US-6.8, US-6.9 (S8/S9's predicates and verdict, 
   Defined, tested behavior for `add` / `modify` / `delete` / `rename` (S9's path-operation vocabulary).
 - **The code review runs on a fresh session, against the local candidate sha** (never a pushed branch — S14
   does not push), with execution capability and all inputs materialized to disk (S7).
-- **G15 — the reviewer is EXPLICITLY INSTRUCTED to look for test-context-dependent behavior** (`prd-v1.md:158`):
+- **G15 — the reviewer is EXPLICITLY INSTRUCTED to look for test-context-dependent behavior** (`prd.md:158`):
   an implementation branching on a test-runner environment variable, a test-binary suffix, a worker variable,
   or a parent-process name **defeats every static check**, including file hashing and import-closure analysis.
   **This is the accepted residual risk, and this reviewer is the control that carries it. It is not eliminated.**
@@ -1931,7 +1931,7 @@ overridden finding does not clear the gate silently — it is recorded and surfa
   MARVIN has NO code-review override mechanism at all.**
 - *Replace:* the composite readiness gate and the override — **net-new.** *(Note the provenance honestly:
   **the override is not a MARVIN safeguard. It is a PRD amendment (D2) forced by a deadlock analysis.** The
-  PRD granted it at `prd-v1.md:153` and the prior decomposition deleted it on a reviewer's false claim.)*
+  PRD granted it at `prd.md:153` and the prior decomposition deleted it on a reviewer's false claim.)*
 - *Discard:* MARVIN's `cross_review` cost-tuple coupling.
 - *Test provenance:* none ported; the gate is net-new.
 - **Risk, named:** *the failure mode is cultural. Once an override exists, it gets used whenever review is
@@ -2690,7 +2690,7 @@ leave out.
 
 1. **The tautology hole is real and v1 does not close it** (DV1 is deferred). A test that constrains nothing can
    pass every v1 gate. **Accepted knowingly.**
-2. **Test-environment detection is an ACCEPTED RESIDUAL RISK, not a solved problem** (`prd-v1.md:158`). An
+2. **Test-environment detection is an ACCEPTED RESIDUAL RISK, not a solved problem** (`prd.md:158`). An
    implementation branching on a test-runner environment variable defeats **every** static check — file hashing
    and import-closure analysis alike. It is carried by S15's code review (explicitly instructed to hunt for it)
    and by hermetic runs. **It is not eliminated, and no slice may claim it is.**
@@ -2718,7 +2718,7 @@ accepted; none was taken on faith. All 8 are fixed.
 | 1 | **S2's lint proved artifact completeness, not BEHAVIOR completeness.** A record could name `merged_runner.py`, classify one safeguard, and pass while six other failed-read inversions in the same file went uninventoried. | The inventory unit is now a **behavior** (symbols, associated tests, failure-driven updates), with a **5th failure mode: a discovered behavior inside an inventoried artifact with no disposition.** Authoritative discovery roots are declared and versioned. **A stage audit is now HUMAN-APPROVED** — a lint proves completeness, it cannot prove a "discard" is *correct*. |
 | 2 | **S4's redaction canary tested capture paths that do not exist yet.** Prompts, responses, diffs, and review packets arrive in S7/S10/S11/S15. A canary against a fake early path proves nothing. | S4 owns a **structurally mandatory** redaction API (bypass is an S25 lint failure, not a convention). Each later producer carries **its own** canary. **The exhaustive all-real-paths canary moved to S24**, where a complete lifecycle exists. |
 | 3 | **The runtime graph let contract authoring begin without the shaping mutation ever running.** S9 → S10 directly, while S20 sat after closeout — so US-3.1's "a buildable issue receives a proposed in-place revision" would be satisfied by an issue nobody revised. S21 also wrongly depended on the *buildable* path. | **An unavoidable runtime branch out of S9**, enforced by the transition table: `buildable → S20 (approve+apply) → S10`; `oversized → S21 → children queued, PARENT RUN STOPS`; `blocked → pause`. **S20 moved to phase 2** and now builds the gateway write side (S18 and S21 reuse it). **S21 depends on S20's mutation machinery only**, never on successful buildable processing. |
-| 4 | **The observability verdict was produced from an input that did not exist.** S8's classifier analyzed a *diff*; S9 needs the verdict *before authoring*. Worse: a boundary missed at shaping would surface only as an **AI review finding — which US-6.5's override CAN waive**, though `prd-v1.md:80` says it may never waive deterministic observability requirements. | **S8 now ships TWO analyses:** `classify_prospective(issue, proposed_footprint, existing_code)` for S9, and `classify_diff(diff)` for S15's reconciliation. **A newly-crossed boundary at readiness is a DETERMINISTIC HALT requiring a contract amendment — never an overridable finding.** |
+| 4 | **The observability verdict was produced from an input that did not exist.** S8's classifier analyzed a *diff*; S9 needs the verdict *before authoring*. Worse: a boundary missed at shaping would surface only as an **AI review finding — which US-6.5's override CAN waive**, though `prd.md:80` says it may never waive deterministic observability requirements. | **S8 now ships TWO analyses:** `classify_prospective(issue, proposed_footprint, existing_code)` for S9, and `classify_diff(diff)` for S15's reconciliation. **A newly-crossed boundary at readiness is a DETERMINISTIC HALT requiring a contract amendment — never an overridable finding.** |
 | 5 | **The baseline-green set operation was unsound.** `canonical_collect(base) − new_acceptance_ids` is a no-op in the normal case, and if an authored test **reuses** a preexisting ID the subtraction **silently removes that real preexisting test from the check that exists to protect it.** | Anchored on the **base snapshot**: run **every** id in `BASE_IDS` at the candidate. `ADDED` is **computed**, never declared. **`BASE_IDS ⊄ CANDIDATE_IDS` is a hard failure. Reusing a base ID is a hard failure.** `revise`/`supersede` cannot shrink the baseline without the human-authorized amendment path. |
 | 6 | **S11 consumed a counter owned by S14 — an impossible producer dependency.** `review_rounds` is defined within US-6 (implementation), and S14 is *downstream* of S11 through S12 and S13. It also conflated test-contract review with implementation review. | S11 owns its **own** `contract_review_rounds` (default 2, incremented inside the store lock). **Any test/fixture change re-runs the full S10 predicate set and mints NEW sha-bound red evidence**; S12 may not freeze a manifest whose red evidence predates the last test change. |
 | 7 | **The dependency closure was too narrow AND too broad.** Narrow: *"transitive **repository** dependencies"* leaves **installed plugins and their external versions** outside the freeze, though US-5.6 names plugins explicitly. Broad: if the closure includes imports of the **production module under test**, S13's absolute protected-path gate **freezes the implementation and the issue becomes unbuildable.** | Closure roots specified precisely. **IN:** tests, fixture/config/plugin providers, outcome-influencing helpers, transitive deps, **and the pinned identity+version of every external package** (from `discover_contract_dependencies`). **OUT: the system under test.** The discriminator is the **approved implementation write scope** (D5) — inside it is expected to change; a frozen-contract path is protected; **a path proposed as both is a contradiction that fails the freeze.** Two fixtures prove both directions. |
@@ -2734,15 +2734,15 @@ smuggled into v1.
 # 10. Final-draft corrections — D5, D6, and the three mechanical fixes
 
 The second decomposition attempt was BLOCKED after two review rounds, surfacing five remaining findings: three
-mechanical and two requiring an author decision (`issueforge-v1-decomposition-report-v2.md` §1–2). D5 and D6
-resolved the two decisions and were written into the PRD (`prd-v1.md:170-171`). This final draft applies them,
+mechanical and two requiring an author decision (`reviews/decomposition-attempt-02-blocked.md` §1–2). D5 and D6
+resolved the two decisions and were written into the PRD (`prd.md:170-171`). This final draft applies them,
 plus the three mechanical fixes, on top of draft v3. Nothing else changed; 59/59 criteria remain owned once each.
 
 | # | v2-report finding | Fix in this draft |
 |---|---|---|
-| **D5** | A file's role could not be derived from a single approved scope, because the acceptance tests are in the delivered PR **and** are the frozen contract. | **Two disjoint scopes** (`prd-v1.md:170`): an **implementation write scope** (approved at S9, governing the implementation commit range only) and a **frozen contract set** (S12). Acceptance tests are never in the write scope. Readiness (S15) asks two clean questions; a path proposed as both fails the freeze (S12). Applied to **S9, S12, S13, S15**. |
+| **D5** | A file's role could not be derived from a single approved scope, because the acceptance tests are in the delivered PR **and** are the frozen contract. | **Two disjoint scopes** (`prd.md:170`): an **implementation write scope** (approved at S9, governing the implementation commit range only) and a **frozen contract set** (S12). Acceptance tests are never in the write scope. Readiness (S15) asks two clean questions; a path proposed as both fails the freeze (S12). Applied to **S9, S12, S13, S15**. |
 | **D5 (S13 half)** | S13 recomputed file hashes but never re-resolved frozen external package identities/versions — a plugin version swap changes the contract's meaning with every hash intact. | **S13** now re-resolves and compares the **identity + pinned version** of every frozen external dependency in the **authoritative verification environment** (US-6.1). S12 freezes them (from `discover_contract_dependencies`). |
-| **D6** | S2 reduced a "behavior" to a discoverable symbol/reference; failure mode five could not fire on private behaviors, multi-safeguard symbols, or unreferenced updates. | **S2** inventory unit is now a **test**; discovery scope is a **versioned, checked-in extraction manifest** (harness vs workspace, human-curated); a **human approves each stage audit and manifest membership** (`prd-v1.md:171`). Five test-granular failure modes. |
+| **D6** | S2 reduced a "behavior" to a discoverable symbol/reference; failure mode five could not fire on private behaviors, multi-safeguard symbols, or unreferenced updates. | **S2** inventory unit is now a **test**; discovery scope is a **versioned, checked-in extraction manifest** (harness vs workspace, human-curated); a **human approves each stage audit and manifest membership** (`prd.md:171`). Five test-granular failure modes. |
 | **Mechanical 1** | Producer issues promised "each carries its own canary" but contained no such acceptance criteria. | **Explicit redaction-canary acceptance criteria added to S7, S10, S11, S15**, each exercising the **success AND failure/timeout** persistence paths through S4's API. S24 keeps the exhaustive all-paths canary as the backstop. |
 | **Mechanical 2** | S8 left contradictory "heuristic feeding a judgment call / `classify(diff)` as a HINT" language; S15 asserted observability was "deterministically verified" without defining the evidence. | **S8**'s obsolete language deleted; `classify_prospective` / `classify_diff` specified as **two separately testable APIs**, and S8 owns the **logger-convention detector** + **sensitive-field predicate**. **S15** now names the **evidence** for each US-6.9 obligation and marks the residual diagnosability judgment as the (overridable) reviewer's. |
 | **Mechanical 3** | The build graph let S3 (persists the registry) and S4 (persists the store) land before S25, the write seam that constrains them. | **S25 is now a hard blocker of S3 and S4** in the table, the graph, and both issue bodies, with a **CI-order assertion** that no persisting module lands before the seam and lint are active. |
@@ -2754,10 +2754,10 @@ The first fresh-session gate returned **REVISE** with four blocking findings. Ea
 
 | # | Finding (PRD cite) | Fix |
 |---|---|---|
-| B1 | **S10** persisted the red evidence "VERBATIM into the manifest" while US-10.3 (`prd-v1.md:124`) says secrets/env values/credential paths are **never retained** — the two acceptance criteria could not both hold. | S10's red evidence is now a **redacted canonical record** persisted through S4's writer; fidelity comes from **re-derivability** (re-run at the contract sha), not raw text; raw output is an expiring redacted artifact (US-10.2), never the permanent manifest. |
-| B2 | **S25**'s "ALL filesystem mutation routes through the IO seam / never the normal checkout" collided with `git worktree add`, which must write `.git/worktrees/` bookkeeping (US-4.2 `prd-v1.md:56`; S6). | The Python IO seam now governs **IssueForge's own `open`/`write` calls only**; **git is a separate boundary** (the executable-argv rule), and US-4.2's "without modifying the normal checkout" is a guarantee about **working tree/HEAD/index** — owned by **S6's isolation proof** — not about git's internal metadata. |
-| B3 | **S9** recorded an observability justification but never invoked the **reviewer** that US-6.7 (`prd-v1.md:82`) requires ("reviewer-confirmed justification"). | S9 now runs a **fresh secondary-role review** (S7 capability, session-bound, US-9.5) that confirms the observability category + justification before human approval — the US-5.3 pattern applied to shaping. |
-| B4 | **S1**'s `probe` returns only "capabilities + pinned reporter version," but **S12/S13** needed the identity+version of **every** external plugin/package (US-5.6 `prd-v1.md:69`; US-6.1 `:76`). | The external closure is now the output of **`discover_contract_dependencies`** (one coherent adapter op): S1 exposes it, S12 freezes its output, S13 re-runs the **same** op in the authoritative environment and compares. `probe` supplies only the reporter version. |
+| B1 | **S10** persisted the red evidence "VERBATIM into the manifest" while US-10.3 (`prd.md:124`) says secrets/env values/credential paths are **never retained** — the two acceptance criteria could not both hold. | S10's red evidence is now a **redacted canonical record** persisted through S4's writer; fidelity comes from **re-derivability** (re-run at the contract sha), not raw text; raw output is an expiring redacted artifact (US-10.2), never the permanent manifest. |
+| B2 | **S25**'s "ALL filesystem mutation routes through the IO seam / never the normal checkout" collided with `git worktree add`, which must write `.git/worktrees/` bookkeeping (US-4.2 `prd.md:56`; S6). | The Python IO seam now governs **IssueForge's own `open`/`write` calls only**; **git is a separate boundary** (the executable-argv rule), and US-4.2's "without modifying the normal checkout" is a guarantee about **working tree/HEAD/index** — owned by **S6's isolation proof** — not about git's internal metadata. |
+| B3 | **S9** recorded an observability justification but never invoked the **reviewer** that US-6.7 (`prd.md:82`) requires ("reviewer-confirmed justification"). | S9 now runs a **fresh secondary-role review** (S7 capability, session-bound, US-9.5) that confirms the observability category + justification before human approval — the US-5.3 pattern applied to shaping. |
+| B4 | **S1**'s `probe` returns only "capabilities + pinned reporter version," but **S12/S13** needed the identity+version of **every** external plugin/package (US-5.6 `prd.md:69`; US-6.1 `:76`). | The external closure is now the output of **`discover_contract_dependencies`** (one coherent adapter op): S1 exposes it, S12 freezes its output, S13 re-runs the **same** op in the authoritative environment and compares. `probe` supplies only the reporter version. |
 
 **Non-blocking, addressed:** S4 now asserts the **US-2.1 single-active-worker invariant** directly (a second
 `run` while one is active enqueues; slot admission decided inside the store lock). **Non-blocking, retained as
@@ -2770,12 +2770,12 @@ is single-run, so a stack should be impossible); the branch is otherwise preserv
 
 Attempt 3 applied D5/D6 and the three mechanical fixes and passed its first review round's repairs, but its
 **second** review round returned REVISE with three blocking findings
-(`issueforge-v1-decomposition-report-v3.md` §1). Each was verified against the PRD; all three are fixed here.
+(`reviews/decomposition-attempt-03-blocked.md` §1). Each was verified against the PRD; all three are fixed here.
 
 | # | Finding (PRD cite) | Fix |
 |---|---|---|
-| F1 | **S9** let a human override the observability confirmation "like US-5.4," but US-6.7 (`prd-v1.md:82`) grants **no** override — "**every** shaped issue … reviewer-confirmed." | The override is removed. A reviewer failure is recorded and retried with a fresh secondary-role session; a human may act as the reviewer only by **recording a confirmation**; **no path proceeds with the justification unconfirmed** (asserted by a test). |
-| F2 | No slice owned the **hermetic, separately-provisioned verification environment** the PRD names in the adapter seam (`prd-v1.md:157`) and relies on at `:158` / US-6.1. | A **sixth adapter operation, `provision_environment`**, is declared in **S1**, implemented and owned in **S6** with a **testable G14 criterion** (a candidate/implementer env mutation cannot change the authoritative result), and used by **S10/S13/S14/S15** for every authoritative run and re-resolution. |
+| F1 | **S9** let a human override the observability confirmation "like US-5.4," but US-6.7 (`prd.md:82`) grants **no** override — "**every** shaped issue … reviewer-confirmed." | The override is removed. A reviewer failure is recorded and retried with a fresh secondary-role session; a human may act as the reviewer only by **recording a confirmation**; **no path proceeds with the justification unconfirmed** (asserted by a test). |
+| F2 | No slice owned the **hermetic, separately-provisioned verification environment** the PRD names in the adapter seam (`prd.md:157`) and relies on at `:158` / US-6.1. | A **sixth adapter operation, `provision_environment`**, is declared in **S1**, implemented and owned in **S6** with a **testable G14 criterion** (a candidate/implementer env mutation cannot change the authoritative result), and used by **S10/S13/S14/S15** for every authoritative run and re-resolution. |
 | F3 | **S5** said reorder and cancel were both "only before a run starts," contradicting US-2.3's cancellable **paused** run. | **Reorder** is queued-only (US-2.2); **cancel** applies to **both** a queued run and the current **paused** run (US-2.3), the latter releasing the worker — **two transition tests, one per path**. |
 
 ---
@@ -2799,7 +2799,7 @@ S1/S25 fix, D5/D6, and the canaries as coherent. Both were verified against the 
 
 | # | Finding (PRD cite) | Fix |
 |---|---|---|
-| B1 | **S10** marked a call-phase `ImportError` as a VALID red, but US-5.1 (`prd-v1.md:64`) requires tests that *"execute **without** … import … errors"* — at every phase, not only collection. | The rule stays **phase-based** (no `AssertionError` whitelist) **but import errors are invalid at any phase**: the module under test must import successfully, and the valid red is a **call-phase behavioral failure** (`AttributeError`/absent-API/`NotImplementedError`/assertion) on the imported module. Three tested cases: valid `AttributeError` red; invalid `ImportError`; invalid missing-fixture setup error. |
+| B1 | **S10** marked a call-phase `ImportError` as a VALID red, but US-5.1 (`prd.md:64`) requires tests that *"execute **without** … import … errors"* — at every phase, not only collection. | The rule stays **phase-based** (no `AssertionError` whitelist) **but import errors are invalid at any phase**: the module under test must import successfully, and the valid red is a **call-phase behavioral failure** (`AttributeError`/absent-API/`NotImplementedError`/assertion) on the imported module. Three tested cases: valid `AttributeError` red; invalid `ImportError`; invalid missing-fixture setup error. |
 | B2 | The matrix assigned **US-5.2 to S10**, but S10 explicitly delegates the criterion's semantic "failed for the NAMED reason" half to S11 — so the nominated owner did not cover the full criterion (single-owner violation). | **US-5.2 is now owned and finally asserted by S11**, which consumes S10's deterministic evidence (baseline-green + sha-bound call-phase red) and adds the semantic correspondence. **S10 contributes the deterministic half as an enabling integration** (the US-6.8/6.9 pattern). Matrix, table, both bodies, and the §7 note updated. |
 
 **Editorial (non-blocking):** G12 updated from "five adapter function names" to **six** (the F2 addition of

@@ -2,7 +2,7 @@
 
 Six fresh-session adversarial reviews run during the first `/prd-to-issues` attempt on PRD #1.
 That attempt was **BLOCKED**: the gate returned REVISE twice, so **no child issues were created**
-and no resolution was invented. See `../issueforge-v1-decomposition-report.md`.
+and no resolution was invented. See `decomposition-attempt-01-blocked.md`.
 
 | # | Subject | Verdict |
 |---|---|---|
@@ -16,8 +16,8 @@ and no resolution was invented. See `../issueforge-v1-decomposition-report.md`.
 All four decisions (D1–D4) are now resolved and amended into PRD #1.
 
 **Review 02 contains a known error.** Its finding #3 asserts the PRD grants no implementation-review
-override. It does — `prd-v1.md:153`. Review 04 caught it. Treat these transcripts as evidence, not
+override. It does — `prd.md:153`. Review 04 caught it. Treat these transcripts as evidence, not
 as authority: the gate was right four times out of six.
 
-`decomposition-draft-v2-SUPERSEDED.md` is the 21-issue draft these reviews rejected. It is a starting
+`decomposition-attempt-01-draft.md` is the 21-issue draft these reviews rejected. It is a starting
 point for the next attempt, not a plan to execute. D1 and D3 change its shape materially.

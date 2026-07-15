@@ -8,8 +8,8 @@ or `spec-up` routes in dependency order.
 |---|---|
 | **Repository** | `MatthewDruhl/IssueForge` (private) |
 | **Epic** | [#1](https://github.com/MatthewDruhl/IssueForge/issues/1) |
-| **Canonical amended PRD** | `docs/prd-v1.md` — 59 acceptance criteria, decisions D1–D6 |
-| **Canonical decomposition** | `docs/planning/decomposition-draft-v5.md` at commit `fdc2fd8` |
+| **Canonical amended PRD** | `docs/prd.md` — 59 acceptance criteria, decisions D1–D6 |
+| **Canonical decomposition** | `docs/planning/decomposition.md` at commit `fdc2fd8` |
 | **Children** | #4–#30: 25 v1 slices + 2 `deferred-v2` items |
 | **Coverage** | 59/59 criteria owned exactly once |
 | **Final gate** | `ACCEPT` — every epic/child body inspected directly |
@@ -28,7 +28,7 @@ This correction restored the automatic gate as authoritative:
 1. The four remaining findings were incorporated into the actual slice contracts, not deferred.
 2. Every child body was regenerated from the corrected decomposition.
 3. Every child footer now identifies the immutable canonical commit `fdc2fd8`.
-4. Epic #1's appended guidance now shows the real build order and names `docs/prd-v1.md` as the amended source.
+4. Epic #1's appended guidance now shows the real build order and names `docs/prd.md` as the amended source.
 5. Fresh subscription-authenticated Claude Code sessions reviewed the correction read-only. The final session
    directly read epic #1 and all 27 children and returned `ACCEPT` with zero blocking contradictions.
 
@@ -104,7 +104,7 @@ registration, persistence, queue control, isolation, and baseline execution with
 - The 25 v1 issues include their prior-art/source audits. The two deferred-v2 risk records are not represented
   as implementation-ready v1 source-audit contracts.
 - Epic #1 preserves its existing PRD body and appends only the decomposition. The appended section accurately
-  identifies `docs/prd-v1.md` as the canonical amended PRD.
+  identifies `docs/prd.md` as the canonical amended PRD.
 - Guarded review launch closed stdin, captured stderr, imposed a wall-clock timeout, persisted full output, and
   treated empty output or non-zero exit as failure. Review tools were read-only and inputs were local.
 - The Markdown and regenerated PDF passed structural checks; the PDF contains no blank pages and is readable
@@ -121,5 +121,5 @@ Begin with **S2 / issue #4**, then **S25 / issue #5**, before S1 and S3. Follow 
 - `deferred-v2` issues remain outside the v1 acceptance graph unless the PRD is explicitly amended.
 
 The detailed rationale, 59/59 ownership matrix, provenance audit, dependency graph, and full repair history
-remain in `docs/planning/decomposition-draft-v5.md`. Earlier blocked reports remain preserved as evidence of the
+remain in `docs/planning/decomposition.md`. Earlier blocked reports remain preserved as evidence of the
 gate working—or, in the invalid filing pass, being bypassed and subsequently corrected.
