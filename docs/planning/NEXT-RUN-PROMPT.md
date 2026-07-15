@@ -150,7 +150,8 @@ a hole it does not have).
   and observability impact; **Prior-art and source audit**; explicit out-of-scope; recommended route into
   acceptance-test authoring.
 - **Independent review gate — automatic, no HITL.** Save the complete decomposition to
-  `/private/tmp/issueforge-prd-to-issues-draft-v3.md`, then run a **fresh** secondary-AI session to review:
+  `/private/tmp/issueforge-prd-to-issues-draft-final.md` (do NOT overwrite the committed input
+  `docs/planning/decomposition-draft-v3.md`), then run a **fresh** secondary-AI session to review:
   complete PRD coverage; tracer-bullet quality; issue size and independence; dependency correctness;
   deterministic/AI/human boundaries; meaningful-red and contract-integrity coverage; source-audit completeness;
   no MARVIN write-back; observability; v1 vs deferred scope; duplicates or gaps. Require a structured
@@ -169,8 +170,11 @@ a hole it does not have).
   rather than replacing the PRD body**; then **re-read every created issue from GitHub and verify** title,
   body, labels, epic linkage, acceptance criteria, source-audit section, and dependency references. Correct any
   mismatch before reporting success. Search existing open issues first; avoid duplicates.
-- **Report:** `docs/planning/issueforge-v1-decomposition-report-v2.md` + a PDF generated **from the final
-  verified markdown**. No pandoc/weasyprint/typst on this machine — render markdown → HTML → Chrome headless
+- **Report:** `docs/planning/issueforge-v1-decomposition-report-final.md` + a PDF at
+  `docs/planning/issueforge-v1-decomposition-report-final.pdf`, generated **from the final verified markdown**.
+  **Do NOT overwrite the historical `issueforge-v1-decomposition-report.md` (pass 1) or
+  `issueforge-v1-decomposition-report-v2.md` (pass 2) — they are the preserved failure evidence.**
+  No pandoc/weasyprint/typst on this machine — render markdown → HTML → Chrome headless
   (`--headless --disable-gpu --no-pdf-header-footer --print-to-pdf`). **Inspect every page**: a paragraph
   beginning `#<digit>` gets parsed as a lazy `<h1>` and renders as a broken headline, and a list needs a blank
   line before it. Assert exactly one `<h1>`, zero blank pages, and that the stated page count matches the
