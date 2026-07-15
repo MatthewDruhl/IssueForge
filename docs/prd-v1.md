@@ -6,7 +6,9 @@ Turning an existing GitHub issue into merged code currently requires an AI sessi
 
 ## Solution
 
-IssueForge is a repository-agnostic Python workflow engine with CLI and Textual TUI interfaces. It processes one queued issue at a time, invokes subscription-authenticated AI CLIs for judgment-heavy work, deterministically enforces the TDD and safety contracts, opens one green PR, waits for human merge, and performs idempotent closeout.
+IssueForge is a Python workflow engine with CLI and Textual TUI interfaces. It processes one queued issue at a time, invokes subscription-authenticated AI CLIs for judgment-heavy work, deterministically enforces the TDD and safety contracts, opens one green PR, waits for human merge, and performs idempotent closeout.
+
+The engine, the run store, the Git and GitHub layers, and the **verification adapter interface** are repository-agnostic. Semantic test integrity is not: freezing a contract requires stable test identity, an execution-phase distinction, and a dependency closure, none of which a generic argument-array command can supply. Those capabilities are therefore supplied by a per-framework **verification adapter**, and **version one ships a pytest adapter only** (see US-1 and Out of Scope).
 
 ## User Stories
 
@@ -19,6 +21,7 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - [ ] Alias lookup is case-insensitive while preserving entered spelling for display.
 - [ ] Missing paths, non-Git paths, duplicate aliases, and mismatched remotes are rejected without changing the registry.
 - [ ] IssueForge never clones or automatically registers a repository.
+- [ ] Registration resolves a verification adapter for the repository and **rejects a repository whose test framework has no installed adapter**, naming the unsupported framework. Version one ships a pytest adapter only, so a non-pytest repository is refused **at registration**, not after a run has already been shaped and worktreed.
 
 ### US-2: Queue and resume issue runs
 
@@ -39,6 +42,9 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - [ ] An oversized issue receives a proposed epic and independently deliverable child issues; no issue is created or edited before approval.
 - [ ] Approved decomposition links every child from the epic and each child enters the normal queue independently.
 - [ ] Duplicate open work, unresolved design decisions, and an unknown expected footprint pause the run.
+- [ ] Shaping emits a **buildability contract** before any acceptance test is authored: a readiness classification (`buildable`, `oversized`, or `blocked`), the duplicate verdict, the unresolved-design-decision list, a **proposed implementation write scope** (the allowed files and path patterns the implementation may modify, with justification), and the observability verdict required by US-6. The acceptance-contract files are **not** part of this scope; they are protected by the US-5 freeze instead (see D5).
+- [ ] **A human approves the buildability contract — including the implementation write scope — before contract authoring begins.** That scope governs the **implementation commit range only** (the commits after the frozen contract commit). The approved implementation write scope enforced at PR readiness (US-6) is exactly this approved scope; it is never derived from the resulting diff, because a scope derived from the diff would approve itself.
+- [ ] **Expanding the approved implementation write scope during implementation requires new human authorization** and preserves the prior approval in the audit trail. An implementation that writes outside the approved scope without that authorization pauses the run.
 
 ### US-4: Establish an isolated green baseline
 
@@ -55,20 +61,23 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 **As a** developer, **I want** to approve exact tests that fail for the missing behavior, **so that** implementation follows genuine TDD.
 
 **Acceptance criteria:**
-- [ ] Codex authors tests that collect and execute without syntax, import, fixture, configuration, or environment errors.
+- [ ] The primary AI authors tests that collect and execute without syntax, import, fixture, configuration, or environment errors.
 - [ ] The new tests fail for a recorded expected behavioral reason while the preexisting baseline remains green.
 - [ ] An independent fresh AI session reviews coverage and validity before human approval.
 - [ ] Reviewer failure may be explicitly overridden with a fresh same-provider session or human review, and the override is recorded.
-- [ ] Human approval freezes the exact test commit, file hashes, collected identifiers, dependent fixtures/configuration, command, and red evidence.
+- [ ] Human approval freezes the exact test commit, file hashes, collected identifiers, dependent fixtures/configuration, command, red evidence, **and the approved implementation write scope carried forward from the buildability contract (US-3)**. The **frozen contract set** (the test files and the discovered dependency closure below) and the **implementation write scope** are **disjoint**: a path is a protected contract input or a permitted implementation target, never approved as both, and a path proposed as both fails the freeze for the human to resolve (see D5).
+- [ ] The frozen dependency set is **discovered by the verification adapter, not declared by configuration**: it covers the test modules, every fixture provider and configuration file on the collection path, plugins, and their **transitive** dependencies, **and it records the immutable identity and pinned version of every external plugin and package in that closure, not only in-repository files**. A user-supplied path list may add to the protected boundary but can never shrink it.
 
 ### US-6: Implement without weakening the contract
 
 **As a** developer, **I want** AI implementation constrained by the approved tests, **so that** green means the approved behavior was delivered.
 
 **Acceptance criteria:**
-- [ ] Implementation cannot proceed to PR readiness when approved contract files, collection, configuration, or command changed without new human authorization.
-- [ ] Codex receives at most two automatic repair attempts for an implementation or review failure before the run pauses.
-- [ ] PR readiness requires green acceptance tests, green full baseline, configured quality gates, approved file scope, and an independent code review with no blocking findings.
+- [ ] Implementation cannot proceed to PR readiness when approved contract files, their collection, configuration, command, **or the identity or pinned version of any frozen plugin or external package in the dependency closure** changed without new human authorization. These are re-resolved and compared in the authoritative verification environment, not assumed unchanged.
+- [ ] The engine — not the AI — owns two **separate** and independently configurable repair budgets, each defaulting to **2**, because they recover from opposite failures and one counter would hide both. **`review_rounds`**: the independent review raised blocking findings, so the implementer fixes them **in place** and the worktree is **preserved**. **`repair_attempts`**: the implementer process failed or died, or the acceptance suite is **still red after the implementer reported done**, so the attempt is a write-off — the worktree is **reset to the branch base** and a **fresh** implementer session is dispatched, carrying the frozen contract and a compact failure trace but **never the prior transcript**. Exhausting **either** budget pauses the run with a schema-valid terminal record.
+- [ ] Both counters are **persisted run state incremented inside the store lock**, and the engine gates the transition on them: a lock-free read-then-write would under-count and under-enforce the cap, and an AI session cannot bypass a budget it does not own. Attempts an implementer makes **inside** a single session are not engine state and are not counted here; they are a prompt instruction, not a workflow budget.
+- [ ] PR readiness requires green acceptance tests, green full baseline, configured quality gates, the **approved implementation write scope** (every change in the implementation commit range lies inside it and no frozen contract path changed), and an independent code review with no blocking findings **except findings explicitly overridden under the following criterion**.
+- [ ] A blocking implementation-review finding, or a reviewer execution failure, **may be overridden only by an authenticated human, and only after one fresh independent same-provider review attempt**. The override applies solely to identified AI-review findings at the exact reviewed head commit. **It can never waive contract integrity, acceptance tests, the full baseline, configured quality gates, approved file scope, or deterministically established observability and sensitive-data requirements.** It is issued per finding; a blanket "ignore review" action does not exist. Any subsequent code or contract change invalidates it. The permanent audit trail records the human identity, the commit, the reviewer sessions and verdicts, each overridden finding, the rationale, and the acknowledged risk. **Override means the PR may open, not that the finding is erased**: the PR reports every overridden finding for renewed human consideration before merge, and the override does not authorize the merge itself (US-7).
 - [ ] IssueForge never calls a metered model API or silently falls back from a subscription-authenticated CLI.
 - [ ] Every shaped issue records `required`, `existing coverage sufficient`, or `not applicable` for observability, with reviewer-confirmed justification.
 - [ ] Logging is required when changed code crosses an HTTP, database, subprocess, filesystem, queue, third-party service, or AI boundary.
@@ -102,7 +111,8 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 - [ ] CLI and Textual TUI invoke the same engine commands and consume the same structured event stream.
 - [ ] The TUI displays queue position, current stage, logs, diffs, approvals, failures, PR status, and cleanup warnings.
 - [ ] Closing either interface does not terminate or corrupt persisted workflow state.
-- [ ] AI provider start, resume, and authentication commands are configuration variables; Codex CLI is only the default v1 profile.
+- [ ] IssueForge defines two AI **roles**, never two vendors: the **primary AI** authors and implements, and the **secondary AI** independently reviews. Each role binds to a provider profile whose executable, start, resume, and authentication commands are **configuration variables**. No provider name is hardcoded anywhere in the engine.
+- [ ] **If no secondary provider is configured, the review role falls back to the primary provider in a brand-new session**, never the authoring session. Independence comes from session and role separation; a different vendor is a strengthening, not a requirement. The role, the provider, and the session identity are recorded on every AI result, and a review whose session identity equals the authoring session's is rejected.
 
 ### US-10: Retain a safe audit trail
 
@@ -119,8 +129,8 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 **As a** maintainer, **I want** IssueForge stages derived from MARVIN's lessons and tested scripts, **so that** simplification does not discard failure-driven safeguards or duplicate working code.
 
 **Acceptance criteria:**
-- [ ] Before stage implementation, its design record inventories the corresponding MARVIN skills, scripts, tests, and relevant failure-driven updates.
-- [ ] Every inventoried behavior is classified as deterministic engine policy, AI judgment, human approval, or MARVIN-specific behavior to discard, with a reason.
+- [ ] Before stage implementation, its design record inventories the corresponding MARVIN **build-harness** artifacts drawn from a **versioned, checked-in extraction manifest** that declares which MARVIN skills, scripts, and tests belong to the build harness, as distinct from the MARVIN chief-of-staff workspace, which IssueForge does not extract (see D6). The inventory unit is a **test**: every test in each inventoried artifact's test files receives an explicit disposition.
+- [ ] Every inventoried test is classified — ported, replaced-with-reason, or discarded-with-reason (deterministic engine policy, AI judgment, human approval, or MARVIN-specific behavior to discard) — with a reason; a behavior with no test is recorded as an author-supplied entry. **A human approves each stage audit before that stage is implementation-ready.** The completeness check is mechanical; whether a `discard` is correct, and whether an artifact belongs in the extraction manifest, are human judgments a lint cannot make.
 - [ ] Applicable scripts are extracted and refactored behind IssueForge interfaces when safe; rewrites document why extraction was unsuitable.
 - [ ] Tests explaining reused safeguards are ported with the code and remain traceable to the source behavior.
 - [ ] IssueForge runs without a MARVIN checkout or MARVIN runtime dependency.
@@ -143,17 +153,22 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 
 ## Implementation Decisions
 
-- Version one supports any explicitly registered local GitHub clone but executes only one active run; a persistent queue and explicit parking are included.
+- Version one supports any explicitly registered local GitHub clone **whose test framework has an installed verification adapter**, and executes only one active run; a persistent queue and explicit parking are included. Only a pytest adapter ships in version one; registration refuses anything else.
+- Repository-agnostic orchestration is achievable; framework-neutral semantic test integrity is not. An exit code cannot distinguish a behavioral failure from a compile error, a collection error, zero tests collected, a skipped suite, or a timeout. The portable seam is therefore the **verification adapter interface** — prepare a hermetic environment, enumerate approved tests, run a selection, report structured execution and failure phases, normalize behavioral evidence, and detect zero/skipped/deselected tests — **not raw process output**. Adding Go, Cargo, or Jest support is an adapter, not a re-architecture.
+- An implementation that behaves differently under test (for example, branching on a test-runner environment variable) defeats every static integrity check, including file hashing and import-closure analysis. This residual risk is carried explicitly by the independent code review, which is instructed to look for test-context-dependent behavior, and by hermetic, separately provisioned verification runs. It is not claimed to be eliminated.
 - Stage design is refactor-first: inspect corresponding MARVIN skills, scripts, tests, and recorded fixes before writing replacement code, while keeping IssueForge runtime-independent.
 - Integration is one-way: source systems and future consumers may read IssueForge interfaces, but IssueForge does not maintain consumer-specific files or push state into MARVIN.
 - One branch contains a separately committed approved test contract followed by implementation; only one green PR enters main.
 - Tests must demonstrate an expected behavioral red state, not merely any failure.
 - Approved tests and their discovery/configuration boundary are deterministically frozen; any change requires human authorization.
-- Codex CLI is the default configurable provider and uses an existing monthly-plan login. Direct model APIs and API-key fallback are prohibited.
-- Independent test and code reviews require fresh sessions and support explicit recorded fallback or human override.
+- The engine speaks of a **primary AI** (authors and implements) and a **secondary AI** (independently reviews). These are roles bound to provider profiles by configuration; the engine names no vendor. Every provider uses an existing subscription login. Direct model APIs and API-key fallback are prohibited. Where no secondary provider is configured, the review role runs on the primary provider in a fresh session — role and session separation is the load-bearing property, and provider diversity is an optional strengthening on top of it.
+- Independent test and code reviews require fresh sessions and support explicit recorded fallback or human override. The override is human-only, per-finding, bound to the reviewed commit, and reported in the PR; it never waives deterministic evidence (US-5, US-6).
+- Retry budgets are engine state, not model discretion. MARVIN expressed its caps as prose that a model session had to remember to honor; IssueForge persists them, increments them under the store lock, and gates the transition, so a budget cannot be forgotten or exceeded by an AI session. It keeps `review_rounds` and `repair_attempts` separate because "iterate on nearly-right code" and "discard the attempt and restart from base" are opposite recoveries; collapsing them lets one transient implementer failure consume the budget intended for review iteration. Both default to 2 and are configurable, so quota pressure is answered by tightening a number rather than by merging the two concepts.
 - Commands are argument arrays without a shell by default.
 - External-boundary changes require a logging contract; independent implementation review judges diagnosability for all other changes. Libraries never introduce global logging configuration.
 - Python 3.12+, uv, pytest, Ruff, Typer, and Textual form the initial implementation stack.
+- **D5 — file roles are two disjoint scopes, not one.** A run has an **implementation write scope** (the paths the implementer may modify, approved by a human at shaping, governing the implementation commit range) and a **frozen contract set** (the acceptance-test files plus their adapter-discovered dependency closure, frozen at approval). They are disjoint by construction: the acceptance tests are delivered in the contract commit and are never inside the implementation write scope, so the same path is never both "expected to change" and "must not change." Deriving a file's role from membership in a single approved scope is incoherent, because the tests are in the delivered PR yet are also the frozen contract. Readiness therefore asks two clean questions over the implementation commit range: is every change inside the approved write scope, and did any frozen contract path (or the pinned identity/version of any frozen external dependency) change. A path proposed as both a contract input and an implementation target fails the freeze for the human to resolve — typically by amending the write scope or routing the issue to `blocked` when its real work is editing a shared fixture.
+- **D6 — the source-audit inventory unit is a test, plus a checked-in extraction manifest.** US-11 completeness cannot be established against a curated, non-exhaustive source map, and it cannot be reduced to enumerating public symbols: a single MARVIN script carries several independently-learned safeguards, some in private functions, that a symbol-level scan would pass while classifying only one. The countable unit is therefore a **test** — every test in an inventoried artifact's test files needs a disposition (ported / replaced / discarded, each with a reason) — which is directly what US-11.4 already requires and is mechanically checkable. Behaviors with no test are author-supplied entries. Because MARVIN does not distinguish its build harness from its chief-of-staff workspace (the harness reaches into workspace state at several seams — the registry is `state/projects.md`, the run store resolves under `~/Projects/agentLogs`, the launch contract is enforced by linting `skills/*/SKILL.md` prose), the extraction scope is a **versioned, checked-in manifest** listing exactly the harness artifacts, and S2's discovery treats that manifest as its authoritative root. A lint proves the record is complete against the manifest; a human approves the record, because "this file is workspace, not harness" and "this safeguard is MARVIN-specific, discard it" are judgments a lint cannot make. Decoupling the harness from the workspace at these seams is a primary goal of version one, not an incidental cleanup.
 
 ## Testing Strategy
 
@@ -173,7 +188,8 @@ IssueForge is a repository-agnostic Python workflow engine with CLI and Textual 
 
 - Draft-PR lifecycle: deferred until the single-green-PR engine is hardened; it will become an additional GitHub event surface without changing core state.
 - Concurrent issues: file-conflict scheduling within one repository and multi-repository workers are deferred until single-run recovery and safety are proven.
-- Claude Code, local-model, and direct alternate-provider adapters: interfaces are included, but only Codex CLI ships initially.
+- Additional provider profiles (other subscription CLIs, local models): the provider interface and the primary/secondary role split ship in version one, and a second provider is a configuration entry rather than new engine code. Version one is validated against a single default provider profile.
+- Non-pytest target repositories: the verification adapter interface is included, but only a pytest adapter ships initially. Go, Cargo, and Jest adapters are later work, and a repository with no adapter is refused at registration rather than degraded to a weaker contract.
 - Automatic repository cloning or discovery: explicit local registration keeps filesystem authority clear.
 - Automatic PR merge: the human remains the final merge authority.
 - Web GUI: the engine/event boundary supports it later; version one ships CLI and Textual TUI.
