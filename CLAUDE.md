@@ -8,10 +8,12 @@ Global rules in `~/.claude/CLAUDE.md` still apply. This file adds only what is s
 
 ## Canonical documents — read these, do not restate them
 
-- `docs/prd-v1.md` — the PRD (issue #1). 59 acceptance criteria, decisions **D1–D6**. The authority.
+- `docs/prd.md` — the PRD (issue #1). 59 acceptance criteria, decisions **D1–D6**. The authority.
 - `docs/architecture.md` — the v1 architecture and the MARVIN extraction rule.
-- `docs/planning/` — decomposition drafts, review transcripts, and failure reports. `decomposition-draft-v3.md`
-  is the current 25-issue draft (59/59 criteria owned).
+- `docs/planning/decomposition.md` — the current decomposition (25 v1 slices + 2 deferred-v2 issues; 59/59
+  criteria owned), identified immutably by the rename-provenance commit recorded in the filed issue footers.
+  `docs/planning/reviews/` holds the historical drafts, review transcripts, and blocked failure reports; Git,
+  not a filename version suffix, supplies their revision history.
 - `docs/provenance/marvin/` — read-only migration evidence copied from MARVIN.
 
 Before claiming what a requirement says, quote the PRD line. A prior run deleted a correct criterion by

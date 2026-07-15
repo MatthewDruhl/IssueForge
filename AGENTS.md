@@ -8,7 +8,7 @@ load-bearing constraints.
 
 ## Authority
 
-- `docs/prd-v1.md` is the specification (59 acceptance criteria, decisions D1–D6). Quote its lines rather than
+- `docs/prd.md` is the specification (59 acceptance criteria, decisions D1–D6). Quote its lines rather than
   paraphrasing them.
 - `docs/architecture.md` is the architecture and extraction rule.
 - `docs/provenance/marvin/` is read-only evidence.
