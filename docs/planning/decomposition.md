@@ -235,7 +235,7 @@ deliberate reordering, not an extraction.
 | S23 | TUI + CLI/TUI parity — all eight views | 5 | US-9.1, US-9.2 | S5, S16, S19 |
 | S24 | Self-contained boundary: a permanent CI invariant | 5 | US-11.5–11.7 | S25 + ALL |
 
-Plus **`deferred-v2`**: **D1** blocking mutation / anti-tautology gate · **D2** the invariant lens for shaping.
+Plus **`deferred-v2`**: **DV1** blocking mutation / anti-tautology gate · **DV2** the invariant lens for shaping.
 
 **Recommended build start:** S2 and S25 are the two independent enabling gates; with one worker, build **S2
 then S25**, followed by S1 and only then S3. S3 (`repo add` → `repo list`) is the first user-visible demo, not
