@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Sync dependencies
+        run: uv sync --all-extras --dev
+      # The boundary gate must run before/alongside every other check so no
+      # disk-writing module can land before the seam is enforced (issue #5, S25).
+      - name: Boundary lint
+        run: uv run issueforge lint boundary
+      - name: Ruff
+        run: uv run ruff check src tests
+      - name: Tests
+        run: uv run pytest -q
