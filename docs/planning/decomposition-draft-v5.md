@@ -19,9 +19,11 @@ attempt 3's second review round (documented in `issueforge-v1-decomposition-repo
 
 59/59 criteria remain owned once each. D1–D6 are settled and not reopened.
 
-PRD #1 and `docs/prd-v1.md` are identical and current, **amended with D1–D6**. D5 and D6 were the two blocking
-decisions the second decomposition attempt surfaced (`issueforge-v1-decomposition-report-v2.md`); they are now
-settled PRD text and are **not reopened here**.
+`docs/prd-v1.md` is the canonical current PRD and includes the approved **D1–D6** amendments. Epic #1 retains
+the original PRD text plus an appended decomposition section; it is intentionally not rewritten or claimed to
+be byte-identical to the amended file. Every child contract cites the canonical file's requirement lines. D5
+and D6 were the two blocking decisions the second decomposition attempt surfaced
+(`issueforge-v1-decomposition-report-v2.md`); they are settled and are **not reopened here**.
 
 **59 acceptance criteria / 11 user stories. 25 v1 child issues + 2 `deferred-v2`.**
 
