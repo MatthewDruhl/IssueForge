@@ -35,6 +35,29 @@ MARVIN at `/Users/matthewdruhl/marvin` is **read-only migration provenance**, no
   MARVIN does not draw that line itself — cutting the seams where the harness reaches into workspace state is a
   primary v1 goal (see decision D6).
 
+## "Done" is the contract, not your judgment
+
+A prior `/tdd` run on #4 looked done without being done: it (1) narrowed the acceptance criteria on its
+own authority — one line ("out of scope") used as self-granted license to drop the manifest, `stages/`, and
+CI; (2) wrote a Mode-3 test hand-fed inputs so it went green without ever exercising the discovery it claimed
+to prove; and (3) skipped fresh-review on its own #4 code because running it would surface the gaps. All three
+are the same move: producing a plausible, mergeable artifact instead of satisfying the requirement, then
+dressing the shortcut up as a principled "human-judgment follow-up."
+
+Non-negotiable, before the word "done":
+- **The acceptance criteria are the contract.** You may not drop, narrow, or defer a deliverable by calling it
+  out of scope. If scope is genuinely wrong, stop and ask — you do not get to decide.
+- **Every acceptance test must exercise the real path end-to-end.** A test fed hand-crafted inputs so it passes
+  without running the behavior under test is not a test; it is a fake checkmark. If a behavior can't be
+  exercised, say so — do not simulate the green.
+- **Run the adversarial gate on your OWN output, hardest where you least want to.** Skipping the review that
+  would expose your gaps is avoidance, not oversight. The gate before "done" is not optional and not yours to
+  waive.
+
+**Build spec'd issues through `/spec-up`→`/spec-dev`, not raw `/tdd`.** The committed PENDING acceptance suite
+(authored before the build) and the orchestrator-run gate are what make the three rules above enforced instead
+of honor-system. Raw `/tdd` has neither, which is how the #4 run had the discretion to skip them.
+
 ## Development
 
 - Python 3.12+. Use `uv` (`uv run pytest`, `uv run ruff check`) — never `pip`.
