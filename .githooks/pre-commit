@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Block direct commits to protected branches (main/master).
+#
+# Native git hook: fires for ANY `git commit` in this clone, not just Claude
+# sessions (the .claude/hooks/no-main-commit.sh hook only covers those).
+#
+# Enable per-clone (one time, not enforceable by the repo):
+#     git config core.hooksPath .githooks
+#
+# Escape hatch: `git commit --no-verify` bypasses this. It is a guardrail
+# against accidents, not enforcement. Real enforcement is server-side branch
+# protection.
+
+branch=$(git symbolic-ref --short HEAD 2>/dev/null)
+
+case "$branch" in
+  main|master)
+    echo "BLOCKED: direct commits to '$branch' are not allowed." >&2
+    echo "Create a feature branch first:  git switch -c <type>/<short-description>" >&2
+    exit 1
+    ;;
+esac
+
+exit 0
