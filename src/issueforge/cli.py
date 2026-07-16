@@ -35,6 +35,30 @@ def audit_check(
     typer.echo("OK")
 
 
+lint_app = typer.Typer(help="Structural boundary lints (build-time gates).")
+app.add_typer(lint_app, name="lint")
+
+
+@lint_app.command("boundary")
+def lint_boundary(
+    root: Path = typer.Option(None, help="Package root to scan (defaults to issueforge)."),
+) -> None:
+    """Fail on any code that could write outside IssueForge or reach a sibling checkout."""
+    from issueforge.boundary import check_tree, declared_deps, find_pyproject
+    from issueforge.paths import package_root
+
+    scan_root = root or package_root()
+    pyproject = find_pyproject(scan_root) or find_pyproject(Path.cwd())
+    deps = declared_deps(pyproject) if pyproject else frozenset()
+
+    violations = check_tree(scan_root, deps=deps)
+    if violations:
+        for violation in violations:
+            typer.echo(f"ERROR: {violation}", err=True)
+        raise typer.Exit(1)
+    typer.echo("OK")
+
+
 @app.command()
 def version() -> None:
     """Show the installed IssueForge version."""

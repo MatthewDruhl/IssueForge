@@ -2505,8 +2505,10 @@ US-11.6, and US-11.7 (S24).
   4. **Defaults:** scan argparse `default=`, dataclass field defaults, and module constants for `str`/`Path`
      values that are absolute, start with `~`, or resolve outside the package/run root. *(This catches a
      `--project` default of `"marvin"` and a rates path inside a sibling checkout.)*
-  5. **Path literals:** a denylist — `state/`, `context/`, `skills/`, `agentLogs`, `projects.md`,
-     `model-rates.json`, `agent-runs.json`, `SKILL.md`, and any literal containing `/Users/`.
+  5. **Path literals:** a denylist for MARVIN persistence and user-checkout coupling — `state/`, `agentLogs`,
+     `projects.md`, `model-rates.json`, `agent-runs.json`, and any literal containing `/Users/`. Generic
+     artifact-type names (`context/`, `skills/`, and `SKILL.md`) are permitted so IssueForge can extract,
+     discover, and package its own skills and source-audit inputs.
   6. **Write surface:** AST-forbid `open(mode w|a|x)`, `Path.write_text/write_bytes/mkdir/touch/unlink/
      rename/replace`, `os.remove/rename/replace/makedirs`, `shutil.*`, and `tempfile` **anywhere outside the
      seam.** **This is the class that makes the boundary structural.**
