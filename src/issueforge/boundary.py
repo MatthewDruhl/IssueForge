@@ -64,6 +64,16 @@ _ARGV_BAD_TOKENS = ("marvin", "MARVIN_", "$HOME/", "~")
 # Path-object write methods (names not shared with str/dict, so no false positives).
 _WRITE_METHODS = {"write_text", "write_bytes", "mkdir", "touch", "unlink"}
 _OS_WRITE_FUNCS = {"remove", "rename", "replace", "makedirs", "mkdir"}
+# shutil/tempfile members that only read; everything else from those modules writes.
+_TEMPFILE_SHUTIL_READS = {
+    "which",
+    "disk_usage",
+    "get_terminal_size",
+    "gettempdir",
+    "gettempprefix",
+    "get_archive_formats",
+    "get_unpack_formats",
+}
 
 
 def check_source(path: Path, *, deps: frozenset[str] = frozenset()) -> list[str]:
@@ -118,6 +128,10 @@ class _Linter(ast.NodeVisitor):
         self.basename = Path(display).name
         self.allowed_imports = allowed_imports
         self.violations: list[str] = []
+        # Local names bound to write callables / os.environ / os.getenv via from-imports.
+        self.write_aliases: set[str] = set()
+        self.environ_locals = {"os.environ"}
+        self.getenv_locals = {"os.environ.get", "os.getenv"}
 
     def _add(self, node: ast.AST, rule: str, detail: str) -> None:
         self.violations.append(f"{self.filename}:{node.lineno}: {rule}: {detail}")
@@ -135,7 +149,21 @@ class _Linter(ast.NodeVisitor):
             root = node.module.split(".")[0]
             if root not in self.allowed_imports:
                 self._add(node, "import", f"foreign module '{node.module}'")
+            self._record_import_aliases(node.module, node.names)
         self.generic_visit(node)
+
+    def _record_import_aliases(self, module: str, names: list[ast.alias]) -> None:
+        for alias in names:
+            local = alias.asname or alias.name
+            if module in ("shutil", "tempfile") and alias.name not in _TEMPFILE_SHUTIL_READS:
+                self.write_aliases.add(local)
+            elif module == "os":
+                if alias.name in _OS_WRITE_FUNCS:
+                    self.write_aliases.add(local)
+                elif alias.name == "environ":
+                    self.environ_locals.add(local)
+                elif alias.name == "getenv":
+                    self.getenv_locals.add(local)
 
     def visit_Call(self, node: ast.Call) -> None:
         dotted = ast.unparse(node.func)
@@ -149,7 +177,7 @@ class _Linter(ast.NodeVisitor):
         if dotted.startswith("subprocess.") or dotted.split(".")[-1] == "Popen":
             self._check_argv(node)
 
-        if dotted in ("os.environ.get", "os.getenv") and node.args:
+        if dotted in self.getenv_locals and node.args:
             key = node.args[0]
             if isinstance(key, ast.Constant) and _is_forbidden_env(key.value):
                 self._add(node, "env", f"reads forbidden environment '{key.value}'")
@@ -174,12 +202,17 @@ class _Linter(ast.NodeVisitor):
                     mode = kw.value.value
             if isinstance(mode, str) and any(flag in mode for flag in "wax"):
                 self._add(node, "write-surface", f"open(mode={mode!r}) outside the IO seam")
+        elif isinstance(node.func, ast.Name) and node.func.id in self.write_aliases:
+            self._add(node, "write-surface", f"{node.func.id}() outside the IO seam")
         elif dotted.startswith(("shutil.", "tempfile.")):
             self._add(node, "write-surface", f"{dotted}() outside the IO seam")
         elif isinstance(node.func, ast.Attribute):
             attr = node.func.attr
             base = ast.unparse(node.func.value)
             if attr in _WRITE_METHODS:
+                self._add(node, "write-surface", f".{attr}() outside the IO seam")
+            elif attr in ("rename", "replace") and len(node.args) + len(node.keywords) == 1:
+                # Path.rename(target) / Path.replace(target); str.replace needs >= 2 args.
                 self._add(node, "write-surface", f".{attr}() outside the IO seam")
             elif base == "os" and attr in _OS_WRITE_FUNCS:
                 self._add(node, "write-surface", f"os.{attr}() outside the IO seam")
@@ -192,7 +225,7 @@ class _Linter(ast.NodeVisitor):
 
     # --- class 3: environment -----------------------------------------------
     def visit_Subscript(self, node: ast.Subscript) -> None:
-        if ast.unparse(node.value) == "os.environ" and isinstance(node.slice, ast.Constant):
+        if ast.unparse(node.value) in self.environ_locals and isinstance(node.slice, ast.Constant):
             if _is_forbidden_env(node.slice.value):
                 self._add(node, "env", f"reads forbidden environment '{node.slice.value}'")
         self.generic_visit(node)

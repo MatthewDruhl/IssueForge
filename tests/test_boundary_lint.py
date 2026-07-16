@@ -228,3 +228,45 @@ def test_ci_runs_boundary_lint_on_pull_requests() -> None:
     runs_lint = [t for t in texts if "issueforge lint boundary" in t]
     assert runs_lint, "no workflow runs `issueforge lint boundary`"
     assert any("pull_request" in t for t in runs_lint), "boundary lint not wired to pull_request"
+
+
+def test_class6_path_rename_and_replace_flagged(tmp_path: Path) -> None:
+    """Contract lists Path.rename/replace as write surface (1-arg form, not str.replace)."""
+    v = lint(tmp_path, "def f(p, q):\n    p.rename(q)\n    p.replace(q)\n")
+    assert any("rename" in x for x in v)
+    assert any(".replace" in x for x in v)
+
+
+def test_class6_str_replace_two_args_not_flagged(tmp_path: Path) -> None:
+    assert lint(tmp_path, "def f(s):\n    return s.replace('a', 'b')\n") == []
+
+
+def test_class6_aliased_tempfile_and_shutil_writes_flagged(tmp_path: Path) -> None:
+    code = (
+        "from tempfile import NamedTemporaryFile\n"
+        "from shutil import rmtree\n"
+        "def f(d):\n    NamedTemporaryFile()\n    rmtree(d)\n"
+    )
+    v = lint(tmp_path, code)
+    assert any("NamedTemporaryFile" in x for x in v)
+    assert any("rmtree" in x for x in v)
+
+
+def test_class3_aliased_environ_flagged(tmp_path: Path) -> None:
+    v = lint(tmp_path, "from os import environ\nx = environ['MARVIN_ROOT']\n")
+    assert any("MARVIN_ROOT" in x for x in v)
+
+
+def test_class1_dunder_import_nonliteral_flagged(tmp_path: Path) -> None:
+    v = lint(tmp_path, "def f(n):\n    return __import__(n)\n")
+    assert any("__import__" in x for x in v)
+
+
+def test_class2_nonliteral_argv0_in_list_is_allowed(tmp_path: Path) -> None:
+    # argv[0] read from config (a Name) inside a list literal is provenance, not identity.
+    assert lint(tmp_path, "import subprocess\ndef f(exe):\n    subprocess.run([exe, '-x'])\n") == []
+
+
+def test_class6_rename_keyword_form_flagged(tmp_path: Path) -> None:
+    v = lint(tmp_path, "def f(p, q):\n    p.rename(target=q)\n")
+    assert any("rename" in x for x in v)
