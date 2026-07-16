@@ -58,9 +58,123 @@ def test_class2_git_literal_argv_is_clean(tmp_path: Path) -> None:
 
 
 def test_class2_config_read_argv_is_clean(tmp_path: Path) -> None:
-    # argv[0] read from config (non-literal) is allowed: provenance, not identity.
-    code = "import subprocess\ndef go(cfg):\n    subprocess.run(cfg.baseline_cmd)\n"
+    code = (
+        "import subprocess\n"
+        "from issueforge.boundary import Command\n"
+        "def go(config):\n"
+        "    command: Command = Command.from_config(config.baseline_cmd, cwd=config.worktree)\n"
+        "    subprocess.run(command, cwd=command.cwd)\n"
+    )
     assert lint(tmp_path, code) == []
+
+
+def test_class2_unproven_command_annotation_is_flagged(tmp_path: Path) -> None:
+    code = "import subprocess\ndef go(command: Command):\n    subprocess.run(command)\n"
+    assert any("typed Command" in item for item in lint(tmp_path, code))
+
+
+def test_class2_shadowed_command_annotation_is_flagged(tmp_path: Path) -> None:
+    code = (
+        "import subprocess\n"
+        "from issueforge.boundary import Command\n"
+        "Command = list[str]\n"
+        "def go(command: Command):\n    subprocess.run(command)\n"
+    )
+    assert any("typed Command" in item for item in lint(tmp_path, code))
+
+
+def test_class2_lexically_shadowed_command_annotation_is_flagged(tmp_path: Path) -> None:
+    code = (
+        "import subprocess\n"
+        "from issueforge.boundary import Command\n"
+        "def outer(Command):\n"
+        "    def go(command: Command):\n        subprocess.run(command)\n"
+    )
+    assert any("typed Command" in item for item in lint(tmp_path, code))
+
+
+def test_class2_qualified_command_annotation_is_clean(tmp_path: Path) -> None:
+    code = (
+        "import subprocess\n"
+        "import issueforge.boundary\n"
+        "def go(config):\n"
+        "    command: issueforge.boundary.Command = "
+        "issueforge.boundary.Command.from_config(config.baseline_cmd, cwd=config.worktree)\n"
+        "    subprocess.run(command, cwd=command.cwd)\n"
+    )
+    assert lint(tmp_path, code) == []
+
+
+def test_class2_typed_command_requires_provenance_cwd_and_survives_no_reassignment(
+    tmp_path: Path,
+) -> None:
+    code = (
+        "import subprocess\n"
+        "from issueforge.boundary import Command\n"
+        "def go(config):\n"
+        "    command: Command = Command.from_config(config.baseline_cmd, cwd=config.worktree)\n"
+        "    command = ['git', 'status']\n"
+        "    subprocess.run(command)\n"
+    )
+    violations = "\n".join(lint(tmp_path, code))
+    assert "list literal or typed Command" in violations
+
+
+def test_class2_typed_command_rejects_unconstrained_output(tmp_path: Path) -> None:
+    code = (
+        "import subprocess\n"
+        "from issueforge.boundary import Command\n"
+        "def go(config, output):\n"
+        "    command: Command = Command.from_config(config.baseline_cmd, cwd=config.worktree)\n"
+        "    subprocess.run(command, cwd=command.cwd, stdout=output)\n"
+    )
+    assert any("stdout is not constrained" in item for item in lint(tmp_path, code))
+
+
+def test_class2_imported_getoutput_and_shadowed_run(tmp_path: Path) -> None:
+    code = (
+        "from subprocess import getoutput, run\n"
+        "getoutput('pytest')\n"
+        "def clean(run):\n    run(['pytest'])\n"
+    )
+    violations = lint(tmp_path, code)
+    assert any("shell string" in item for item in violations)
+    assert not any(item.startswith("mod.py:4:") for item in violations)
+
+
+def test_class2_command_loop_reassignment_is_not_trusted(tmp_path: Path) -> None:
+    code = (
+        "import subprocess\n"
+        "from issueforge.boundary import Command\n"
+        "def go(config, commands):\n"
+        "    command: Command = Command.from_config(config.baseline_cmd, cwd=config.worktree)\n"
+        "    for command in commands:\n        pass\n"
+        "    subprocess.run(command)\n"
+    )
+    assert any("typed Command" in item for item in lint(tmp_path, code))
+
+
+def test_rebound_protected_modules_are_checked(tmp_path: Path) -> None:
+    code = (
+        "import os, subprocess\n"
+        "environment = os\n"
+        "processes = subprocess\n"
+        "a = environment.environ['MARVIN_ROOT']\n"
+        "processes.run(['pytest'])\n"
+    )
+    violations = "\n".join(lint(tmp_path, code))
+    assert "MARVIN_ROOT" in violations
+    assert "hardcoded executable 'pytest'" in violations
+
+
+def test_conditional_reassignment_cannot_clear_protected_binding(tmp_path: Path) -> None:
+    code = (
+        "import builtins\n"
+        "writer = builtins.open\n"
+        "if enabled:\n    writer = safe_writer\n"
+        "writer('outside', 'w')\n"
+    )
+    assert any("open(mode='w')" in item for item in lint(tmp_path, code))
 
 
 def test_class2_hardcoded_executable_flagged(tmp_path: Path) -> None:
@@ -70,7 +184,26 @@ def test_class2_hardcoded_executable_flagged(tmp_path: Path) -> None:
 
 def test_class2_shell_true_flagged(tmp_path: Path) -> None:
     v = lint(tmp_path, "import subprocess\nsubprocess.run(['git', 'x'], shell=True)\n")
-    assert any("shell=True" in x for x in v)
+    assert any("shell must be literal False" in x for x in v)
+
+
+def test_class2_dynamic_shell_flagged(tmp_path: Path) -> None:
+    code = (
+        "import subprocess\n"
+        "from issueforge.boundary import Command\n"
+        "def f(config, use_shell):\n"
+        "    command: Command = Command.from_config(config.baseline_cmd, cwd=config.worktree)\n"
+        "    subprocess.run(command, cwd=command.cwd, shell=use_shell)\n"
+    )
+    assert any("shell must be literal False" in item for item in lint(tmp_path, code))
+
+
+def test_class2_positional_popen_shell_flagged(tmp_path: Path) -> None:
+    code = (
+        "import subprocess\n"
+        "subprocess.Popen(['git'], -1, None, None, None, None, None, True, True)\n"
+    )
+    assert any("positional shell" in item for item in lint(tmp_path, code))
 
 
 def test_class2_marvin_and_home_argv_elements_flagged(tmp_path: Path) -> None:
@@ -193,7 +326,7 @@ def test_reports_every_violation_no_fail_fast(tmp_path: Path) -> None:
     v = lint(tmp_path, code)
     joined = "\n".join(v)
     assert "marvin_sibling" in joined  # import
-    assert "shell=True" in joined  # argv
+    assert "shell must be literal False" in joined  # argv
     assert "pytest" in joined  # argv hardcoded exe
     assert "write_text" in joined  # write surface
     assert len(v) >= 4
@@ -262,9 +395,151 @@ def test_class1_dunder_import_nonliteral_flagged(tmp_path: Path) -> None:
     assert any("__import__" in x for x in v)
 
 
-def test_class2_nonliteral_argv0_in_list_is_allowed(tmp_path: Path) -> None:
-    # argv[0] read from config (a Name) inside a list literal is provenance, not identity.
-    assert lint(tmp_path, "import subprocess\ndef f(exe):\n    subprocess.run([exe, '-x'])\n") == []
+def test_class1_aliased_dunder_import_nonliteral_flagged(tmp_path: Path) -> None:
+    code = "from builtins import __import__ as load\ndef f(name):\n    return load(name)\n"
+    assert any("__import__" in item for item in lint(tmp_path, code))
+
+
+def test_class1_rebound_dunder_import_nonliteral_flagged(tmp_path: Path) -> None:
+    code = "import builtins\nload = builtins.__import__\ndef f(name):\n    return load(name)\n"
+    assert any("__import__" in item for item in lint(tmp_path, code))
+
+
+def test_class2_untyped_argv_is_flagged(tmp_path: Path) -> None:
+    code = "import subprocess\ndef f(exe):\n    subprocess.run([exe, '-x'])\n"
+    assert any("engine-owned literal" in item for item in lint(tmp_path, code))
+
+
+def test_class2_subprocess_alias_keyword_args_and_local_list_are_flagged(tmp_path: Path) -> None:
+    code = (
+        "import subprocess as sp\n"
+        "def f():\n"
+        "    command = ['pytest', '-q']\n"
+        "    sp.run(args=command, shell=True)\n"
+    )
+    violations = "\n".join(lint(tmp_path, code))
+    assert "list literal or typed Command" in violations
+    assert "shell must be literal False" in violations
+
+
+def test_class2_rebound_subprocess_call_is_checked(tmp_path: Path) -> None:
+    code = "import subprocess\nexecute = subprocess.run\nexecute(['pytest'])\n"
+    assert any("hardcoded executable 'pytest'" in item for item in lint(tmp_path, code))
+
+
+def test_class2_imported_popen_alias_is_checked(tmp_path: Path) -> None:
+    code = "from subprocess import Popen as Process\nProcess(args=['pytest'])\n"
+    assert any("hardcoded executable 'pytest'" in item for item in lint(tmp_path, code))
+
+
+def test_class1_sys_path_import_alias_flagged(tmp_path: Path) -> None:
+    code = "import sys as system\nsystem.path.insert(0, '/sibling')\n"
+    assert any("sys.path.insert" in item for item in lint(tmp_path, code))
+
+
+def test_class3_rebound_environment_apis_flagged(tmp_path: Path) -> None:
+    code = (
+        "import os\n"
+        "environment = os.environ\n"
+        "read_environment = os.getenv\n"
+        "a = environment['MARVIN_ROOT']\n"
+        "b = read_environment('AGENT_LOGS_DIR')\n"
+    )
+    violations = "\n".join(lint(tmp_path, code))
+    assert "MARVIN_ROOT" in violations
+    assert "AGENT_LOGS_DIR" in violations
+
+
+def test_class3_os_import_alias_flagged(tmp_path: Path) -> None:
+    code = "import os as operating_system\na = operating_system.environ['MARVIN_ROOT']\n"
+    assert any("MARVIN_ROOT" in item for item in lint(tmp_path, code))
+
+
+def test_class3_annotated_environment_rebinding_flagged(tmp_path: Path) -> None:
+    code = "import os\nenvironment: object = os.environ\na = environment['MARVIN_ROOT']\n"
+    assert any("MARVIN_ROOT" in item for item in lint(tmp_path, code))
+
+
+def test_class6_module_and_open_import_aliases_flagged(tmp_path: Path) -> None:
+    code = (
+        "import os as operating_system\n"
+        "import shutil as sh\n"
+        "from builtins import open as writer\n"
+        "def f(path):\n"
+        "    writer(path / 'new.txt', 'w')\n"
+        "    operating_system.makedirs(path / 'dir')\n"
+        "    sh.rmtree(path / 'old')\n"
+    )
+    violations = "\n".join(lint(tmp_path, code))
+    assert all(name in violations for name in ("open", "makedirs", "rmtree"))
+
+
+def test_class6_unresolved_open_mode_flagged(tmp_path: Path) -> None:
+    code = "def f(path):\n    mode = 'w'\n    open(path, mode)\n"
+    assert any("mode=unresolved" in item for item in lint(tmp_path, code))
+
+
+def test_class6_open_kwargs_mode_is_unresolved(tmp_path: Path) -> None:
+    code = "def f(path, options):\n    open(path, **options)\n"
+    assert any("open(**kwargs)" in item for item in lint(tmp_path, code))
+
+
+def test_class6_aliased_read_only_open_is_clean(tmp_path: Path) -> None:
+    code = (
+        "from builtins import open as reader\ndef f(path):\n    return reader(path, 'rb').read()\n"
+    )
+    assert lint(tmp_path, code) == []
+
+
+def test_class6_io_open_alias_write_is_flagged(tmp_path: Path) -> None:
+    code = "from io import open as writer\ndef f(path):\n    writer(path, 'w')\n"
+    assert any("open(mode='w')" in item for item in lint(tmp_path, code))
+
+
+def test_class6_rebound_write_apis_are_flagged(tmp_path: Path) -> None:
+    code = (
+        "import builtins, io, os, shutil\n"
+        "writer = io.open\n"
+        "other_writer = builtins.open\n"
+        "delete = os.remove\n"
+        "remove_tree = shutil.rmtree\n"
+        "def f(path):\n"
+        "    write = path.write_text\n"
+        "    writer(path, 'w')\n"
+        "    other_writer(path, 'a')\n"
+        "    delete(path)\n"
+        "    remove_tree(path)\n"
+        "    write('x')\n"
+    )
+    violations = "\n".join(lint(tmp_path, code))
+    assert violations.count("open(mode=") == 2
+    assert all(name in violations for name in ("delete", "rmtree", "write"))
+
+
+def test_class6_chained_rebinding_path_open_and_rename_are_flagged(tmp_path: Path) -> None:
+    code = (
+        "import os\n"
+        "first = second = os.remove\n"
+        "def f(path, target):\n"
+        "    move = path.rename\n"
+        "    path.open('w')\n"
+        "    first(path)\n"
+        "    move(target)\n"
+    )
+    violations = "\n".join(lint(tmp_path, code))
+    assert all(name in violations for name in ("open", "first", "move"))
+
+
+def test_class6_rebound_path_open_is_flagged(tmp_path: Path) -> None:
+    code = "def f(path):\n    writer = path.open\n    writer('w')\n"
+    assert any("open(mode='w')" in item for item in lint(tmp_path, code))
+
+
+def test_class4_nested_literal_containers_are_scanned(tmp_path: Path) -> None:
+    code = "import pathlib as pl\nROOTS = [pl.Path('/opt/sibling'), {'../outside': ({'safe'},)}]\n"
+    violations = "\n".join(lint(tmp_path, code))
+    assert "/opt/sibling" in violations
+    assert "../outside" in violations
 
 
 def test_class6_rename_keyword_form_flagged(tmp_path: Path) -> None:
