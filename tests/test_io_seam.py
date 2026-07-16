@@ -8,6 +8,25 @@ import pytest
 from issueforge.io import BoundaryViolation, WriteSeam
 
 
+def commit_empty(repo: Path) -> None:
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=IssueForge Tests",
+            "-c",
+            "user.email=tests@issueforge.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "base",
+        ],
+        check=True,
+    )
+
+
 def test_seam_writes_under_state_root(tmp_path: Path, monkeypatch) -> None:
     """Tracer: a write whose target resolves under an allowed root goes through."""
     monkeypatch.setenv("ISSUEFORGE_STATE_HOME", str(tmp_path))
@@ -38,7 +57,7 @@ def test_seam_allows_registered_worktree(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "--allow-empty", "-qm", "base"], check=True)
+    commit_empty(repo)
     worktree = tmp_path / "worktrees" / "repo-run1"
     subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(worktree)], check=True)
     seam = WriteSeam()
@@ -62,9 +81,7 @@ def test_seam_rejects_unrelated_linked_worktree(tmp_path: Path) -> None:
     unrelated = tmp_path / "unrelated"
     subprocess.run(["git", "init", "-q", str(registered)], check=True)
     subprocess.run(["git", "init", "-q", str(unrelated)], check=True)
-    subprocess.run(
-        ["git", "-C", str(unrelated), "commit", "--allow-empty", "-qm", "base"], check=True
-    )
+    commit_empty(unrelated)
     worktree = tmp_path / "unrelated-worktree"
     subprocess.run(
         ["git", "-C", str(unrelated), "worktree", "add", "-q", str(worktree)], check=True
@@ -78,7 +95,7 @@ def test_seam_rejects_copied_worktree_pointer(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "--allow-empty", "-qm", "base"], check=True)
+    commit_empty(repo)
     worktree = tmp_path / "worktree"
     subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(worktree)], check=True)
     counterfeit = tmp_path / "counterfeit"
@@ -93,7 +110,7 @@ def test_seam_revalidates_worktree_before_each_write(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "--allow-empty", "-qm", "base"], check=True)
+    commit_empty(repo)
     worktree = tmp_path / "worktree"
     subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", str(worktree)], check=True)
     seam = WriteSeam()
