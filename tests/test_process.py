@@ -261,13 +261,17 @@ def test_signal_termination_preserved_and_not_marked_timed_out(tmp_path, monkeyp
     assert result.timed_out is False
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_invocation_emits_observability_fields(tmp_path, monkeypatch):
     """Every invocation emits the five boundary fields for success, failure, and timeout alike.
 
     Contract: capturing the emitted invocation record, a success / a non-zero exit / a
     timeout run each emit an event carrying {argv, cwd, duration_ms, returncode, timed_out}
     (all five present); the raw stdout/stderr body is NOT in the emitted record.
+
+    Defect-fix amendment (#6, spec-dev): the raw-body sentinel is delivered via the child's
+    environment and printed to its stdout, so it never appears in the emitted argv. The prior
+    form passed the sentinel *as argv*, making "argv is emitted" and "sentinel absent from the
+    record" mutually exclusive (unsatisfiable). Same behavior asserted; collision removed.
     """
     from issueforge import process
     from issueforge.process import run
@@ -287,7 +291,12 @@ def test_invocation_emits_observability_fields(tmp_path, monkeypatch):
         keys = ("argv", "cwd", "duration_ms", "returncode", "timed_out")
         return {k: getattr(rec, k) for k in keys if hasattr(rec, k)}
 
-    run([sys.executable, "-c", "print('OBSERVED_BODY')"], cwd=repo, timeout=5)
+    run(
+        [sys.executable, "-c", "import os\nprint(os.environ['IF_BODY'])\n"],
+        cwd=repo,
+        timeout=5,
+        env={**os.environ, "IF_BODY": "OBSERVED_BODY"},
+    )
     run(["false"], cwd=repo, timeout=5)
     run([sys.executable, "-c", "import time\ntime.sleep(5)\n"], cwd=repo, timeout=0.3)
 
