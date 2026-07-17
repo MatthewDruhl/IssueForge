@@ -13,7 +13,6 @@ import time
 import pytest
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_run_returns_result_on_nonzero_exit_never_raises(tmp_path, monkeypatch):
     """A failing command returns a result carrying the child's real values, it never raises.
 
@@ -38,7 +37,6 @@ def test_run_returns_result_on_nonzero_exit_never_raises(tmp_path, monkeypatch):
     assert "ERR" in r2.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_stdout_and_stderr_captured_separately_including_on_failure(tmp_path, monkeypatch):
     """stdout and stderr are captured separately and are never dropped, even on a non-zero exit.
 
@@ -66,7 +64,6 @@ def test_stdout_and_stderr_captured_separately_including_on_failure(tmp_path, mo
     assert "SENTINEL_OUT" not in result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_timeout_sets_distinct_flag_enforced_generally(tmp_path, monkeypatch):
     """A timeout is its own state, enforced for any long-running command, not special-cased.
 
@@ -93,7 +90,6 @@ def test_timeout_sets_distinct_flag_enforced_generally(tmp_path, monkeypatch):
     assert r3.timed_out is False
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_timeout_kills_process_group_descendant_does_not_survive(tmp_path, monkeypatch):
     """On timeout the whole process group dies, a spawned descendant does not survive.
 
@@ -139,7 +135,6 @@ def test_timeout_kills_process_group_descendant_does_not_survive(tmp_path, monke
     assert sentinel2.exists()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_command_result_is_frozen_dataclass_with_exactly_six_ordered_fields():
     """The result is a frozen dataclass with exactly the six required fields.
 
@@ -165,7 +160,6 @@ def test_command_result_is_frozen_dataclass_with_exactly_six_ordered_fields():
         result.returncode = 2
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_command_result_records_real_values_not_placeholders(tmp_path, monkeypatch):
     """The result records the run's real argv, output, and a real duration.
 
@@ -188,7 +182,6 @@ def test_command_result_records_real_values_not_placeholders(tmp_path, monkeypat
     assert result.duration_ms >= 0
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_run_uses_in_process_subprocess_shell_false_new_session(tmp_path, monkeypatch):
     """The seam runs in-process with no shell and its own session, never an external tool.
 
@@ -229,7 +222,6 @@ def test_run_uses_in_process_subprocess_shell_false_new_session(tmp_path, monkey
             assert argv[0] not in ("timeout", "gtimeout")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_run_honors_cwd_and_injected_env(tmp_path, monkeypatch):
     """run honors the cwd and env it is handed.
 
@@ -250,7 +242,6 @@ def test_run_honors_cwd_and_injected_env(tmp_path, monkeypatch):
     assert "xyz123" in result.stdout
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_signal_termination_preserved_and_not_marked_timed_out(tmp_path, monkeypatch):
     """A signal-killed child is recorded as such, not flattened to a plain failure or timeout.
 
@@ -310,7 +301,6 @@ def test_invocation_emits_observability_fields(tmp_path, monkeypatch):
         assert "OBSERVED_BODY" not in str(data)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_fresh_artifact_dir_per_invocation_through_seam_static_path_never_used(
     tmp_path, monkeypatch
 ):

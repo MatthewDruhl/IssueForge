@@ -59,6 +59,37 @@ def lint_boundary(
     typer.echo("OK")
 
 
+config_app = typer.Typer(help="Inspect a repository's committed .issueforge.toml.")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("check")
+def config_check(path: Path) -> None:
+    """Resolve and print a repo's build plan, or fail loudly naming the offending field."""
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+    from issueforge.config import ConfigError, load_config
+
+    try:
+        config = load_config(path)
+    except ConfigError as error:
+        for violation in error.violations:
+            typer.echo(str(violation), err=True)
+        raise typer.Exit(1)
+
+    adapter = PytestAdapter()
+    probe = adapter.probe()
+
+    typer.echo(f"adapter: {adapter.framework} (reporter={adapter.reporter})")
+    typer.echo(f"reporter_version: {probe.reporter_version}")
+    typer.echo(f"capabilities: {probe.capabilities}")
+    typer.echo(f"baseline: {config.baseline}")
+    typer.echo(f"acceptance: {config.acceptance}")
+    typer.echo(f"lint: {config.lint}")
+    typer.echo(f"build: {config.build}")
+    typer.echo(f"contract_paths: {config.contract_paths}")
+    typer.echo(f"sensitive_fields: {config.sensitive_fields}")
+
+
 @app.command()
 def version() -> None:
     """Show the installed IssueForge version."""

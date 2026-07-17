@@ -21,7 +21,6 @@ def _if_truthy(value):
     return False
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_verification_adapter_protocol_declares_six_signatures():
     """The adapter Protocol declares all six operations with their signatures.
 
@@ -55,7 +54,6 @@ def test_verification_adapter_protocol_declares_six_signatures():
     assert sig.parameters["frozen_deps"].default is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_pytest_adapter_implements_probe_only_this_slice():
     """This slice implements only probe on the pytest adapter; the other five are not built.
 
@@ -80,7 +78,6 @@ def test_pytest_adapter_implements_probe_only_this_slice():
             call()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_pytest_probe_reads_supplied_toolchain_and_pins_reporter_version():
     """probe reads the toolchain it is handed and pins that reporter's exact version.
 
@@ -96,7 +93,6 @@ def test_pytest_probe_reads_supplied_toolchain_and_pins_reporter_version():
     assert probe.capabilities == PytestAdapter.CAPABILITIES
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_registry_keys_on_both_framework_and_reporter():
     """Adapter selection keys on both framework and reporter, not framework alone and not language.
 
@@ -115,7 +111,6 @@ def test_registry_keys_on_both_framework_and_reporter():
     assert registry.resolve(framework=PytestAdapter.framework, reporter="nonesuch") is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_error_outcome_propagates_through_predicate_inversions():
     """An error Outcome propagates through every boolean inversion, it can never read as "no".
 
