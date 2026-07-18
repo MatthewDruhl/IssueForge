@@ -88,8 +88,9 @@ def test_repo_add_records_all_fields_with_exact_values_and_list_prints_them(make
     framework = "pytest" -> after `repo add DandD:<repo>` (exit 0),
     Registry.load().get("DandD") has alias=="DandD", path==<repo>.resolve(),
     slug=="Owner/DandD", default_branch=="main", baseline==["pytest"], framework=="pytest",
-    reporter=="pytest", adapter=="pytest"; and `repo list` stdout contains "DandD" and
-    "Owner/DandD".
+    reporter=="pytest", adapter=="pytest"; and `repo list` stdout prints all six user-visible
+    fields for the entry — "DandD", the absolute path, "Owner/DandD", "main", the baseline
+    "pytest", and the adapter "pytest".
     """
     from issueforge.registry import Registry
 
@@ -108,8 +109,12 @@ def test_repo_add_records_all_fields_with_exact_values_and_list_prints_them(make
 
     listed = _runner().invoke(app, ["repo", "list"])
     assert listed.exit_code == 0
+    # `repo list` prints the six user-visible fields (US-1 user-visible outcome).
     assert "DandD" in listed.stdout
+    assert str(repo.resolve()) in listed.stdout
     assert "Owner/DandD" in listed.stdout
+    assert "main" in listed.stdout
+    assert "pytest" in listed.stdout
 
 
 def test_tilde_expanded_to_absolute_path_in_persisted_entry(make_git_repo, monkeypatch, tmp_path):

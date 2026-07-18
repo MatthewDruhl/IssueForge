@@ -115,11 +115,21 @@ def repo_add(spec: str = typer.Argument(..., help="ALIAS:PATH of the clone to re
 
 @repo_app.command("list")
 def repo_list() -> None:
-    """Print each registered alias and its normalized origin slug."""
-    from issueforge.registry import Registry
+    """Print each registered clone: alias, absolute path, slug, default branch, baseline, adapter."""
+    from issueforge.registry import Registry, RegistryError
 
-    for entry in Registry.load().entries():
-        typer.echo(f"{entry.alias}\t{entry.slug}")
+    try:
+        entries = Registry.load().entries()
+    except RegistryError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from None
+
+    for entry in entries:
+        baseline = " ".join(entry.baseline)
+        typer.echo(
+            f"{entry.alias}\t{entry.path}\t{entry.slug}\t{entry.default_branch}\t"
+            f"{baseline}\t{entry.adapter}"
+        )
 
 
 @app.command()

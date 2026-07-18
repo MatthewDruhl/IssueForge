@@ -1,7 +1,8 @@
 """The repo registry: register a verified local clone and resolve it later.
 
 ``issueforge repo add ALIAS:PATH`` records a verified existing Git clone; ``repo list`` prints
-the registered aliases and their normalized origin slugs. Registration reads the COMMITTED
+each alias with its absolute path, normalized origin slug, default branch, baseline command, and
+resolved adapter. Registration reads the COMMITTED
 config object (never the dirty worktree), resolves the verification adapter from the declared
 ``(framework, reporter)`` and INVOKES its ``probe`` (refusing an unknown framework/reporter),
 records the normalized origin slug and the remote default branch as facts, and persists the
@@ -53,15 +54,23 @@ def repo_slug(url: str) -> str:
     ``ssh://git@host/Owner/Repo`` and a bare ``Owner/Repo``; the operation is idempotent.
     Raises ``ValueError`` for a URL that cannot yield an owner/repo pair.
     """
-    text = url.strip()
+    text = url.strip().split("#", 1)[0]  # drop any fragment
     if not text:
         raise ValueError("empty remote URL")
 
     if "://" in text:  # scheme://[user@]host/owner/repo
-        rest = text.split("://", 1)[1]
-        path = rest.split("/", 1)[1] if "/" in rest else ""
-    elif ":" in text and "/" not in text.split(":", 1)[0]:  # scp-like git@host:owner/repo
-        path = text.split(":", 1)[1]
+        scheme, rest = text.split("://", 1)
+        if scheme.lower() not in {"http", "https", "ssh", "git"}:
+            raise ValueError(f"unsupported remote scheme {scheme!r} in {url!r}")
+        rest = rest.split("?", 1)[0]  # drop any query string
+        if "/" not in rest:
+            raise ValueError(f"cannot derive owner/repo from {url!r}")
+        path = rest.split("/", 1)[1]
+    elif "@" in text and ":" in text and "/" not in text.split(":", 1)[0]:
+        # scp-like git@host:owner/repo
+        path = text.split(":", 1)[1].split("?", 1)[0]
+    elif text.startswith(("/", ".", "~")):  # a filesystem path is not a remote URL
+        raise ValueError(f"not a remote URL: {url!r}")
     else:  # bare owner/repo
         path = text
 
@@ -71,7 +80,10 @@ def repo_slug(url: str) -> str:
     parts = [segment for segment in path.split("/") if segment]
     if len(parts) < 2:
         raise ValueError(f"cannot derive owner/repo from {url!r}")
-    return f"{parts[0]}/{parts[1]}"
+    owner, repo = parts[0], parts[1]
+    if any(ch in f"{owner}{repo}" for ch in "?@ \t"):
+        raise ValueError(f"cannot derive a clean owner/repo from {url!r}")
+    return f"{owner}/{repo}"
 
 
 class Registry:
@@ -91,7 +103,13 @@ class Registry:
         path = cls.registry_path()
         if not path.exists():
             return cls([])
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as error:
+            raise RegistryError(
+                f"registry file is unreadable ({path}); it is empty or corrupt: {error}"
+            ) from error
         entries = [
             Entry(
                 alias=item["alias"],
@@ -187,6 +205,12 @@ def register(alias: str, path_token: str) -> Entry:
     resolved = raw_path.resolve()
     if not _is_git_repo(resolved):
         raise RegistryError(f"not a Git repository: {resolved}")
+    toplevel = _git(resolved, "rev-parse", "--show-toplevel")
+    top = toplevel.stdout.strip()
+    if toplevel.returncode != 0 or not top or Path(top).resolve() != resolved:
+        raise RegistryError(
+            f"not a Git repository root; register the clone's top-level directory, not {resolved}"
+        )
 
     # Committed config only — a dirty/untracked worktree must not influence registration.
     try:
@@ -215,8 +239,12 @@ def register(alias: str, path_token: str) -> Entry:
 
     default_branch = _default_branch(resolved)
 
-    # Prove the resolved adapter actually works for this repo (US-1.5).
-    adapter.probe()
+    # Prove the resolved adapter actually works for this repo (US-1.5). A probe that raises
+    # (e.g. the reporter is not installed) is a clean refusal, never a traceback.
+    try:
+        adapter.probe()
+    except Exception as error:  # noqa: BLE001 — any probe failure is a registration refusal
+        raise RegistryError(f"adapter probe failed for framework {framework!r}: {error}") from error
 
     reg = Registry.load()
     if reg._has(alias):
