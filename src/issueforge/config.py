@@ -17,6 +17,7 @@ from pathlib import Path
 
 _COMMAND_FIELDS = ("baseline", "acceptance", "lint", "build")
 _LIST_FIELDS = ("contract_paths", "sensitive_fields")
+_STRING_FIELDS = ("framework", "reporter")
 _CONFIG_FILE = ".issueforge.toml"
 
 
@@ -52,6 +53,8 @@ class Config:
     build: list[str] | None = None
     contract_paths: list[str] | None = field(default=None)
     sensitive_fields: list[str] | None = field(default=None)
+    framework: str | None = None
+    reporter: str | None = None
 
 
 def load_config(repo: Path, *, ref: str | None = None) -> Config:
@@ -80,6 +83,10 @@ def load_config(repo: Path, *, ref: str | None = None) -> Config:
         if name in raw:
             violations.extend(_validate_string_list(name, raw[name]))
 
+    for name in _STRING_FIELDS:
+        if name in raw and not isinstance(raw[name], str):
+            violations.append(Violation(name, "must be a string"))
+
     if violations:
         raise ConfigError(violations)
 
@@ -90,6 +97,8 @@ def load_config(repo: Path, *, ref: str | None = None) -> Config:
         build=_optional(raw, "build"),
         contract_paths=_optional(raw, "contract_paths"),
         sensitive_fields=_optional(raw, "sensitive_fields"),
+        framework=raw.get("framework"),
+        reporter=raw.get("reporter"),
     )
 
 

@@ -90,6 +90,38 @@ def config_check(path: Path) -> None:
     typer.echo(f"sensitive_fields: {config.sensitive_fields}")
 
 
+repo_app = typer.Typer(help="Register and list verified local clones.")
+app.add_typer(repo_app, name="repo")
+
+
+@repo_app.command("add")
+def repo_add(spec: str = typer.Argument(..., help="ALIAS:PATH of the clone to register.")) -> None:
+    """Register a verified existing clone under ALIAS, or refuse loudly on stderr."""
+    from issueforge.registry import RegistryError, register
+
+    alias, sep, path_token = spec.partition(":")
+    if not sep or not alias or not path_token:
+        typer.echo(f"invalid ALIAS:PATH argument: {spec!r}", err=True)
+        raise typer.Exit(1)
+
+    try:
+        register(alias, path_token)
+    except RegistryError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from None
+
+    typer.echo(f"registered {alias}")
+
+
+@repo_app.command("list")
+def repo_list() -> None:
+    """Print each registered alias and its normalized origin slug."""
+    from issueforge.registry import Registry
+
+    for entry in Registry.load().entries():
+        typer.echo(f"{entry.alias}\t{entry.slug}")
+
+
 @app.command()
 def version() -> None:
     """Show the installed IssueForge version."""
