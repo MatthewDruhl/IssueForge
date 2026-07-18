@@ -63,9 +63,7 @@ def _add(alias: str, repo: Path):
 def _snapshot(root: Path) -> dict[str, bytes]:
     """Byte-for-byte contents of every file under ``root`` (keyed by relative path)."""
     return {
-        str(p.relative_to(root)): p.read_bytes()
-        for p in sorted(root.rglob("*"))
-        if p.is_file()
+        str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()
     }
 
 
@@ -138,7 +136,9 @@ def test_tilde_expanded_to_absolute_path_in_persisted_entry(make_git_repo, monke
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#7)")
-def test_alias_lookup_case_insensitive_preserves_display_spelling(make_git_repo, isolated_state_home):
+def test_alias_lookup_case_insensitive_preserves_display_spelling(
+    make_git_repo, isolated_state_home
+):
     """Alias lookup is case-insensitive across spellings, the entered spelling is preserved, and a differently-cased re-add is refused.
 
     technical (contract): after `repo add DandD:<repo>`, Registry.load().get returns the same
@@ -287,7 +287,9 @@ def test_mismatched_remote_refused_but_equivalent_remote_is_a_plain_duplicate(
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#7)")
-def test_missing_path_refused_naming_path_clean_channel(make_git_repo, isolated_state_home, tmp_path):
+def test_missing_path_refused_naming_path_clean_channel(
+    make_git_repo, isolated_state_home, tmp_path
+):
     """A repo add against a nonexistent path is refused, naming the path on stderr with a clean error channel, registry unchanged.
 
     technical (contract): after a valid `repo add Good:<repo>`, `repo add Bad:<tmp>/nope` ->
@@ -437,7 +439,9 @@ def test_unknown_reporter_refused_naming_pair(make_git_repo, isolated_state_home
     `repo add R:<repo>` non-zero exit whose stderr contains "pytest" and "nosuch", empty
     stdout; the state home is byte-identical.
     """
-    repo = make_git_repo(config='baseline = ["pytest"]\nframework = "pytest"\nreporter = "nosuch"\n')
+    repo = make_git_repo(
+        config='baseline = ["pytest"]\nframework = "pytest"\nreporter = "nosuch"\n'
+    )
 
     before = _snapshot(isolated_state_home)
     refused = _add("R", repo)
@@ -641,7 +645,9 @@ def test_never_auto_registers_repositories_on_disk(make_git_repo, tmp_path):
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#7)")
-def test_registry_file_lives_under_state_root_and_is_not_markdown(make_git_repo, isolated_state_home):
+def test_registry_file_lives_under_state_root_and_is_not_markdown(
+    make_git_repo, isolated_state_home
+):
     """The canonical registry file lives under IssueForge's env-overridable state root and is not a Markdown file.
 
     technical (contract): after `repo add DandD:<repo>`, Registry.registry_path() exists, is
@@ -682,9 +688,7 @@ def test_registration_survives_a_fresh_process_reload(make_git_repo, isolated_st
         "print('baseline=' + repr(e.baseline))\n"
     )
     env = {**os.environ, "ISSUEFORGE_STATE_HOME": str(isolated_state_home)}
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, env=env
-    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
     assert "slug=Owner/DandD" in lines
