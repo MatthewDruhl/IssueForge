@@ -133,6 +133,14 @@ def repo_list() -> None:
 
 
 @app.command()
+def run(spec: str = typer.Argument(..., help="ALIAS#N of the issue to run.")) -> None:
+    """Run an issue end-to-end: resolve ALIAS#N, verify it is open, execute the stub stage."""
+    from issueforge import engine
+
+    engine.run(spec)
+
+
+@app.command()
 def version() -> None:
     """Show the installed IssueForge version."""
     from issueforge import __version__

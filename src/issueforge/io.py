@@ -12,7 +12,9 @@ write-surface lint exempts.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from issueforge.paths import state_root
@@ -106,3 +108,43 @@ class WriteSeam:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(data, encoding=encoding)
         return target
+
+    def write_text_atomic(self, path: Path, data: str, encoding: str = "utf-8") -> Path:
+        """Write ``data`` to ``path`` atomically: temp file in the SAME dir, fsync, os.replace.
+
+        The temp file is created with ``mkstemp`` in ``path``'s parent so ``os.replace`` is a
+        rename within one directory (atomic on POSIX). A failed replace leaves the previous file
+        intact and drops no temp file. The target must resolve under an allowed root.
+        """
+        target = self._checked(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=".tmp-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding=encoding) as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_name, target)
+        except BaseException:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+            raise
+        return target
+
+    def append_text(self, path: Path, data: str, encoding: str = "utf-8") -> Path:
+        """Append ``data`` to ``path`` without rewriting any preceding byte (append-only)."""
+        target = self._checked(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "a", encoding=encoding) as handle:
+            handle.write(data)
+        return target
+
+    def open_lock(self, path: Path) -> int:
+        """Open (creating if needed) an advisory-lock file under an allowed root; return its fd.
+
+        Kept in the seam so the raw ``os.open`` stays inside the sanctioned write module. The
+        caller owns the returned fd (flock + close).
+        """
+        target = self._checked(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return os.open(str(target), os.O_CREAT | os.O_RDWR, 0o644)
