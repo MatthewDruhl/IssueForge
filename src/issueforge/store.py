@@ -134,13 +134,21 @@ class RunStore:
             exists = manifest_path(run_id).exists()
             if not exists and not create:
                 raise KeyError(f"run {run_id!r} does not exist")
+            if exists and create:
+                raise FileExistsError(
+                    f"run {run_id!r} already exists; create requires nonexistence"
+                )
             record = self._read_unlocked(run_id) if exists else {}
             fields = transform(record)
             if not isinstance(fields, dict):
                 raise TypeError(f"transform must return a dict of fields, got {fields!r}")
             merged = {**record, **fields}
-            validator = validate if validate is not None else validate_record
-            validator(merged)
+            # A custom validate runs additively; validate_record ALWAYS runs, and LAST, on the exact
+            # dict about to be written, so a custom hook cannot bypass the invariant nor mutate the
+            # record after it is checked.
+            if validate is not None:
+                validate(merged)
+            validate_record(merged)
             self._seam.write_text_atomic(manifest_path(run_id), self._dump(merged))
             return merged
 
@@ -158,6 +166,8 @@ class RunStore:
         exists = manifest_path(run_id).exists()
         if not exists and not create:
             raise KeyError(f"run {run_id!r} does not exist")
+        if exists and create:
+            raise FileExistsError(f"run {run_id!r} already exists; create requires nonexistence")
         validate_record(record)
         self._seam.write_text_atomic(manifest_path(run_id), self._dump(record))
         return record
@@ -182,9 +192,15 @@ class RunStore:
 
     # --- append-only event stream -------------------------------------------
     def append_event(self, run_id: str, event: dict) -> Path:
-        """Append one JSON line to events.jsonl, redacting instance secrets first (append-only)."""
+        """Append one JSON line to events.jsonl, redacting instance secrets first (append-only).
+
+        Taken under the store lock so concurrent appends cannot interleave. The seam heals a torn
+        final line (an unterminated tail left by a crash) before appending, so a crash cannot turn
+        the torn tail into a permanent malformed middle line.
+        """
         line = self._redact(json.dumps(event)) + "\n"
-        return self._seam.append_text(events_path(run_id), line)
+        with self._lock():
+            return self._seam.append_text(events_path(run_id), line)
 
     def replay_events(self, run_id: str) -> list[dict]:
         """Parse events.jsonl in order, discarding ONLY an unparseable/torn FINAL line.
@@ -217,13 +233,22 @@ class RunStore:
     def write_artifact(
         self, run_id: str, name: str, text: str, *, secrets: set[str] | None = None
     ) -> Path:
-        """Redact each secret (instance + call) to ``[REDACTED]`` then persist under the run dir."""
+        """Redact each secret (instance + call) to ``[REDACTED]`` then persist under the run dir.
+
+        ``name`` must be a bare filename that lands directly under the run dir: an absolute path, a
+        path separator, or a ``..`` segment is rejected so an artifact cannot escape run_dir.
+        """
+        if os.path.isabs(name) or "/" in name or "\\" in name or ".." in name:
+            raise ValueError(f"artifact name {name!r} must be a bare filename under the run dir")
         combined = self._secrets | set(secrets or ())
         scrubbed = self._redact(text, combined)
         return self._seam.write_text_atomic(run_dir(run_id) / name, scrubbed)
 
     def _redact(self, text: str, secrets: set[str] | None = None) -> str:
-        for secret in self._secrets if secrets is None else secrets:
+        # Longest-first: replacing a longer secret before a shorter one it contains (TOKEN123 before
+        # TOKEN) prevents leaking the suffix of an overlapping secret.
+        source = self._secrets if secrets is None else secrets
+        for secret in sorted(source, key=len, reverse=True):
             if secret:
                 text = text.replace(secret, REDACTED)
         return text

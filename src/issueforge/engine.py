@@ -33,6 +33,25 @@ def _default_stage(record: dict) -> None:
     store.RunStore().append_event(record["run_id"], {"transition": "stage"})
 
 
+def _persist_captured(
+    s: store.RunStore, run_id: str, out: StringIO, err: StringIO, secrets: set[str] | None
+) -> None:
+    """Persist whatever stdout/stderr the stage produced, through the redacting artifact writer."""
+    if out.getvalue():
+        s.write_artifact(run_id, "stdout.log", out.getvalue(), secrets=secrets)
+    if err.getvalue():
+        s.write_artifact(run_id, "stderr.log", err.getvalue(), secrets=secrets)
+
+
+def _release_active(s: store.RunStore, run_id: str) -> None:
+    """Clear the single active slot iff it still holds ``run_id`` (under the store lock)."""
+    with s.locked():
+        queue = s.read_queue()
+        if queue.get("active") == run_id:
+            queue["active"] = None
+            s.write_queue_unlocked(queue)
+
+
 def run(
     spec: str,
     *,
@@ -70,8 +89,12 @@ def run(
             admitted = False
             queue["queue"].append(run_id)
             status = QUEUED
-        s.write_record_unlocked(run_id, {"run_id": run_id, "status": status}, create=True)
+        # Fail-safe order: write the QUEUE (active=run_id) BEFORE the manifest(status=running). A
+        # crash between the two then leaves the slot OCCUPIED (a later run enqueues) rather than
+        # empty (which would wrongly admit a second run = double-active). Full multi-file
+        # transactionality / startup reconcile is deferred to #48.
         s.write_queue_unlocked(queue)
+        s.write_record_unlocked(run_id, {"run_id": run_id, "status": status}, create=True)
 
     s.append_event(run_id, {"transition": QUEUED})
     if not admitted:
@@ -81,19 +104,28 @@ def run(
     record = s.read(run_id)
 
     out, err = StringIO(), StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        stage(record)
-    if out.getvalue():
-        s.write_artifact(run_id, "stdout.log", out.getvalue(), secrets=secrets)
-    if err.getvalue():
-        s.write_artifact(run_id, "stderr.log", err.getvalue(), secrets=secrets)
+    try:
+        with redirect_stdout(out), redirect_stderr(err):
+            stage(record)
+    except BaseException:
+        # A raising stage must not brick the engine: persist captured output and release the active
+        # slot (else queue.active stays set forever, blocking ALL future runs), then re-raise. S4
+        # has no "failed" status, so the manifest simply stays "running".
+        _persist_captured(s, run_id, out, err, secrets)
+        _release_active(s, run_id)
+        raise
+
+    _persist_captured(s, run_id, out, err, secrets)
 
     with s.locked():
+        # Fail-safe order: write the manifest(status=completed) BEFORE clearing queue.active. A
+        # crash between the two then leaves the slot stuck-occupied (blocks new runs) rather than
+        # cleared while the old manifest still says "running". Deferred: see #48.
+        completed = {**s.read(run_id), "status": COMPLETED}
+        s.write_record_unlocked(run_id, completed)
         queue = s.read_queue()
         if queue.get("active") == run_id:
             queue["active"] = None
             s.write_queue_unlocked(queue)
-        completed = {**s.read(run_id), "status": COMPLETED}
-        s.write_record_unlocked(run_id, completed)
     s.append_event(run_id, {"transition": COMPLETED})
     return s.read(run_id)

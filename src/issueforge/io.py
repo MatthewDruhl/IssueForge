@@ -129,12 +129,30 @@ class WriteSeam:
             if os.path.exists(tmp_name):
                 os.unlink(tmp_name)
             raise
+        # fsync the parent directory so the rename itself is durable (the dir entry survives a crash).
+        dir_fd = os.open(str(target.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
         return target
 
     def append_text(self, path: Path, data: str, encoding: str = "utf-8") -> Path:
-        """Append ``data`` to ``path`` without rewriting any preceding byte (append-only)."""
+        """Append ``data`` to ``path`` without rewriting any preceding committed byte (append-only).
+
+        Self-heals a torn final line first: if the file is non-empty and does not end in a newline,
+        a crash left an unterminated tail. Truncate back to the last newline (dropping only the torn
+        tail) BEFORE appending, so the new line can never fuse onto a partial line and become a
+        permanent malformed middle line. The caller serializes concurrent appends (store lock).
+        """
         target = self._checked(path)
         target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            existing = target.read_bytes()
+            if existing and not existing.endswith(b"\n"):
+                keep = existing.rfind(b"\n") + 1  # last newline + 1; 0 drops a lone torn line
+                with open(target, "rb+") as handle:
+                    handle.truncate(keep)
         with open(target, "a", encoding=encoding) as handle:
             handle.write(data)
         return target
