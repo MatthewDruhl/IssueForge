@@ -80,7 +80,6 @@ def _no_traceback(text: str) -> bool:
 # --------------------------------------------------------------------------- records / display
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_repo_add_records_all_fields_with_exact_values_and_list_prints_them(make_git_repo):
     """repo add records the alias, resolved path, origin slug, default branch, baseline, framework, reporter, and adapter as exact values; repo list prints the alias and slug.
 
@@ -89,8 +88,9 @@ def test_repo_add_records_all_fields_with_exact_values_and_list_prints_them(make
     framework = "pytest" -> after `repo add DandD:<repo>` (exit 0),
     Registry.load().get("DandD") has alias=="DandD", path==<repo>.resolve(),
     slug=="Owner/DandD", default_branch=="main", baseline==["pytest"], framework=="pytest",
-    reporter=="pytest", adapter=="pytest"; and `repo list` stdout contains "DandD" and
-    "Owner/DandD".
+    reporter=="pytest", adapter=="pytest"; and `repo list` stdout prints all six user-visible
+    fields for the entry — "DandD", the absolute path, "Owner/DandD", "main", the baseline
+    "pytest", and the adapter "pytest".
     """
     from issueforge.registry import Registry
 
@@ -109,11 +109,14 @@ def test_repo_add_records_all_fields_with_exact_values_and_list_prints_them(make
 
     listed = _runner().invoke(app, ["repo", "list"])
     assert listed.exit_code == 0
+    # `repo list` prints the six user-visible fields (US-1 user-visible outcome).
     assert "DandD" in listed.stdout
+    assert str(repo.resolve()) in listed.stdout
     assert "Owner/DandD" in listed.stdout
+    assert "main" in listed.stdout
+    assert "pytest" in listed.stdout
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_tilde_expanded_to_absolute_path_in_persisted_entry(make_git_repo, monkeypatch, tmp_path):
     """A ~ in the added path is expanded to an absolute path in the stored entry, not kept literally.
 
@@ -135,7 +138,6 @@ def test_tilde_expanded_to_absolute_path_in_persisted_entry(make_git_repo, monke
     assert "~" not in str(entry.path)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_alias_lookup_case_insensitive_preserves_display_spelling(
     make_git_repo, isolated_state_home
 ):
@@ -163,7 +165,6 @@ def test_alias_lookup_case_insensitive_preserves_display_spelling(
 # --------------------------------------------------------------------------- origin / slug
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 @pytest.mark.parametrize(
     "origin",
     [
@@ -188,7 +189,6 @@ def test_origin_slug_normalized_across_url_spellings(make_git_repo, origin):
     assert Registry.load().get("R").slug == "Owner/DandD"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_repo_without_origin_refused_registry_unchanged(make_git_repo, isolated_state_home):
     """A Git repo with no origin remote is refused (no slug can be recorded), leaving the registry unchanged.
 
@@ -210,7 +210,6 @@ def test_repo_without_origin_refused_registry_unchanged(make_git_repo, isolated_
     assert "N" not in _aliases()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_malformed_origin_refused_registry_unchanged(make_git_repo, isolated_state_home):
     """An origin URL that cannot be normalized to owner/repo is refused, registry unchanged.
 
@@ -233,7 +232,6 @@ def test_malformed_origin_refused_registry_unchanged(make_git_repo, isolated_sta
 # --------------------------------------------------------------------------- duplicate / mismatch
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_duplicate_alias_refused_registry_byte_identical(make_git_repo, isolated_state_home):
     """Re-adding an already-registered alias whose slug matches is refused as a duplicate, registry byte-identical.
 
@@ -252,7 +250,6 @@ def test_duplicate_alias_refused_registry_byte_identical(make_git_repo, isolated
     assert _snapshot(isolated_state_home) == before
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_mismatched_remote_refused_but_equivalent_remote_is_a_plain_duplicate(
     make_git_repo, isolated_state_home
 ):
@@ -286,7 +283,6 @@ def test_mismatched_remote_refused_but_equivalent_remote_is_a_plain_duplicate(
 # --------------------------------------------------------------------------- path validity
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_missing_path_refused_naming_path_clean_channel(
     make_git_repo, isolated_state_home, tmp_path
 ):
@@ -309,7 +305,6 @@ def test_missing_path_refused_naming_path_clean_channel(
     assert _snapshot(isolated_state_home) == before
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_non_git_path_refused_clean_channel(isolated_state_home, make_git_repo, tmp_path):
     """A repo add against a real directory that is not a Git repository is refused with a clean error channel, registry unchanged.
 
@@ -333,7 +328,6 @@ def test_non_git_path_refused_clean_channel(isolated_state_home, make_git_repo, 
 # --------------------------------------------------------------------------- default branch
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_default_branch_read_from_origin_head_not_local_branch(make_git_repo):
     """The recorded default branch comes from the clone's remote HEAD, not the checked-out local branch, and is never assumed to be main.
 
@@ -350,7 +344,6 @@ def test_default_branch_read_from_origin_head_not_local_branch(make_git_repo):
     assert entry.default_branch == "trunk"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_unresolvable_default_branch_refused_registry_unchanged(make_git_repo, isolated_state_home):
     """A repo whose remote default branch cannot be established is refused rather than defaulted, registry unchanged.
 
@@ -372,7 +365,6 @@ def test_unresolvable_default_branch_refused_registry_unchanged(make_git_repo, i
 # --------------------------------------------------------------------------- adapter / framework / reporter
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_unsupported_framework_refused_naming_it_pytest_control_resolves(
     make_git_repo, isolated_state_home
 ):
@@ -399,7 +391,6 @@ def test_unsupported_framework_refused_naming_it_pytest_control_resolves(
     assert Registry.load().get("P").adapter == "pytest"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_missing_framework_field_refused(make_git_repo, isolated_state_home):
     """A committed config with no framework field is refused: registration cannot resolve an adapter without one.
 
@@ -417,7 +408,6 @@ def test_missing_framework_field_refused(make_git_repo, isolated_state_home):
     assert _snapshot(isolated_state_home) == before
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_reporter_defaults_to_framework_when_omitted(make_git_repo):
     """When the config omits reporter, it defaults to the framework for adapter resolution.
 
@@ -431,7 +421,6 @@ def test_reporter_defaults_to_framework_when_omitted(make_git_repo):
     assert Registry.load().get("P").reporter == "pytest"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_unknown_reporter_refused_naming_pair(make_git_repo, isolated_state_home):
     """A known framework with a reporter that has no adapter is refused, naming the (framework, reporter) pair.
 
@@ -451,7 +440,6 @@ def test_unknown_reporter_refused_naming_pair(make_git_repo, isolated_state_home
     assert _snapshot(isolated_state_home) == before
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_config_loader_parses_framework_and_reporter_fields(make_git_repo):
     """The committed-config loader (config.py) exposes framework and reporter; both are absent (None) when omitted.
 
@@ -478,7 +466,6 @@ def test_config_loader_parses_framework_and_reporter_fields(make_git_repo):
 # --------------------------------------------------------------------------- committed-object fidelity
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_registration_reads_committed_config_not_dirty_worktree(make_git_repo):
     """Registration records the committed config, ignoring divergent dirty working-tree content.
 
@@ -501,7 +488,6 @@ def test_registration_reads_committed_config_not_dirty_worktree(make_git_repo):
     assert entry.framework == "pytest"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_untracked_only_config_refused_registry_unchanged(make_git_repo, isolated_state_home):
     """A .issueforge.toml present only as untracked working-tree content is rejected at registration.
 
@@ -522,7 +508,6 @@ def test_untracked_only_config_refused_registry_unchanged(make_git_repo, isolate
     assert _add("C", control).exit_code == 0
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_missing_baseline_refused_at_registration_clean_channel(make_git_repo, isolated_state_home):
     """A committed config with no baseline command is refused at registration (US-4.1), not left as a runtime surprise.
 
@@ -548,7 +533,6 @@ def test_missing_baseline_refused_at_registration_clean_channel(make_git_repo, i
 # --------------------------------------------------------------------------- behavioral guards
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_registration_invokes_the_resolved_adapter_probe(make_git_repo, monkeypatch):
     """Registration actually runs the resolved adapter's probe (US-1.5), it does not merely look the adapter up.
 
@@ -571,7 +555,6 @@ def test_registration_invokes_the_resolved_adapter_probe(make_git_repo, monkeypa
     assert calls, "registration must invoke the resolved adapter's probe"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_registration_persists_through_the_write_seam(make_git_repo, monkeypatch):
     """The registry is persisted through the S25 WriteSeam, not a raw file write.
 
@@ -596,7 +579,6 @@ def test_registration_persists_through_the_write_seam(make_git_repo, monkeypatch
     assert Registry.registry_path().resolve() in targets
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_registration_never_invokes_git_clone(make_git_repo, monkeypatch):
     """No registration path shells out to `git clone`: IssueForge resolves existing clones, never creating them.
 
@@ -621,7 +603,6 @@ def test_registration_never_invokes_git_clone(make_git_repo, monkeypatch):
     assert all("clone" not in c for c in git_calls)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_never_auto_registers_repositories_on_disk(make_git_repo, tmp_path):
     """IssueForge never auto-discovers or auto-registers repositories: only an explicit repo add adds an entry.
 
@@ -644,7 +625,6 @@ def test_never_auto_registers_repositories_on_disk(make_git_repo, tmp_path):
 # --------------------------------------------------------------------------- registry location / persistence
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_registry_file_lives_under_state_root_and_is_not_markdown(
     make_git_repo, isolated_state_home
 ):
@@ -668,7 +648,6 @@ def test_registry_file_lives_under_state_root_and_is_not_markdown(
     assert path.suffix != ".md"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#7)")
 def test_registration_survives_a_fresh_process_reload(make_git_repo, isolated_state_home):
     """A registered entry is persisted to disk and reloads intact in a fresh process, not just in memory.
 
