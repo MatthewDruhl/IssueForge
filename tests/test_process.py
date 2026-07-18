@@ -185,9 +185,17 @@ def test_command_result_records_real_values_not_placeholders(tmp_path, monkeypat
 def test_run_uses_in_process_subprocess_shell_false_new_session(tmp_path, monkeypatch):
     """The seam runs in-process with no shell and its own session, never an external tool.
 
-    Contract: spy on subprocess.run, run(["true"], timeout=5) -> subprocess.run called once
-    with shell falsy, start_new_session=True, and a timeout= value; argv[0] is never
-    timeout/gtimeout and no external timeout executable is invoked.
+    Contract: spy on subprocess.Popen, run(["true"], timeout=5) -> subprocess.Popen called
+    once with shell falsy and start_new_session=True; argv[0] is never timeout/gtimeout and no
+    external timeout executable is invoked. In-process timeout is enforced via
+    Popen.communicate(timeout=...), not an external timeout(1) tool.
+
+    Design amendment (#6, spec-dev): spies subprocess.Popen, not subprocess.run. run() uses
+    Popen directly so it keeps the child pid locally for os.killpg on timeout; the prior
+    subprocess.run form forced a process-global Popen swap to recover the pid, which Codex
+    reproduced racing/leaking under concurrency. Same intent asserted (in-process, no shell,
+    own session, no external timeout tool); Popen has no timeout= kwarg (it lives on
+    communicate), so that one assertion is dropped.
     """
     from issueforge.process import run
 
@@ -196,13 +204,13 @@ def test_run_uses_in_process_subprocess_shell_false_new_session(tmp_path, monkey
     repo.mkdir()
 
     calls = []
-    real = subprocess.run
+    real = subprocess.Popen
 
     def spy(*args, **kwargs):
         calls.append((args, kwargs))
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(subprocess, "run", spy)
+    monkeypatch.setattr(subprocess, "Popen", spy)
 
     run(["true"], cwd=repo, timeout=5)
 
@@ -215,7 +223,6 @@ def test_run_uses_in_process_subprocess_shell_false_new_session(tmp_path, monkey
     assert _argv(calls[0]) == ["true"]
     assert not kwargs.get("shell", False)
     assert kwargs.get("start_new_session") is True
-    assert kwargs.get("timeout") is not None
     for call in calls:
         argv = _argv(call)
         if argv:

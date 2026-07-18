@@ -11,6 +11,7 @@ returncode a caller can mistake for a plain failure.
 from __future__ import annotations
 
 import json
+import os
 import signal
 import subprocess
 import time
@@ -21,16 +22,6 @@ from pathlib import Path
 from issueforge.boundary import Command
 from issueforge.io import WriteSeam
 from issueforge.paths import state_root
-
-# subprocess.run hides the child pid, but the process-group kill needs it. A Popen subclass
-# swapped in for the duration of one run records the pid the standard runner would conceal.
-_CAPTURED_PIDS: list[int] = []
-
-
-class _CapturingPopen(subprocess.Popen):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        _CAPTURED_PIDS.append(self.pid)
 
 
 @dataclass(frozen=True)
@@ -86,33 +77,35 @@ def run(
     spec = _Spec(argv=list(argv), cwd=Path(cwd))
     command: Command = Command.from_config(spec.argv, cwd=spec.cwd)
 
-    _CAPTURED_PIDS.clear()
     start = time.monotonic()
-    original_popen = subprocess.Popen
-    subprocess.Popen = _CapturingPopen
     timed_out = False
+    # subprocess.Popen (not subprocess.run) so this invocation keeps its own child pid locally
+    # for the process-group kill on timeout — no process-global state, so concurrent runs
+    # cannot race or mis-restore. start_new_session makes the child a group leader (PGID==PID),
+    # so killpg(pid) reaches every descendant. In-process timeout via communicate(timeout=...),
+    # never an external timeout(1) tool.
+    process = subprocess.Popen(
+        command,
+        cwd=command.cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
     try:
-        completed = subprocess.run(
-            command,
-            cwd=command.cwd,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            start_new_session=True,
-        )
-        returncode = completed.returncode
-        stdout = completed.stdout or ""
-        stderr = completed.stderr or ""
-    except subprocess.TimeoutExpired as expired:
+        stdout, stderr = process.communicate(timeout=timeout)
+        returncode = process.returncode
+    except subprocess.TimeoutExpired:
         timed_out = True
-        _kill_process_group()
-        returncode = -signal.SIGKILL
-        stdout = _as_text(expired.stdout)
-        stderr = _as_text(expired.stderr)
-    finally:
-        subprocess.Popen = original_popen
+        _kill_process_group(process.pid)
+        # The group is dead, so the pipes close and this second communicate() cannot block on a
+        # surviving grandchild; it reaps the child and drains any buffered output.
+        stdout, stderr = process.communicate()
+        returncode = process.returncode if process.returncode is not None else -signal.SIGKILL
 
+    stdout = stdout or ""
+    stderr = stderr or ""
     duration_ms = (time.monotonic() - start) * 1000.0
     result = CommandResult(
         argv=spec.argv,
@@ -134,20 +127,9 @@ def run(
     return result
 
 
-def _kill_process_group() -> None:
+def _kill_process_group(pid: int) -> None:
     """SIGKILL the timed-out child's whole session, so a spawned grandchild cannot outlive it."""
-    import os
-
-    for pid in _CAPTURED_PIDS:
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            continue
-
-
-def _as_text(value) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bytes):
-        return value.decode(errors="replace")
-    return value
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
