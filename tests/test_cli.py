@@ -1,7 +1,6 @@
 import subprocess
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from issueforge.cli import app
@@ -31,7 +30,6 @@ def test_version() -> None:
     assert result.stdout.strip() == "0.1.0"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_config_check_valid_prints_full_resolved_plan_from_runtime(tmp_path, monkeypatch):
     """config check on a valid repo prints the complete resolved plan from live data, exit 0.
 
@@ -68,7 +66,6 @@ def test_config_check_valid_prints_full_resolved_plan_from_runtime(tmp_path, mon
     assert "9.9.9" in result.stdout
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_config_check_malformed_committed_exit1_stderr_names_field_no_traceback(tmp_path):
     """config check on a committed bad config fails cleanly on stderr, naming the field.
 
@@ -86,7 +83,6 @@ def test_config_check_malformed_committed_exit1_stderr_names_field_no_traceback(
     assert "Traceback (most recent call last)" not in result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_config_check_reports_every_violation_as_distinct_diagnostics(tmp_path):
     """config check reports every violation at once as distinct diagnostics, no fail-fast.
 

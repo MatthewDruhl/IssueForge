@@ -13,7 +13,6 @@ import time
 import pytest
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_run_returns_result_on_nonzero_exit_never_raises(tmp_path, monkeypatch):
     """A failing command returns a result carrying the child's real values, it never raises.
 
@@ -38,7 +37,6 @@ def test_run_returns_result_on_nonzero_exit_never_raises(tmp_path, monkeypatch):
     assert "ERR" in r2.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_stdout_and_stderr_captured_separately_including_on_failure(tmp_path, monkeypatch):
     """stdout and stderr are captured separately and are never dropped, even on a non-zero exit.
 
@@ -66,7 +64,6 @@ def test_stdout_and_stderr_captured_separately_including_on_failure(tmp_path, mo
     assert "SENTINEL_OUT" not in result.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_timeout_sets_distinct_flag_enforced_generally(tmp_path, monkeypatch):
     """A timeout is its own state, enforced for any long-running command, not special-cased.
 
@@ -93,7 +90,6 @@ def test_timeout_sets_distinct_flag_enforced_generally(tmp_path, monkeypatch):
     assert r3.timed_out is False
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_timeout_kills_process_group_descendant_does_not_survive(tmp_path, monkeypatch):
     """On timeout the whole process group dies, a spawned descendant does not survive.
 
@@ -139,7 +135,6 @@ def test_timeout_kills_process_group_descendant_does_not_survive(tmp_path, monke
     assert sentinel2.exists()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_command_result_is_frozen_dataclass_with_exactly_six_ordered_fields():
     """The result is a frozen dataclass with exactly the six required fields.
 
@@ -165,7 +160,6 @@ def test_command_result_is_frozen_dataclass_with_exactly_six_ordered_fields():
         result.returncode = 2
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_command_result_records_real_values_not_placeholders(tmp_path, monkeypatch):
     """The result records the run's real argv, output, and a real duration.
 
@@ -188,13 +182,20 @@ def test_command_result_records_real_values_not_placeholders(tmp_path, monkeypat
     assert result.duration_ms >= 0
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_run_uses_in_process_subprocess_shell_false_new_session(tmp_path, monkeypatch):
     """The seam runs in-process with no shell and its own session, never an external tool.
 
-    Contract: spy on subprocess.run, run(["true"], timeout=5) -> subprocess.run called once
-    with shell falsy, start_new_session=True, and a timeout= value; argv[0] is never
-    timeout/gtimeout and no external timeout executable is invoked.
+    Contract: spy on subprocess.Popen, run(["true"], timeout=5) -> subprocess.Popen called
+    once with shell falsy and start_new_session=True; argv[0] is never timeout/gtimeout and no
+    external timeout executable is invoked. In-process timeout is enforced via
+    Popen.communicate(timeout=...), not an external timeout(1) tool.
+
+    Design amendment (#6, spec-dev): spies subprocess.Popen, not subprocess.run. run() uses
+    Popen directly so it keeps the child pid locally for os.killpg on timeout; the prior
+    subprocess.run form forced a process-global Popen swap to recover the pid, which Codex
+    reproduced racing/leaking under concurrency. Same intent asserted (in-process, no shell,
+    own session, no external timeout tool); Popen has no timeout= kwarg (it lives on
+    communicate), so that one assertion is dropped.
     """
     from issueforge.process import run
 
@@ -203,13 +204,13 @@ def test_run_uses_in_process_subprocess_shell_false_new_session(tmp_path, monkey
     repo.mkdir()
 
     calls = []
-    real = subprocess.run
+    real = subprocess.Popen
 
     def spy(*args, **kwargs):
         calls.append((args, kwargs))
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(subprocess, "run", spy)
+    monkeypatch.setattr(subprocess, "Popen", spy)
 
     run(["true"], cwd=repo, timeout=5)
 
@@ -222,14 +223,12 @@ def test_run_uses_in_process_subprocess_shell_false_new_session(tmp_path, monkey
     assert _argv(calls[0]) == ["true"]
     assert not kwargs.get("shell", False)
     assert kwargs.get("start_new_session") is True
-    assert kwargs.get("timeout") is not None
     for call in calls:
         argv = _argv(call)
         if argv:
             assert argv[0] not in ("timeout", "gtimeout")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_run_honors_cwd_and_injected_env(tmp_path, monkeypatch):
     """run honors the cwd and env it is handed.
 
@@ -250,7 +249,6 @@ def test_run_honors_cwd_and_injected_env(tmp_path, monkeypatch):
     assert "xyz123" in result.stdout
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_signal_termination_preserved_and_not_marked_timed_out(tmp_path, monkeypatch):
     """A signal-killed child is recorded as such, not flattened to a plain failure or timeout.
 
@@ -270,13 +268,17 @@ def test_signal_termination_preserved_and_not_marked_timed_out(tmp_path, monkeyp
     assert result.timed_out is False
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_invocation_emits_observability_fields(tmp_path, monkeypatch):
     """Every invocation emits the five boundary fields for success, failure, and timeout alike.
 
     Contract: capturing the emitted invocation record, a success / a non-zero exit / a
     timeout run each emit an event carrying {argv, cwd, duration_ms, returncode, timed_out}
     (all five present); the raw stdout/stderr body is NOT in the emitted record.
+
+    Defect-fix amendment (#6, spec-dev): the raw-body sentinel is delivered via the child's
+    environment and printed to its stdout, so it never appears in the emitted argv. The prior
+    form passed the sentinel *as argv*, making "argv is emitted" and "sentinel absent from the
+    record" mutually exclusive (unsatisfiable). Same behavior asserted; collision removed.
     """
     from issueforge import process
     from issueforge.process import run
@@ -296,7 +298,12 @@ def test_invocation_emits_observability_fields(tmp_path, monkeypatch):
         keys = ("argv", "cwd", "duration_ms", "returncode", "timed_out")
         return {k: getattr(rec, k) for k in keys if hasattr(rec, k)}
 
-    run([sys.executable, "-c", "print('OBSERVED_BODY')"], cwd=repo, timeout=5)
+    run(
+        [sys.executable, "-c", "import os\nprint(os.environ['IF_BODY'])\n"],
+        cwd=repo,
+        timeout=5,
+        env={**os.environ, "IF_BODY": "OBSERVED_BODY"},
+    )
     run(["false"], cwd=repo, timeout=5)
     run([sys.executable, "-c", "import time\ntime.sleep(5)\n"], cwd=repo, timeout=0.3)
 
@@ -310,7 +317,6 @@ def test_invocation_emits_observability_fields(tmp_path, monkeypatch):
         assert "OBSERVED_BODY" not in str(data)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_fresh_artifact_dir_per_invocation_through_seam_static_path_never_used(
     tmp_path, monkeypatch
 ):

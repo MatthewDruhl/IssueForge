@@ -35,7 +35,6 @@ def _commit(repo: Path, name: str, content: str, message: str = "c") -> str:
     return head.stdout.strip()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_baseline_shell_string_rejected_attributed_to_field_with_valid_control(tmp_path):
     """A shell string for baseline is rejected and blamed on baseline, while a valid config loads.
 
@@ -61,7 +60,6 @@ def test_baseline_shell_string_rejected_attributed_to_field_with_valid_control(t
     assert load_config(control).baseline == ["pytest"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_missing_baseline_rejected_as_missing_required_with_valid_control(tmp_path):
     """A config with no baseline is rejected as a missing required field, not just any failure.
 
@@ -86,7 +84,6 @@ def test_missing_baseline_rejected_as_missing_required_with_valid_control(tmp_pa
     assert load_config(control).baseline == ["pytest"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_every_command_field_is_argv_validated(tmp_path):
     """The argv-array rule covers every command field, not just baseline.
 
@@ -112,7 +109,6 @@ def test_every_command_field_is_argv_validated(tmp_path):
         assert field in {v.field for v in exc.value.violations}
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_untracked_only_config_rejected_as_missing_committed_object(tmp_path):
     """A config that was never committed is rejected as an absent committed object.
 
@@ -135,7 +131,6 @@ def test_untracked_only_config_rejected_as_missing_committed_object(tmp_path):
     assert load_config(control).baseline == ["pytest"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_config_read_from_specified_verified_commit_not_head_or_worktree(tmp_path):
     """Config comes from the specified verified commit, beating both a divergent HEAD and tree.
 
@@ -154,7 +149,6 @@ def test_config_read_from_specified_verified_commit_not_head_or_worktree(tmp_pat
     assert load_config(repo, ref=sha_a).baseline == ["from-A"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_optional_fields_parse_with_exact_committed_values(tmp_path):
     """All optional fields parse to exactly the committed values.
 
@@ -184,7 +178,6 @@ def test_optional_fields_parse_with_exact_committed_values(tmp_path):
     assert cfg.sensitive_fields == ["token"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_optional_fields_may_be_omitted(tmp_path):
     """Optional fields may be omitted; a baseline-only config loads with defined absences.
 

@@ -7,7 +7,6 @@ not yet built); a module-top import would ERROR at collection instead of xfailin
 import pytest
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_fakerunner_blocks_unforeseen_commands_by_allowlist():
     """The FakeRunner blocks anything not on the read-only allowlist.
 
@@ -26,7 +25,6 @@ def test_fakerunner_blocks_unforeseen_commands_by_allowlist():
     FakeRunner().run(["git", "status"])
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#6)")
 def test_fakerunner_allows_registered_exact_argv_but_not_near_match():
     """A registered exact command is allowed, but a near-match is still rejected.
 
