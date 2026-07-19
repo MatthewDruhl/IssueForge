@@ -12,7 +12,9 @@ write-surface lint exempts.
 
 from __future__ import annotations
 
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 from issueforge.paths import state_root
@@ -106,3 +108,61 @@ class WriteSeam:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(data, encoding=encoding)
         return target
+
+    def write_text_atomic(self, path: Path, data: str, encoding: str = "utf-8") -> Path:
+        """Write ``data`` to ``path`` atomically: temp file in the SAME dir, fsync, os.replace.
+
+        The temp file is created with ``mkstemp`` in ``path``'s parent so ``os.replace`` is a
+        rename within one directory (atomic on POSIX). A failed replace leaves the previous file
+        intact and drops no temp file. The target must resolve under an allowed root.
+        """
+        target = self._checked(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=".tmp-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding=encoding) as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_name, target)
+        except BaseException:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+            raise
+        # fsync the parent directory so the rename itself is durable (the dir entry survives a crash).
+        dir_fd = os.open(str(target.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+        return target
+
+    def append_text(self, path: Path, data: str, encoding: str = "utf-8") -> Path:
+        """Append ``data`` to ``path`` without rewriting any preceding committed byte (append-only).
+
+        Self-heals a torn final line first: if the file is non-empty and does not end in a newline,
+        a crash left an unterminated tail. Truncate back to the last newline (dropping only the torn
+        tail) BEFORE appending, so the new line can never fuse onto a partial line and become a
+        permanent malformed middle line. The caller serializes concurrent appends (store lock).
+        """
+        target = self._checked(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            existing = target.read_bytes()
+            if existing and not existing.endswith(b"\n"):
+                keep = existing.rfind(b"\n") + 1  # last newline + 1; 0 drops a lone torn line
+                with open(target, "rb+") as handle:
+                    handle.truncate(keep)
+        with open(target, "a", encoding=encoding) as handle:
+            handle.write(data)
+        return target
+
+    def open_lock(self, path: Path) -> int:
+        """Open (creating if needed) an advisory-lock file under an allowed root; return its fd.
+
+        Kept in the seam so the raw ``os.open`` stays inside the sanctioned write module. The
+        caller owns the returned fd (flock + close).
+        """
+        target = self._checked(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return os.open(str(target), os.O_CREAT | os.O_RDWR, 0o644)

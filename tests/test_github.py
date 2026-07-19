@@ -29,7 +29,6 @@ def _capturing_run(stdout="", returncode=0):
     return run, calls
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_issue_is_open_invokes_gh_as_argv_with_slug_and_number_no_shell():
     """The open check shells out to gh as an argv array (no shell) carrying the exact repo slug and issue number.
 
@@ -48,7 +47,6 @@ def test_issue_is_open_invokes_gh_as_argv_with_slug_and_number_no_shell():
     assert kwargs.get("shell") is not True
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_issue_is_open_false_for_a_closed_issue():
     """A closed issue reads as not open.
 
@@ -61,7 +59,6 @@ def test_issue_is_open_false_for_a_closed_issue():
     assert github.issue_is_open("Owner/Repo", 148, run=run) is False
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_issue_lookup_failure_raises_never_silently_true():
     """A failed gh lookup raises rather than defaulting to open.
 
@@ -75,7 +72,6 @@ def test_issue_lookup_failure_raises_never_silently_true():
         github.issue_is_open("Owner/Repo", 999, run=run)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_unparseable_or_unknown_state_raises_not_a_silent_false():
     """Malformed JSON or an unrecognized state raises, so a run never proceeds on a bad read.
 

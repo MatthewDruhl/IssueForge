@@ -49,7 +49,6 @@ def _transitions(run_id):
     return [e["transition"] for e in store.RunStore().replay_events(run_id)]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_run_completes_through_the_stub_stage_with_an_observable_stage_event(
     make_git_repo, isolated_state_home
 ):
@@ -77,7 +76,6 @@ def test_run_completes_through_the_stub_stage_with_an_observable_stage_event(
     assert "stage" in seq and seq.index("stage") < seq.index("completed")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_run_records_the_exact_queued_running_completed_transition_sequence(
     make_git_repo, isolated_state_home
 ):
@@ -100,7 +98,6 @@ def test_run_records_the_exact_queued_running_completed_transition_sequence(
     assert core == ["queued", "running", "completed"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_run_command_completes_end_to_end_through_the_cli(
     make_git_repo, isolated_state_home, monkeypatch
 ):
@@ -129,7 +126,6 @@ def test_run_command_completes_end_to_end_through_the_cli(
     assert seq.index("stage") < seq.index("completed")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_run_refuses_a_non_open_issue_without_minting_a_run(make_git_repo, isolated_state_home):
     """A run against a closed or missing issue is refused before any run is persisted.
 
@@ -144,7 +140,6 @@ def test_run_refuses_a_non_open_issue_without_minting_a_run(make_git_repo, isola
     assert not store.run_dir("run-1").exists()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_run_refuses_an_unregistered_alias(isolated_state_home):
     """A run against an unregistered alias is refused (the engine resolves through the S3 registry).
 
@@ -157,7 +152,6 @@ def test_run_refuses_an_unregistered_alias(isolated_state_home):
         engine.run("Nope#1", issue_open=lambda s, n: True, new_run_id=lambda: "run-1")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_concurrent_admission_admits_exactly_one_run_the_other_enqueues(
     make_git_repo, isolated_state_home
 ):
@@ -219,7 +213,6 @@ def test_concurrent_admission_admits_exactly_one_run_the_other_enqueues(
     assert errors == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_further_runs_enqueue_in_exact_fifo_order_behind_the_active_run(
     make_git_repo, isolated_state_home
 ):
@@ -260,7 +253,6 @@ def test_further_runs_enqueue_in_exact_fifo_order_behind_the_active_run(
         ta.join(timeout=10)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_captured_stub_stdout_and_stderr_are_redacted_at_the_producer(
     make_git_repo, isolated_state_home
 ):
@@ -297,7 +289,6 @@ def test_captured_stub_stdout_and_stderr_are_redacted_at_the_producer(
     assert "[REDACTED]" in blob
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_run_state_survives_a_fresh_process_reload(make_git_repo, isolated_state_home):
     """A completed run's state is on disk and reloads intact in a separate process.
 

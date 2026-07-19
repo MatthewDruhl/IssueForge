@@ -52,7 +52,6 @@ def _source(module_basename: str) -> str:
 # --------------------------------------------------------------------------- layout
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_every_store_path_resolves_under_the_state_root(isolated_state_home):
     """The manifest, events, queue, and the single lock all resolve under the IssueForge state root.
 
@@ -74,7 +73,6 @@ def test_every_store_path_resolves_under_the_state_root(isolated_state_home):
 # --------------------------------------------------------------------------- the apply primitive
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_apply_creates_persists_and_transform_sees_current_state(isolated_state_home):
     """apply creates a run's manifest, persists it, and its transform sees the current on-disk state so a counter increments.
 
@@ -93,7 +91,6 @@ def test_apply_creates_persists_and_transform_sees_current_state(isolated_state_
     assert store.RunStore().read("r1")["n"] == 2
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_only_the_store_persists_engine_and_github_never_write_run_files(isolated_state_home):
     """No module other than the store writes run files: engine.py and github.py contain no direct file-write or atomic-seam calls — the single write path is mechanical, not a convention.
 
@@ -116,7 +113,6 @@ def test_only_the_store_persists_engine_and_github_never_write_run_files(isolate
                     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_manifest_persistence_routes_through_the_atomic_write_seam(
     isolated_state_home, monkeypatch
 ):
@@ -142,7 +138,6 @@ def test_manifest_persistence_routes_through_the_atomic_write_seam(
     assert store.manifest_path("r1").resolve() in targets
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_require_int_rejects_bool_and_non_int_and_gates_a_persisted_field(isolated_state_home):
     """Persisted int fields raise on bool/non-int both in the helper AND through the real write/read validator — no coercion mints a valid-looking record.
 
@@ -168,7 +163,6 @@ def test_require_int_rejects_bool_and_non_int_and_gates_a_persisted_field(isolat
         store.RunStore().read("r2")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_the_same_validate_record_gates_both_apply_and_read(isolated_state_home, monkeypatch):
     """Both apply (write) and read call the ONE exported validate_record — not two divergent validators.
 
@@ -194,7 +188,6 @@ def test_the_same_validate_record_gates_both_apply_and_read(isolated_state_home,
     assert len(calls) > after_write
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_existence_is_decided_inside_the_lock_no_phantom_no_toctou(isolated_state_home):
     """The existence check happens INSIDE the lock: apply(create=False) on a truly-missing run refuses and mints no phantom; but a create=False that waited on the lock while another apply CREATED the run under it then sees the run and succeeds (a pre-lock check would have wrongly refused).
 
@@ -254,7 +247,6 @@ def test_existence_is_decided_inside_the_lock_no_phantom_no_toctou(isolated_stat
 # --------------------------------------------------------------------------- under-lock proofs
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_validation_runs_under_the_lock_a_raise_leaves_bytes_unchanged_and_blocks_a_competitor(
     isolated_state_home,
 ):
@@ -306,7 +298,6 @@ def test_validation_runs_under_the_lock_a_raise_leaves_bytes_unchanged_and_block
     assert store.RunStore().read("r1")["n"] == 100
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_lock_spans_the_whole_read_modify_write_no_lost_update(isolated_state_home):
     """The lock spans the entire read-modify-write, so concurrent writers with a widened stale-read window do not lose an update.
 
@@ -340,7 +331,6 @@ def test_lock_spans_the_whole_read_modify_write_no_lost_update(isolated_state_ho
     assert store.RunStore().read("r1")["n"] == 20
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_advisory_lock_is_released_when_the_holder_process_is_killed(isolated_state_home):
     """The store lock is an OS advisory lock: kill -9 a process holding it inside an apply, and a fresh process can still apply — the kernel released it (a bare lockfile would strand).
 
@@ -394,7 +384,6 @@ def test_advisory_lock_is_released_when_the_holder_process_is_killed(isolated_st
 # --------------------------------------------------------------------------- durability
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_atomic_write_uses_same_dir_temp_and_os_replace_and_a_failed_replace_preserves_the_file(
     isolated_state_home, monkeypatch
 ):
@@ -437,7 +426,6 @@ def test_atomic_write_uses_same_dir_temp_and_os_replace_and_a_failed_replace_pre
     assert sorted(p.name for p in store.run_dir("r1").iterdir()) == before_listing
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_write_text_atomic_seam_exists_and_is_atomic(isolated_state_home):
     """io.WriteSeam.write_text_atomic writes through the sanctioned seam and replaces atomically under an allowed root.
 
@@ -462,7 +450,6 @@ def test_write_text_atomic_seam_exists_and_is_atomic(isolated_state_home):
 # --------------------------------------------------------------------------- append-only events
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_events_are_append_only_prior_bytes_never_rewritten(isolated_state_home):
     """Events are append-only: each append leaves every preceding byte unchanged and replay returns them in order.
 
@@ -485,7 +472,6 @@ def test_events_are_append_only_prior_bytes_never_rewritten(isolated_state_home)
     assert store.RunStore().replay_events("r1") == [{"t": "a"}, {"t": "b"}, {"t": "c"}]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_only_a_torn_final_line_is_discarded_a_malformed_middle_line_raises(isolated_state_home):
     """Replay discards ONLY an unparseable, unterminated final line; a valid final line without a trailing newline still replays, and a malformed MIDDLE line raises rather than being silently swallowed.
 
@@ -518,7 +504,6 @@ def test_only_a_torn_final_line_is_discarded_a_malformed_middle_line_raises(isol
 # --------------------------------------------------------------------------- redaction / boundary
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_the_redacting_writer_scrubs_secrets_from_the_persisted_artifact(isolated_state_home):
     """The redacting writer replaces each known secret with [REDACTED] before the artifact lands.
 
@@ -535,7 +520,6 @@ def test_the_redacting_writer_scrubs_secrets_from_the_persisted_artifact(isolate
     assert "SEKRET-123" not in text
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_append_event_redacts_secrets_from_the_event_stream_producer(isolated_state_home):
     """The event-stream producer is redacted at its real persistence path: a secret carried in an appended event is scrubbed when the RunStore was given that secret.
 
@@ -554,7 +538,6 @@ def test_append_event_redacts_secrets_from_the_event_stream_producer(isolated_st
     assert REDACTED in raw
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_a_raw_artifact_write_outside_the_seam_is_a_boundary_violation(tmp_path):
     """Bypassing the redacting writer is mechanically impossible: the boundary lint reports a write-surface violation for a module that writes a file by open() or Path.write_text, and passes the real package.
 
@@ -581,7 +564,6 @@ def test_a_raw_artifact_write_outside_the_seam_is_a_boundary_violation(tmp_path)
     assert lint.returncode == 0, lint.stderr
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#8)")
 def test_the_io_seam_exemption_is_method_scoped_no_stray_writer_in_io():
     """The boundary lint's io.py exemption is method-scoped: every raw filesystem write in io.py lives inside a WriteSeam method, so no stray artifact-writing function can hide in the seam module.
 
