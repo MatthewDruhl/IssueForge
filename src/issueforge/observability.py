@@ -475,12 +475,16 @@ def _file_import_seed(fragments: list[list[tuple[str, bool]]]) -> dict[str, obje
     the file into separate hunks; collecting the file's import aliases and seeding every hunk's
     analysis with them lets an alias imported in one hunk resolve a call in another hunk of the SAME
     file. Removed lines are already dropped from the fragments, so a deleted import never seeds.
+
+    ONLY module-level (column-0) imports seed the file: a FUNCTION-LOCAL import (indented) is scoped
+    to its own body and must not leak an alias into an unrelated function elsewhere in the file.
     """
     import_lines = [
-        stripped
+        content
         for fragment in fragments
         for content, _is_added in fragment
-        if (stripped := content.strip()).startswith(("import ", "from "))
+        if content[:1] not in (" ", "\t")  # module-level only (no leading indentation)
+        and content.startswith(("import ", "from "))
     ]
     if not import_lines:
         return {}

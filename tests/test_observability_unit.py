@@ -352,3 +352,24 @@ def test_classify_diff_cross_hunk_alias_does_not_bleed_across_files():
     )
     # b.py never imported sp; the alias from a.py must NOT leak into b.py.
     assert observability.classify_diff(diff).categories == frozenset()
+
+
+def test_classify_diff_function_local_import_does_not_seed_other_functions():
+    # A FUNCTION-LOCAL import (indented) in first() must NOT seed sp for an unrelated second().
+    # first() adds only the local import (no boundary call), so the ONLY way SUBPROCESS could appear
+    # is the false-positive seed leak; with module-level-only seeding it stays empty. (Discriminating:
+    # the buggy indentation-stripping seed would return {SUBPROCESS} here.)
+    diff = (
+        "diff --git a/mod.py b/mod.py\n"
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " def first():\n"
+        "     helper()\n"
+        "+    import subprocess as sp\n"
+        "@@ -20,2 +21,3 @@\n"
+        " def second():\n"
+        "     prepare()\n"
+        '+    sp.run(["x"])\n'
+    )
+    assert observability.classify_diff(diff).categories == frozenset()
