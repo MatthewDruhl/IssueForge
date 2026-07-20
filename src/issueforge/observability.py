@@ -153,8 +153,10 @@ class _CallCollector(ast.NodeVisitor):
     never an arbitrary receiver like ``client.open()``.
     """
 
-    def __init__(self) -> None:
-        self.scopes: list[dict[str, object]] = [{}]
+    def __init__(self, seed: dict[str, object] | None = None) -> None:
+        # ``seed`` pre-populates the module scope with aliases established elsewhere in the same
+        # file (e.g. an ``import`` in an earlier diff hunk), so a later hunk's call resolves it.
+        self.scopes: list[dict[str, object]] = [dict(seed) if seed else {}]
         self.calls: list[tuple[ast.Call, frozenset[str]]] = []
 
     # --- scope + resolution -------------------------------------------------
@@ -321,8 +323,10 @@ def _safe_parse(source: str) -> ast.Module | None:
             return None
 
 
-def _collect_calls(tree: ast.AST) -> list[tuple[ast.Call, frozenset[str]]]:
-    collector = _CallCollector()
+def _collect_calls(
+    tree: ast.AST, seed: dict[str, object] | None = None
+) -> list[tuple[ast.Call, frozenset[str]]]:
+    collector = _CallCollector(seed)
     collector.visit(tree)
     return collector.calls
 
@@ -430,13 +434,16 @@ def _parse_diff_hunks(diff_text: str) -> list[tuple[str, list[tuple[str, bool]]]
     return hunks
 
 
-def _hunk_evidence(fragment: list[tuple[str, bool]], location: str) -> list[BoundaryEvidence]:
+def _hunk_evidence(
+    fragment: list[tuple[str, bool]], location: str, seed: dict[str, object] | None = None
+) -> list[BoundaryEvidence]:
     """Match a single hunk's ADDED-line calls, resolving aliases against its retained context.
 
     The fragment is parsed as-is; if it does not parse standalone (a hunk is often an indented
     body fragment) it is dedented, and failing that wrapped in a synthetic function so an indented
     body parses. The context lines are ALWAYS retained (never degraded to added-lines-only) so a
-    context-defined alias still resolves; a marker counts only on an added line.
+    context-defined alias still resolves; a marker counts only on an added line. ``seed`` carries the
+    file's imports from its OTHER hunks so a cross-hunk alias resolves too.
     """
     contents = [content for content, _ in fragment]
     added_at = {index + 1 for index, (_, is_added) in enumerate(fragment) if is_added}
@@ -444,12 +451,12 @@ def _hunk_evidence(fragment: list[tuple[str, bool]], location: str) -> list[Boun
 
     tree = _try_parse(raw)
     if tree is not None:
-        return _filter_added(tree, added_at, location)
+        return _filter_added(tree, added_at, location, seed)
 
     dedented = textwrap.dedent(raw)
     tree = _try_parse(dedented)
     if tree is not None:  # dedent preserves the line-to-added mapping
-        return _filter_added(tree, added_at, location)
+        return _filter_added(tree, added_at, location, seed)
 
     indented_body = "\n".join(
         ("    " + line) if line.strip() else line for line in dedented.split("\n")
@@ -457,14 +464,44 @@ def _hunk_evidence(fragment: list[tuple[str, bool]], location: str) -> list[Boun
     wrapped = "def __hunk__():\n" + indented_body
     tree = _try_parse(wrapped)
     if tree is not None:  # the synthetic def shifts every body line down by one
-        return _filter_added(tree, {lineno + 1 for lineno in added_at}, location)
+        return _filter_added(tree, {lineno + 1 for lineno in added_at}, location, seed)
     return []
 
 
-def _filter_added(tree: ast.AST, added_linenos: set[int], location: str) -> list[BoundaryEvidence]:
+def _file_import_seed(fragments: list[list[tuple[str, bool]]]) -> dict[str, object]:
+    """Alias map of the imports across ALL of a file's hunks (context + added lines).
+
+    A module-level import at the top of a file is in scope everywhere below it, but a diff splits
+    the file into separate hunks; collecting the file's import aliases and seeding every hunk's
+    analysis with them lets an alias imported in one hunk resolve a call in another hunk of the SAME
+    file. Removed lines are already dropped from the fragments, so a deleted import never seeds.
+    """
+    import_lines = [
+        stripped
+        for fragment in fragments
+        for content, _is_added in fragment
+        if (stripped := content.strip()).startswith(("import ", "from "))
+    ]
+    if not import_lines:
+        return {}
+    collector = _CallCollector()
+    tree = _try_parse("\n".join(import_lines))
+    if tree is not None:
+        collector.visit(tree)
+    else:  # a stray unparseable line: fall back to importing each line independently
+        for line in import_lines:
+            line_tree = _try_parse(line)
+            if line_tree is not None:
+                collector.visit(line_tree)
+    return dict(collector.scopes[0])
+
+
+def _filter_added(
+    tree: ast.AST, added_linenos: set[int], location: str, seed: dict[str, object] | None = None
+) -> list[BoundaryEvidence]:
     calls = [
         (node, candidates)
-        for node, candidates in _collect_calls(tree)
+        for node, candidates in _collect_calls(tree, seed)
         if node.lineno in added_linenos
     ]
     return _evidence_from_calls(calls, location)
@@ -474,14 +511,21 @@ def classify_diff(diff_text: str) -> BoundaryVerdict:
     """Classify the boundary crossings introduced by a unified diff's ADDED lines only.
 
     The diff is parsed per file and per hunk; each hunk's added-line calls are matched with its
-    unchanged context retained so aliases resolve. Removed boundaries and added comments/strings
-    never count, and files never bleed into one another.
+    unchanged context retained AND with the file's imports from its other hunks seeded, so aliases
+    resolve across hunks. Removed boundaries and added comments/strings never count, and files never
+    bleed into one another (the import seed is per file).
     """
-    evidence: list[BoundaryEvidence] = []
+    by_file: dict[str, list[list[tuple[str, bool]]]] = {}
     for path, fragment in _parse_diff_hunks(diff_text):
-        if not any(is_added for _, is_added in fragment):
-            continue
-        evidence.extend(_hunk_evidence(fragment, path))
+        by_file.setdefault(path, []).append(fragment)
+
+    evidence: list[BoundaryEvidence] = []
+    for path, fragments in by_file.items():
+        seed = _file_import_seed(fragments)
+        for fragment in fragments:
+            if not any(is_added for _, is_added in fragment):
+                continue
+            evidence.extend(_hunk_evidence(fragment, path, seed))
     return _verdict_from_evidence(evidence)
 
 

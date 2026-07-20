@@ -310,3 +310,45 @@ def test_trailing_token_satisfies_required_event():
 
 def test_exact_event_satisfies_required_event():
     assert "request.failed" in _events_for("request.failed", {"request.failed"})
+
+
+# --- fix 2b (Codex confirmation-round new finding): cross-hunk alias state ---
+# An import in one hunk must resolve a call in ANOTHER hunk of the SAME file, while files stay
+# isolated. Regression guard for the per-hunk-isolated-alias-state defect.
+
+
+def test_classify_diff_alias_imported_in_one_hunk_resolves_call_in_another_hunk():
+    diff = (
+        "diff --git a/mod.py b/mod.py\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " HEADER = 1\n"
+        "+import subprocess as sp\n"
+        "@@ -40,2 +41,3 @@\n"
+        " def worker():\n"
+        "     prepare()\n"
+        '+    sp.run(["x"])\n'
+    )
+    assert observability.classify_diff(diff).categories == frozenset({Cat.SUBPROCESS})
+
+
+def test_classify_diff_cross_hunk_alias_does_not_bleed_across_files():
+    diff = (
+        "diff --git a/a.py b/a.py\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " HEADER = 1\n"
+        "+import subprocess as sp\n"
+        "diff --git a/b.py b/b.py\n"
+        "--- a/b.py\n"
+        "+++ b/b.py\n"
+        "@@ -10,2 +10,3 @@\n"
+        " def worker():\n"
+        "     prepare()\n"
+        '+    sp.run(["x"])\n'
+    )
+    # b.py never imported sp; the alias from a.py must NOT leak into b.py.
+    assert observability.classify_diff(diff).categories == frozenset()
