@@ -141,6 +141,61 @@ def run(spec: str = typer.Argument(..., help="ALIAS#N of the issue to run.")) ->
 
 
 @app.command()
+def queue() -> None:
+    """List the active run, then the queued runs in FIFO order."""
+    from issueforge import store
+
+    state = store.RunStore().read_queue()
+    if state.get("active"):
+        typer.echo(state["active"])
+    for run_id in state.get("queue", []):
+        typer.echo(run_id)
+
+
+@app.command()
+def pause(run_id: str = typer.Argument(..., help="Run id to pause.")) -> None:
+    """Pause the active running run (keeps the worker slot)."""
+    from issueforge import engine
+
+    engine.pause(run_id)
+
+
+@app.command()
+def park(run_id: str = typer.Argument(..., help="Run id to park.")) -> None:
+    """Park a run (releases the worker and advances the FIFO)."""
+    from issueforge import engine
+
+    engine.park(run_id)
+
+
+@app.command()
+def cancel(run_id: str = typer.Argument(..., help="Run id to cancel.")) -> None:
+    """Cancel a queued run or the current paused run."""
+    from issueforge import engine
+
+    engine.cancel(run_id)
+
+
+@app.command("continue")
+def continue_(run_id: str = typer.Argument(..., help="Run id to resume.")) -> None:
+    """Resume a paused, parked, or crash-orphaned run."""
+    from issueforge import engine
+
+    engine.continue_run(run_id)
+
+
+@app.command()
+def reorder(
+    run_id: str = typer.Argument(..., help="Queued run id to move."),
+    index: int = typer.Argument(..., help="Absolute 0-based target position in the FIFO."),
+) -> None:
+    """Move a queued run to an absolute 0-based index in the FIFO."""
+    from issueforge import engine
+
+    engine.reorder(run_id, index)
+
+
+@app.command()
 def version() -> None:
     """Show the installed IssueForge version."""
     from issueforge import __version__
