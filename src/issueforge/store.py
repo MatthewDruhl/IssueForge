@@ -23,8 +23,9 @@ from typing import Any
 
 from issueforge.io import WriteSeam
 from issueforge.paths import state_root
+from issueforge.state import State
 
-ALLOWED_STATUS = {"queued", "running", "completed"}
+ALLOWED_STATUS = {s.value for s in State}
 
 REDACTED = "[REDACTED]"
 

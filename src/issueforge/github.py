@@ -33,3 +33,12 @@ def issue_is_open(slug: str, number: int, *, run: Any = subprocess.run) -> bool:
     if state == "CLOSED":
         return False
     raise ValueError(f"unrecognized issue state {state!r} for {slug}#{number}")
+
+
+def pr_facts(run_id: str) -> dict:
+    """The GitHub-authoritative PR/branch/merge facts for a run (default: none, offline).
+
+    This is the injectable reconcile seam ``engine.continue_run`` reads before resuming; tests pass
+    their own. Offline it reports no facts, so reconciliation finds nothing to diverge on.
+    """
+    return {}

@@ -161,7 +161,6 @@ def _child(state_home, body):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_state_enum_members_are_exactly_the_seven_declared_states(isolated_state_home):
     """The State enum declares exactly seven members (no aliases), each mapping to its status string.
 
@@ -186,7 +185,6 @@ def test_state_enum_members_are_exactly_the_seven_declared_states(isolated_state
     }
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_transitions_table_declares_exactly_the_expected_edges(isolated_state_home):
     """The transition table maps each state to exactly its set of allowed next states.
 
@@ -202,7 +200,6 @@ def test_transitions_table_declares_exactly_the_expected_edges(isolated_state_ho
     assert {k.value: {v.value for v in vs} for k, vs in TRANSITIONS.items()} == _EDGES
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_terminal_set_is_exactly_the_three_states_with_no_outgoing_edge(isolated_state_home):
     """TERMINAL is exactly {completed, cancelled, failed} — the states with no outgoing edge — and no others.
 
@@ -216,7 +213,6 @@ def test_terminal_set_is_exactly_the_three_states_with_no_outgoing_edge(isolated
         assert (TRANSITIONS[s] == set()) is (s in TERMINAL)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_transition_guard_accepts_exactly_the_declared_edges_over_the_full_matrix(
     isolated_state_home,
 ):
@@ -238,7 +234,6 @@ def test_transition_guard_accepts_exactly_the_declared_edges_over_the_full_matri
                     transition(current, target)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_no_state_machine_library_is_imported_or_declared(isolated_state_home):
     """The state machine is hand-rolled: neither its source nor the project's declared dependencies pull in a state-machine library.
 
@@ -275,7 +270,6 @@ def test_no_state_machine_library_is_imported_or_declared(isolated_state_home):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_additional_runs_enter_a_persistent_fifo_queue_readable_by_a_fresh_process(
     make_git_repo, isolated_state_home
 ):
@@ -303,7 +297,6 @@ def test_additional_runs_enter_a_persistent_fifo_queue_readable_by_a_fresh_proce
     assert proc.stdout.strip() == "run-1 ['run-2', 'run-3']"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_reorder_moves_a_queued_run_to_an_absolute_index(make_git_repo, isolated_state_home):
     """A queued run is reordered to an explicit 0-based position (absolute indexing, distinguishable from move-to-front).
 
@@ -323,7 +316,6 @@ def test_reorder_moves_a_queued_run_to_an_absolute_index(make_git_repo, isolated
     assert _queue()["active"] == "run-1"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 @pytest.mark.parametrize("bad_index", [-1, 2, True, "0", 1.0])
 def test_reorder_rejects_an_out_of_range_or_non_int_index(
     bad_index, make_git_repo, isolated_state_home
@@ -373,7 +365,6 @@ def _drive_to(engine, state_name, run_id="run-x", number=148, make_git_repo=None
     return run_id
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 @pytest.mark.parametrize("state_name", ["paused", "parked", "completed", "cancelled", "failed"])
 def test_reorder_refuses_a_run_that_is_not_queued(state_name, make_git_repo, isolated_state_home):
     """Reorder applies only to queued runs; a run that has started (paused/parked) or is terminal (completed/cancelled/failed) is refused and the queue is unchanged.
@@ -395,7 +386,6 @@ def test_reorder_refuses_a_run_that_is_not_queued(state_name, make_git_repo, iso
     assert _queue() == before
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_reorder_and_cancel_refuse_the_active_running_run(make_git_repo, isolated_state_home):
     """While a run is actually running (inside its stage), it is neither reorderable nor cancellable — both verbs refuse the active running run.
 
@@ -437,7 +427,6 @@ def test_reorder_and_cancel_refuse_the_active_running_run(make_git_repo, isolate
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_cancel_a_queued_run_writes_a_terminal_record_and_never_held_the_slot(
     make_git_repo, isolated_state_home
 ):
@@ -463,7 +452,6 @@ def test_cancel_a_queued_run_writes_a_terminal_record_and_never_held_the_slot(
     assert seq.count("cancelled") == 1 and "running" not in seq
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_cancel_the_paused_run_releases_the_slot_and_advances_the_fifo(
     make_git_repo, isolated_state_home
 ):
@@ -486,7 +474,6 @@ def test_cancel_the_paused_run_releases_the_slot_and_advances_the_fifo(
     assert _queue() == {"active": None, "queue": []}
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 @pytest.mark.parametrize("state_name", ["parked", "completed", "cancelled", "failed"])
 def test_cancel_refuses_a_non_queued_non_paused_run(state_name, make_git_repo, isolated_state_home):
     """Cancel is only for a queued run or the current paused run; a parked or terminal (completed/cancelled/failed) run is refused with the record, queue, and events unchanged.
@@ -515,7 +502,6 @@ def test_cancel_refuses_a_non_queued_non_paused_run(state_name, make_git_repo, i
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_pause_blocks_the_worker_and_keeps_the_slot(make_git_repo, isolated_state_home):
     """A paused run keeps the worker slot, so a later run enqueues rather than starting; pause returns the paused record.
 
@@ -540,7 +526,6 @@ def test_pause_blocks_the_worker_and_keeps_the_slot(make_git_repo, isolated_stat
     assert _transitions("run-2") == ["queued"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_park_from_paused_preserves_every_other_field_and_releases_the_worker(
     make_git_repo, isolated_state_home
 ):
@@ -579,7 +564,6 @@ def test_park_from_paused_preserves_every_other_field_and_releases_the_worker(
     assert _queue() == {"active": None, "queue": []}
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_a_stage_that_parks_its_running_run_is_honored_not_overwritten(
     make_git_repo, isolated_state_home
 ):
@@ -609,7 +593,6 @@ def test_a_stage_that_parks_its_running_run_is_honored_not_overwritten(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_releasing_the_slot_dispatches_the_fifo_head_first(
     make_git_repo, isolated_state_home, monkeypatch
 ):
@@ -645,7 +628,6 @@ def test_releasing_the_slot_dispatches_the_fifo_head_first(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_continue_resumes_a_paused_run_recording_a_running_event_after_the_pause(
     make_git_repo, isolated_state_home
 ):
@@ -665,7 +647,6 @@ def test_continue_resumes_a_paused_run_recording_a_running_event_after_the_pause
     assert _status("run-1") == "completed"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_continue_resumes_a_parked_run_with_a_free_worker(make_git_repo, isolated_state_home):
     """The same `continue` verb resumes a parked run once the worker is free, recording a running transition after the parked one.
 
@@ -692,7 +673,6 @@ def test_continue_resumes_a_parked_run_with_a_free_worker(make_git_repo, isolate
     assert _status("run-1") == "completed"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_continue_a_parked_run_onto_a_busy_worker_is_refused(make_git_repo, isolated_state_home):
     """A parked run cannot resume while another run holds the single worker slot; it is refused and left parked.
 
@@ -714,7 +694,6 @@ def test_continue_a_parked_run_onto_a_busy_worker_is_refused(make_git_repo, isol
     assert _queue()["active"] == "run-2"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 @pytest.mark.parametrize(
     "key,record_value,github_value",
     [
@@ -758,7 +737,6 @@ def test_continue_halts_and_surfaces_a_pr_fact_divergence_without_touching_the_r
     assert store.manifest_path("run-1").read_bytes() == before_bytes
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_continue_never_lets_github_facts_overwrite_any_gate_artifact_and_still_resumes(
     make_git_repo, isolated_state_home
 ):
@@ -802,7 +780,6 @@ def test_continue_never_lets_github_facts_overwrite_any_gate_artifact_and_still_
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_kill9_mid_run_then_continue_in_a_fresh_process_resumes_from_persisted_state(
     make_git_repo, isolated_state_home, tmp_path
 ):
@@ -868,7 +845,6 @@ def test_kill9_mid_run_then_continue_in_a_fresh_process_resumes_from_persisted_s
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_a_typed_stage_failure_lands_the_run_in_failed_records_the_type_and_advances(
     make_git_repo, isolated_state_home
 ):
@@ -910,7 +886,6 @@ def test_a_typed_stage_failure_lands_the_run_in_failed_records_the_type_and_adva
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_cli_queue_lists_the_active_run_then_the_fifo_in_order(make_git_repo, isolated_state_home):
     """The `issueforge queue` command lists the active run and then the queued runs in FIFO order.
 
@@ -932,7 +907,6 @@ def test_cli_queue_lists_the_active_run_then_the_fifo_in_order(make_git_repo, is
     assert out.index("run-1") < out.index("run-2") < out.index("run-3")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 @pytest.mark.parametrize(
     "verb,expected_status",
     [("park", "parked"), ("cancel", "cancelled")],
@@ -958,7 +932,6 @@ def test_cli_verbs_forward_to_the_engine_and_change_persisted_state(
     assert _status("run-1") == expected_status
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_cli_continue_resumes_a_paused_run(make_git_repo, isolated_state_home):
     """The `issueforge continue` command resumes a paused run to completion.
 
@@ -978,7 +951,6 @@ def test_cli_continue_resumes_a_paused_run(make_git_repo, isolated_state_home):
     assert _transitions("run-1") == ["queued", "running", "paused", "running", "completed"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_cli_pause_pauses_the_active_running_run_and_keeps_the_slot(
     make_git_repo, isolated_state_home
 ):
@@ -1008,7 +980,6 @@ def test_cli_pause_pauses_the_active_running_run_and_keeps_the_slot(
     assert _queue()["active"] == "run-1"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#9)")
 def test_cli_reorder_moves_a_queued_run(make_git_repo, isolated_state_home):
     """The `issueforge reorder` command moves a queued run to the given index.
 
