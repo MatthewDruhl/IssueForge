@@ -16,7 +16,6 @@ paused/parked/failed its run is not overwritten to completed).
 
 from __future__ import annotations
 
-import json
 import uuid
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
@@ -92,38 +91,39 @@ def _persist_captured(
         s.write_artifact(run_id, "stderr.log", err.getvalue(), secrets=secrets)
 
 
-def _release_active(s: store.RunStore, run_id: str) -> None:
-    """Clear the single active slot iff it still holds ``run_id`` (under the store lock)."""
-    with s.locked():
-        queue = s.read_queue()
-        if queue.get("active") == run_id:
-            queue["active"] = None
-            s.write_queue_unlocked(queue)
+def _advance_unlocked(s: store.RunStore, run_id: str) -> str | None:
+    """Caller HOLDS the lock. Release ``run_id``'s slot and promote the FIFO head, atomically.
 
-
-def _release_and_advance(s: store.RunStore, run_id: str) -> None:
-    """Release ``run_id``'s slot and dispatch the FIFO head (if any) through ``_default_stage``.
-
-    Draining is iterative-by-recursion: the dispatched head runs its stage and finalizes, and its
-    own completion releases the slot again, so a run of waiters drains head-first in FIFO order.
+    Only acts when ``run_id`` actually owns the slot (``queue.active == run_id``); otherwise the
+    queue is left untouched and ``None`` is returned (no spurious advance). When a waiter exists it
+    is popped to the active slot and its manifest is set ``running`` under this same lock; the
+    caller then dispatches it OUTSIDE the lock via :func:`_dispatch`. Returns the promoted run id.
     """
-    with s.locked():
-        queue = s.read_queue()
-        if queue.get("active") == run_id:
-            queue["active"] = None
-        next_id = None
-        if queue["queue"]:
-            next_id = queue["queue"].pop(0)
-            queue["active"] = next_id
-        s.write_queue_unlocked(queue)
-        if next_id is not None:
-            record = json.loads(store.manifest_path(next_id).read_text(encoding="utf-8"))
-            s.write_record_unlocked(next_id, {**record, "status": RUNNING})
+    queue = s.read_queue()
+    if queue.get("active") != run_id:
+        return None
+    queue["active"] = None
+    next_id: str | None = None
+    if queue["queue"]:
+        next_id = queue["queue"].pop(0)
+        queue["active"] = next_id
+    s.write_queue_unlocked(queue)
     if next_id is not None:
-        s.append_event(next_id, {"transition": RUNNING})
-        record = s.read(next_id)
-        result = _execute_stage(s, next_id, _default_stage, record)
-        _finalize(s, next_id, result)
+        record = s._read_unlocked(next_id)
+        s.write_record_unlocked(next_id, {**record, "status": RUNNING})
+    return next_id
+
+
+def _dispatch(s: store.RunStore, next_id: str) -> None:
+    """OUTSIDE the lock: emit the promoted run's ``running`` event, run the default stage, finalize.
+
+    Draining is iterative-by-recursion: the dispatched head finalizes, and its own release advances
+    the next waiter, so a run of waiters drains head-first in FIFO order.
+    """
+    s.append_event(next_id, {"transition": RUNNING})
+    record = s.read(next_id)
+    result = _execute_stage(s, next_id, _default_stage, record)
+    _finalize(s, next_id, result)
 
 
 def _execute_stage(
@@ -135,8 +135,10 @@ def _execute_stage(
 ) -> Any:
     """Run ``stage`` OUTSIDE the lock, capturing stdout/stderr through the redacting writer.
 
-    A raising stage must not brick the engine: persist captured output and release the active slot
-    (else ``queue.active`` stays set forever, blocking ALL future runs), then re-raise.
+    A raising stage must not brick the engine: persist captured output, then release the slot AND
+    advance the FIFO head atomically under one lock (else ``queue.active`` stays set forever,
+    blocking ALL future runs), then re-raise. The manifest status is NOT flipped to ``failed`` on an
+    untyped raise (crash-status recovery is deferred to #48); only the slot fairness is restored.
     """
     out, err = StringIO(), StringIO()
     try:
@@ -144,7 +146,10 @@ def _execute_stage(
             result = stage(record)
     except BaseException:
         _persist_captured(s, run_id, out, err, secrets)
-        _release_active(s, run_id)
+        with s.locked():
+            next_id = _advance_unlocked(s, run_id)
+        if next_id is not None:
+            _dispatch(s, next_id)
         raise
     _persist_captured(s, run_id, out, err, secrets)
     return result
@@ -153,24 +158,44 @@ def _execute_stage(
 def _finalize(s: store.RunStore, run_id: str, result: Any, secrets: set[str] | None = None) -> None:
     """Land the run after its stage returns, HONORING any non-running status the stage set.
 
-    A typed ``StageResult(status=FAILED, ...)`` lands ``failed`` (recording the failure type) and
-    advances. A still-``running`` run completes and advances. A stage that paused its run keeps the
-    slot (no advance); a stage that parked/cancelled its run already released and advanced.
+    Manifest transition + slot release/advance happen in ONE locked transaction (state re-read under
+    the lock; if it changed, the guard fails rather than forcing the write). A typed
+    ``StageResult(status=FAILED, failure=<StageFailure>)`` lands ``failed`` (recording the failure
+    type) and advances. A MALFORMED result (FAILED without a ``StageFailure``, or a non-FAILED
+    ``StageResult`` — outside the S5 contract) fails SAFELY: it releases + advances rather than
+    leaving the worker occupied, without a manifest transition. A still-``running`` run completes and
+    advances. A stage that paused its run keeps the slot (no advance); a parked/cancelled stage
+    already released and advanced.
     """
-    record = s.read(run_id)
-    status = record["status"]
-    if isinstance(result, StageResult) and result.status == State.FAILED:
-        transition(State(status), State.FAILED)
-        failure_type = result.failure.type if result.failure is not None else None
-        s.apply(run_id, lambda r: {"status": State.FAILED.value, "failure": {"type": failure_type}})
-        s.append_event(run_id, {"transition": State.FAILED.value})
-        _release_and_advance(s, run_id)
-        return
-    if status == RUNNING:
-        transition(State.RUNNING, State.COMPLETED)
-        s.apply(run_id, lambda r: {"status": COMPLETED})
-        s.append_event(run_id, {"transition": COMPLETED})
-        _release_and_advance(s, run_id)
+    event: str | None = None
+    next_id: str | None = None
+    with s.locked():
+        record = s._read_unlocked(run_id)
+        status = record["status"]
+        if isinstance(result, StageResult):
+            if result.status == State.FAILED and isinstance(result.failure, StageFailure):
+                transition(State(status), State.FAILED)
+                s.write_record_unlocked(
+                    run_id,
+                    {
+                        **record,
+                        "status": State.FAILED.value,
+                        "failure": {"type": result.failure.type},
+                    },
+                )
+                event = State.FAILED.value
+            # else: malformed StageResult -> fail safe (release + advance), no manifest transition.
+            next_id = _advance_unlocked(s, run_id)
+        elif status == RUNNING:
+            transition(State.RUNNING, State.COMPLETED)
+            s.write_record_unlocked(run_id, {**record, "status": COMPLETED})
+            event = COMPLETED
+            next_id = _advance_unlocked(s, run_id)
+        # else: paused (keep slot, no advance) or parked (already advanced by park): do nothing.
+    if event is not None:
+        s.append_event(run_id, {"transition": event})
+    if next_id is not None:
+        _dispatch(s, next_id)
 
 
 def run(
@@ -234,23 +259,36 @@ def run(
 
 
 def pause(run_id: str) -> dict:
-    """``running -> paused``; keep the single worker slot (blocks the worker until resumed)."""
+    """``running -> paused``; keep the single worker slot (blocks the worker until resumed).
+
+    State is re-read and guarded UNDER the lock, and the manifest transition is written in that same
+    transaction; if the status changed after the caller's view, the guard fails rather than forcing
+    the write. Pause keeps the slot, so the queue is untouched.
+    """
     s = store.RunStore()
-    record = s.read(run_id)
-    transition(State(record["status"]), State.PAUSED)
-    s.apply(run_id, lambda r: {"status": State.PAUSED.value})
+    with s.locked():
+        record = s._read_unlocked(run_id)
+        transition(State(record["status"]), State.PAUSED)
+        s.write_record_unlocked(run_id, {**record, "status": State.PAUSED.value})
     s.append_event(run_id, {"transition": State.PAUSED.value})
     return s.read(run_id)
 
 
 def park(run_id: str) -> dict:
-    """``running|paused -> parked``; preserve every other field, release the slot, advance the FIFO."""
+    """``running|paused -> parked``; preserve every other field, release the slot, advance the FIFO.
+
+    The guarded manifest transition and the slot release/advance are ONE locked transaction (state
+    re-read under the lock); the promoted waiter is dispatched OUTSIDE the lock.
+    """
     s = store.RunStore()
-    record = s.read(run_id)
-    transition(State(record["status"]), State.PARKED)
-    s.apply(run_id, lambda r: {"status": State.PARKED.value})
+    with s.locked():
+        record = s._read_unlocked(run_id)
+        transition(State(record["status"]), State.PARKED)
+        s.write_record_unlocked(run_id, {**record, "status": State.PARKED.value})
+        next_id = _advance_unlocked(s, run_id)
     s.append_event(run_id, {"transition": State.PARKED.value})
-    _release_and_advance(s, run_id)
+    if next_id is not None:
+        _dispatch(s, next_id)
     return s.read(run_id)
 
 
@@ -258,26 +296,39 @@ def cancel(run_id: str) -> dict:
     """``queued -> cancelled`` (never held the slot) or ``paused -> cancelled`` (release + advance).
 
     Refuses ``running``/``parked``/terminal via the transition guard; on refusal the record, queue,
-    and event stream are unchanged (the guard raises before any write).
+    and event stream are unchanged (the guard raises before any write). All state validation and
+    mutation happen in ONE locked transaction, re-reading status + queue under the lock, so a
+    concurrent auto-advance that promotes a queued run to ``running`` between check and cancel cannot
+    strand the slot.
     """
     s = store.RunStore()
     record = s.read(run_id)
-    current = State(record["status"])
-    transition(current, State.CANCELLED)  # IllegalTransition for running/parked/terminal
+    transition(State(record["status"]), State.CANCELLED)  # early refusal: running/parked/terminal
 
-    if current == State.QUEUED:
-        # A queued run never held the slot: drop it from the FIFO, leave the active slot untouched.
-        with s.locked():
-            queue = s.read_queue()
-            if run_id in queue["queue"]:
-                queue["queue"].remove(run_id)
+    next_id: str | None = None
+    with s.locked():
+        record = s._read_unlocked(run_id)
+        current = State(record["status"])
+        queue = s.read_queue()
+        if current == State.QUEUED:
+            # Re-validate BOTH the queued status and FIFO membership under the lock: if it was
+            # promoted to running/active meanwhile, refuse rather than cancel-and-strand the slot.
+            if run_id not in queue["queue"]:
+                raise IllegalTransition(f"{run_id!r} is not a cancellable queued run")
+            transition(current, State.CANCELLED)
+            queue["queue"].remove(run_id)
             s.write_queue_unlocked(queue)
-        s.apply(run_id, lambda r: {"status": State.CANCELLED.value})
-        s.append_event(run_id, {"transition": State.CANCELLED.value})
-    else:  # PAUSED: it holds the slot; cancelling releases it and advances the FIFO.
-        s.apply(run_id, lambda r: {"status": State.CANCELLED.value})
-        s.append_event(run_id, {"transition": State.CANCELLED.value})
-        _release_and_advance(s, run_id)
+            s.write_record_unlocked(run_id, {**record, "status": State.CANCELLED.value})
+        elif current == State.PAUSED:
+            transition(current, State.CANCELLED)
+            s.write_record_unlocked(run_id, {**record, "status": State.CANCELLED.value})
+            next_id = _advance_unlocked(s, run_id)
+        else:
+            # Status changed out from under the caller (e.g. promoted then started): refuse.
+            transition(current, State.CANCELLED)  # raises IllegalTransition
+    s.append_event(run_id, {"transition": State.CANCELLED.value})
+    if next_id is not None:
+        _dispatch(s, next_id)
     return s.read(run_id)
 
 
@@ -286,14 +337,15 @@ def reorder(run_id: str, index: int) -> list[str]:
 
     Refuses a non-queued run (``IllegalTransition``); raises ``ValueError`` on a negative,
     out-of-range, or non-int index (``bool`` and ``float`` are not ints). Queue unchanged on refusal.
+    Status and FIFO membership are re-read and checked in ONE locked transaction before the write.
     """
     if isinstance(index, bool) or not isinstance(index, int):
         raise ValueError(f"index must be an int, got {index!r}")
     s = store.RunStore()
-    record = s.read(run_id)
-    if State(record["status"]) != State.QUEUED:
-        raise IllegalTransition(f"cannot reorder {run_id!r} in state {record['status']!r}")
     with s.locked():
+        record = s._read_unlocked(run_id)
+        if State(record["status"]) != State.QUEUED:
+            raise IllegalTransition(f"cannot reorder {run_id!r} in state {record['status']!r}")
         queue = s.read_queue()
         order = queue["queue"]
         if run_id not in order:
@@ -304,7 +356,7 @@ def reorder(run_id: str, index: int) -> list[str]:
         order.insert(index, run_id)
         queue["queue"] = order
         s.write_queue_unlocked(queue)
-    return s.read_queue()["queue"]
+        return list(order)
 
 
 def _reconcile(record: dict, github_facts: Callable[[str], dict]) -> None:
@@ -343,27 +395,42 @@ def continue_run(
     # never running the stage.
     _reconcile(record, github_facts)
 
-    if current == State.RUNNING:
-        # Crash-orphaned: it still holds its slot and is already "running"; do not re-emit running.
-        pass
-    elif current == State.PAUSED:
-        transition(State.PAUSED, State.RUNNING)
-        s.apply(run_id, lambda r: {"status": RUNNING})
-        s.append_event(run_id, {"transition": RUNNING})
-    elif current == State.PARKED:
-        transition(State.PARKED, State.RUNNING)
-        with s.locked():
-            queue = s.read_queue()
-            if queue.get("active") is not None:
-                raise WorkerBusyError(
-                    f"cannot resume {run_id!r}: worker slot held by {queue['active']!r}"
-                )
+    # Claim/verify the worker slot AND perform the guarded manifest transition in ONE locked
+    # transaction, re-reading state under the lock. A crash-orphaned running run must own the slot
+    # before its stage runs; a parked run may only resume onto a free slot.
+    emit_running = False
+    with s.locked():
+        record = s._read_unlocked(run_id)
+        current = State(record["status"])
+        queue = s.read_queue()
+        active = queue.get("active")
+        if current == State.RUNNING:
+            # Crash-orphan: accept the slot it already owns, claim a free one, else refuse.
+            if active == run_id:
+                pass
+            elif active is None:
+                queue["active"] = run_id
+                s.write_queue_unlocked(queue)
+            else:
+                raise WorkerBusyError(f"cannot continue {run_id!r}: worker slot held by {active!r}")
+            # Already "running": no manifest transition, no duplicate running event.
+        elif current == State.PAUSED:
+            # A paused run holds its own slot; keep it, just re-mark running.
+            transition(State.PAUSED, State.RUNNING)
+            s.write_record_unlocked(run_id, {**record, "status": RUNNING})
+            emit_running = True
+        elif current == State.PARKED:
+            transition(State.PARKED, State.RUNNING)
+            if active is not None:
+                raise WorkerBusyError(f"cannot resume {run_id!r}: worker slot held by {active!r}")
             queue["active"] = run_id
             s.write_queue_unlocked(queue)
             s.write_record_unlocked(run_id, {**record, "status": RUNNING})
+            emit_running = True
+        else:
+            raise IllegalTransition(f"cannot continue {run_id!r} in state {record['status']!r}")
+    if emit_running:
         s.append_event(run_id, {"transition": RUNNING})
-    else:
-        raise IllegalTransition(f"cannot continue {run_id!r} in state {record['status']!r}")
 
     record = s.read(run_id)
     result = _execute_stage(s, run_id, stage, record)
