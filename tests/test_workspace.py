@@ -76,7 +76,6 @@ def _worktree_list(checkout: Path) -> str:
 # ----------------------------------------------------------------------- fetch (US-4.2)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_worktree_head_is_the_freshly_fetched_origin_sha_on_a_non_main_branch(tmp_path):
     """The worktree is based on the sha JUST fetched from origin/<default>, not a local ref — and
     the default branch is discovered, not hardcoded to 'main'.
@@ -102,7 +101,6 @@ def test_worktree_head_is_the_freshly_fetched_origin_sha_on_a_non_main_branch(tm
     assert _git(result.path, "rev-parse", "HEAD").stdout.strip() == new_sha
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_failed_fetch_pauses_and_adds_no_worktree(tmp_path):
     """A failed fetch pauses (ok=False) and adds no worktree — the worktree list is unchanged.
 
@@ -124,7 +122,6 @@ def test_failed_fetch_pauses_and_adds_no_worktree(tmp_path):
 # ----------------------------------------------- isolation proof (US-4.2 / US-4.3)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_isolation_proof_all_three_hold_after_a_real_worktree_creation(tmp_path):
     """Isolation proof — all three: worktree outside the checkout tree, checkout HEAD byte-identical,
     checkout index byte-identical.
@@ -147,7 +144,6 @@ def test_isolation_proof_all_three_hold_after_a_real_worktree_creation(tmp_path)
     assert head_a == head_b and index_a == index_b and rev_a == rev_b
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_dirty_checkout_is_permitted_and_all_three_proofs_still_hold(tmp_path):
     """US-4.3: a dirty normal checkout is allowed, but ONLY because all three isolation proofs still
     hold, and the uncommitted change is preserved.
@@ -174,7 +170,6 @@ def test_dirty_checkout_is_permitted_and_all_three_proofs_still_hold(tmp_path):
     assert _git(checkout, "status", "--porcelain").stdout.strip() != ""
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_a_benign_custom_creator_that_truly_isolates_succeeds(tmp_path):
     """A custom creator that produces a genuinely isolated worktree must SUCCEED — the proof does
     not reject every non-default creator, only ones that break isolation.
@@ -194,7 +189,6 @@ def test_a_benign_custom_creator_that_truly_isolates_succeeds(tmp_path):
     assert result.ok is True and result.isolated is True
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_index_mutation_during_creation_is_caught_as_unprovable_isolation(tmp_path):
     """An index mutation during creation fails the proof (isolated=False) — it is never inferred safe.
 
@@ -215,7 +209,6 @@ def test_index_mutation_during_creation_is_caught_as_unprovable_isolation(tmp_pa
     assert result.ok is False and result.isolated is False and result.reason
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_head_mutation_during_creation_is_caught_as_unprovable_isolation(tmp_path):
     """A HEAD move during creation fails the proof — the proof checks HEAD, not only the index.
 
@@ -237,7 +230,6 @@ def test_head_mutation_during_creation_is_caught_as_unprovable_isolation(tmp_pat
     assert result.ok is False and result.isolated is False
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_a_worktree_inside_the_checkout_tree_fails_the_path_proof(tmp_path):
     """A worktree placed inside the checkout's working tree fails the path-outside proof.
 
@@ -256,7 +248,6 @@ def test_a_worktree_inside_the_checkout_tree_fails_the_path_proof(tmp_path):
 # ------------------------------------------- preserve on failure (recovery discipline)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_a_dirty_partial_worktree_is_preserved_not_force_removed_when_isolation_fails(tmp_path):
     """Failure & recovery: when a REAL worktree was partially created and then isolation cannot be
     proven, the partial worktree (with its uncommitted content) is preserved, never force-removed.
@@ -290,7 +281,6 @@ def test_a_dirty_partial_worktree_is_preserved_not_force_removed_when_isolation_
     assert (made["path"] / "README.md").read_text() == "tracked edit\n"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_nothing_uncommitted_in_the_checkout_is_destroyed_when_creation_raises(tmp_path):
     """A creation that raises preserves the checkout's uncommitted work — no reset --hard, no
     clean -fd on the checkout.
@@ -320,7 +310,6 @@ def test_nothing_uncommitted_in_the_checkout_is_destroyed_when_creation_raises(t
 # ---------------------------------------------------- worktree naming (timestamp + PID)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_worktree_name_carries_the_injected_timestamp_and_pid(tmp_path):
     """The worktree name is suffixed with timestamp PLUS pid, and two different pids in the same
     second yield different names (the agent-contract caveat carried as a requirement).
@@ -343,7 +332,6 @@ def test_worktree_name_carries_the_injected_timestamp_and_pid(tmp_path):
     assert first.path != second.path
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_two_rapid_creations_get_distinct_worktree_paths(tmp_path):
     """Two worktrees created back-to-back in the same process get DISTINCT paths — a same-second
     collision is impossible even with the same pid.
@@ -363,7 +351,6 @@ def test_two_rapid_creations_get_distinct_worktree_paths(tmp_path):
     assert first.path != second.path
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_the_created_worktree_is_detached_so_no_branch_exists_to_delete(tmp_path):
     """The worktree is created DETACHED at the verified origin sha (not on a branch), so the
     'worktree remove must not delete a branch' caveat is satisfied by construction.
@@ -383,7 +370,6 @@ def test_the_created_worktree_is_detached_so_no_branch_exists_to_delete(tmp_path
     assert _git(result.path, "rev-parse", "HEAD").stdout.strip() == sha
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_concurrent_worktree_creation_is_serialized_and_uncorrupted(tmp_path):
     """The add/remove bracketing is serialized: several worktrees created concurrently from the
     same checkout all succeed with distinct valid paths and leave ``.git/worktrees`` uncorrupted.
@@ -429,7 +415,6 @@ def test_concurrent_worktree_creation_is_serialized_and_uncorrupted(tmp_path):
 # ------------------------------------------- reset_worktree (extracted from build_recovery)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_reset_worktree_resets_a_dirty_worktree_to_committed_content(tmp_path):
     """reset_worktree with a valid commit sha actually resets --hard (not a no-op): a dirty tracked
     edit is discarded and the file returns to its committed content.
@@ -452,7 +437,6 @@ def test_reset_worktree_resets_a_dirty_worktree_to_committed_content(tmp_path):
     assert (worktree / "README.md").read_text() == "seed\n"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_reset_worktree_refuses_a_branch_name_and_a_tag(tmp_path):
     """reset_worktree requires a COMMIT sha, not a symbolic ref: a branch NAME and a TAG are both
     rejected (a typo cannot silently reset to whatever a name currently points at).
@@ -474,7 +458,6 @@ def test_reset_worktree_refuses_a_branch_name_and_a_tag(tmp_path):
         assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == head_before
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_reset_worktree_refuses_a_tree_sha_and_preserves_dirty_tracked_bytes(tmp_path):
     """reset_worktree verifies its base resolves to a COMMIT before reset --hard; a TREE sha
     (resolvable as an object but not a commit) is rejected and nothing is reset.
@@ -499,7 +482,6 @@ def test_reset_worktree_refuses_a_tree_sha_and_preserves_dirty_tracked_bytes(tmp
     assert (worktree / "README.md").read_text() == "precious tracked edit\n"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_reset_worktree_refuses_a_nonexistent_ref(tmp_path):
     """reset_worktree rejects a ref that resolves to nothing, rather than resetting to an
     unexpected object.

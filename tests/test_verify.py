@@ -25,7 +25,6 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
 
 # The baseline command as it appears in .issueforge.toml, minus the interpreter — the runner
 # supplies the interpreter from the PROVISIONED environment (G14), never the candidate's.
@@ -119,7 +118,6 @@ def _invocation_records() -> list[dict]:
 # =============================================================== real-path classify anchors
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_two_passing_tests_classify_as_green(tmp_path):
     """Two genuinely passing tests are GREEN, executed == 2, exit code captured as 0.
 
@@ -148,7 +146,6 @@ def test_two_passing_tests_classify_as_green(tmp_path):
     assert ev.exit_code == 0
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_all_skipped_suite_exits_zero_but_is_not_green(tmp_path):
     """THE false-green trap: an all-skipped suite exits 0 (exit_code == 0) yet is ALL_SKIPPED.
 
@@ -180,7 +177,6 @@ def test_all_skipped_suite_exits_zero_but_is_not_green(tmp_path):
     assert ev.exit_code == 0
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_a_real_xfail_at_exit_zero_is_not_green(tmp_path):
     """A real xfailing test exits 0 but is never GREEN — xfail is excluded from the conjunction.
 
@@ -209,7 +205,6 @@ def test_a_real_xfail_at_exit_zero_is_not_green(tmp_path):
     assert ev.status is not BaselineStatus.GREEN
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_a_real_mixed_pass_and_skip_is_not_green(tmp_path):
     """One passing + one skipped test (exit 0) is not GREEN — a skipped expected node breaks the
     conjunction even though nothing failed.
@@ -239,7 +234,6 @@ def test_a_real_mixed_pass_and_skip_is_not_green(tmp_path):
     assert ev.status is not BaselineStatus.GREEN
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_zero_collected_is_a_third_state_neither_green_nor_red(tmp_path):
     """Zero collected is BROKEN — its own state (pytest exit 5), never green and never red.
 
@@ -259,7 +253,6 @@ def test_zero_collected_is_a_third_state_neither_green_nor_red(tmp_path):
     assert ev.status is not BaselineStatus.BEHAVIORAL_RED
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_a_call_failure_is_behavioral_red_with_a_phase_aware_record(tmp_path):
     """A failing test body (exit 1) is BEHAVIORAL_RED with a call-phase FAILED node record.
 
@@ -286,7 +279,6 @@ def test_a_call_failure_is_behavioral_red_with_a_phase_aware_record(tmp_path):
     assert failed and all(n.longrepr for n in failed)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_a_setup_failure_is_not_green_and_is_phase_aware(tmp_path):
     """A failure in a fixture (setup phase) is not green, and the failing phase is 'setup', not
     'call' — an implementation that inspects only call records cannot call this green.
@@ -318,7 +310,6 @@ def test_a_setup_failure_is_not_green_and_is_phase_aware(tmp_path):
     assert setup_bad
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_a_teardown_failure_is_not_green(tmp_path):
     """A failure during teardown is not green even though the call passed — the runner must fuse
     every phase, not just the call.
@@ -353,7 +344,6 @@ def test_a_teardown_failure_is_not_green(tmp_path):
     assert teardown_bad
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_a_real_syntax_error_is_a_collection_error(tmp_path):
     """A module that fails to import (syntax error) is a COLLECTION_ERROR (pytest exit 2), a
     BROKEN diagnostic distinct from a behavioral red.
@@ -372,7 +362,6 @@ def test_a_real_syntax_error_is_a_collection_error(tmp_path):
     assert ev.status not in (BaselineStatus.BEHAVIORAL_RED, BaselineStatus.GREEN)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_an_unrecognized_flag_is_a_usage_error(tmp_path):
     """An unrecognized command flag (pytest exit 4) is a USAGE_ERROR, never conflated with a
     collection error.
@@ -393,7 +382,6 @@ def test_an_unrecognized_flag_is_a_usage_error(tmp_path):
     assert ev.status is BaselineStatus.USAGE_ERROR
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_a_missing_interpreter_is_launch_failed(tmp_path):
     """A provisioned interpreter that cannot be launched yields LAUNCH_FAILED — the process never
     produced evidence, distinct from a timeout.
@@ -413,7 +401,6 @@ def test_a_missing_interpreter_is_launch_failed(tmp_path):
 # =============================================== report is real report-log, fresh, outside repo
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_report_is_fresh_report_log_jsonl_outside_the_repo_per_invocation(tmp_path):
     """The report is genuine pytest report-log JSONL, in a fresh directory OUTSIDE the repo,
     distinct per invocation — a JUnit-XML or fabricated-JSONL implementation cannot pass.
@@ -440,7 +427,6 @@ def test_report_is_fresh_report_log_jsonl_outside_the_repo_per_invocation(tmp_pa
     assert any("--report-log" in a for a in argvs), "baseline did not use --report-log"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_a_real_hang_times_out_leaving_no_report_and_never_consuming_a_stale_one(tmp_path):
     """A REAL hang is killed at the timeout, leaves NO report in the fresh dir, and never consumes
     a stale report from a previous run.
@@ -472,7 +458,6 @@ def test_a_real_hang_times_out_leaving_no_report_and_never_consuming_a_stale_one
         assert not list(Path(ev.report_dir).glob("*.jsonl"))
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_the_baseline_launch_is_an_argv_array_in_the_worktree_with_report_log(tmp_path):
     """The baseline is launched as an argv ARRAY (no shell) in the worktree, via the provisioned
     interpreter, carrying --report-log — proven from the persisted subprocess-boundary evidence.
@@ -503,7 +488,6 @@ def test_the_baseline_launch_is_an_argv_array_in_the_worktree_with_report_log(tm
 # ============================================================ report completeness (incomplete)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_an_incomplete_report_at_exit_zero_is_not_green(tmp_path, monkeypatch):
     """Exit 0 with an INCOMPLETE report (an expected node has no terminal record) is not green —
     completeness is part of the evidence, not just the exit code.
@@ -557,7 +541,6 @@ def test_an_incomplete_report_at_exit_zero_is_not_green(tmp_path, monkeypatch):
 # =========================================== run_baseline consumes canonical_collect's ids
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_run_baseline_uses_canonical_collect_ids_as_the_expected_set(tmp_path):
     """The expected-id set comes from canonical_collect, not from the execution report — a node
     canonical_collect expects that never appears in the run makes the baseline non-green.
@@ -596,7 +579,6 @@ def test_run_baseline_uses_canonical_collect_ids_as_the_expected_set(tmp_path):
 # =================================================================== G14 authoritative env
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_candidate_env_mutations_cannot_change_the_authoritative_result(tmp_path, monkeypatch):
     """G14: candidate environment mutations cannot change the authoritative result — the baseline
     runs in the separately-provisioned allowlist env, not the candidate's.
@@ -636,7 +618,6 @@ def test_candidate_env_mutations_cannot_change_the_authoritative_result(tmp_path
     assert ev.status is BaselineStatus.GREEN
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_default_provisioner_uses_a_separate_interpreter_under_an_owned_root(tmp_path):
     """The DEFAULT provisioning path builds a SEPARATE authoritative interpreter under an
     IssueForge-owned root (network off) — not the host interpreter, not the target's environment.
@@ -671,7 +652,6 @@ def test_default_provisioner_uses_a_separate_interpreter_under_an_owned_root(tmp
 # =========================================== establish orchestration: pause BEFORE any AI
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_establish_continues_on_green_over_a_real_non_main_default_branch(tmp_path):
     """The happy path: a real fetch of a non-'main' default branch, an isolated worktree, and a
     GREEN baseline loaded from the tree's committed command -> the run continues (not paused) and
@@ -722,7 +702,6 @@ def test_establish_continues_on_green_over_a_real_non_main_default_branch(tmp_pa
     assert len(dispatched) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_establish_pauses_on_failed_fetch_without_running_baseline_or_dispatch(tmp_path):
     """A failed fetch pauses BEFORE any baseline runs and BEFORE any AI dispatch — the suite never
     runs on a stale tree.
@@ -756,7 +735,6 @@ def test_establish_pauses_on_failed_fetch_without_running_baseline_or_dispatch(t
     assert verify_run is verify.run_baseline  # tripwire was injected, not a global mutation
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_establish_pauses_on_unprovable_isolation_without_running_baseline(tmp_path):
     """Unprovable isolation pauses before the baseline runs — a runner must not proceed to execute
     a suite in a worktree it could not prove isolated.
@@ -791,7 +769,6 @@ def test_establish_pauses_on_unprovable_isolation_without_running_baseline(tmp_p
     assert ran == {"baseline": False, "dispatch": False}
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_establish_pauses_on_a_non_green_baseline_without_dispatch(tmp_path):
     """A non-green baseline pauses the run and never dispatches AI, carrying the non-green status.
 

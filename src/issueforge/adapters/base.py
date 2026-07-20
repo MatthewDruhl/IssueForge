@@ -10,6 +10,7 @@ in the slices that first need them (S6/S12/S13).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
@@ -35,6 +36,52 @@ class Outcome(Enum):
         )
 
 
+class BaselineStatus(Enum):
+    """The closed, run-level verdict a whole baseline classifies to.
+
+    Distinct from the per-node ``Outcome``: this fuses exit code, the report's
+    presence/completeness, per-node outcomes, and the engine-side timeout flag into a single
+    verdict for the run. ``GREEN`` is the sole success member — every other member is a reason
+    the run is not usable as a baseline, and "exit 0" alone never earns ``GREEN``.
+    """
+
+    GREEN = "green"
+    BEHAVIORAL_RED = "behavioral_red"
+    COLLECTION_ERROR = "collection_error"
+    NO_TESTS_COLLECTED = "no_tests_collected"
+    ALL_SKIPPED = "all_skipped"
+    USAGE_ERROR = "usage_error"
+    INTERNAL_ERROR = "internal_error"
+    TIMEOUT = "timeout"
+    LAUNCH_FAILED = "launch_failed"
+
+
+@dataclass(frozen=True)
+class NodeRecord:
+    """One phase-aware node record: a single test id in a single phase, with its outcome."""
+
+    nodeid: str
+    phase: str
+    outcome: Outcome
+    longrepr: object = None
+
+
+@dataclass(frozen=True)
+class ClassifyResult:
+    """The structured verdict for one baseline run: a status plus the evidence it was fused from.
+
+    Never a bare ``(passed, failed)`` pair — the status carries the discrimination an exit code
+    cannot, and ``nodes`` preserves the per-phase records so a caller can see WHY.
+    """
+
+    status: BaselineStatus
+    collected: int
+    executed: int
+    nodes: tuple[NodeRecord, ...]
+    report_present: bool
+    exit_code: int | None
+
+
 @runtime_checkable
 class VerificationAdapter(Protocol):
     """Six mandatory operations keyed on (framework, reporter)."""
@@ -43,7 +90,9 @@ class VerificationAdapter(Protocol):
         """Return the reporter's capabilities and pinned version for ``toolchain``."""
         ...
 
-    def provision_environment(self, worktree: object, frozen_deps: object = None) -> object:
+    def provision_environment(
+        self, worktree: object, frozen_deps: object = None, *, provisioner: object = None
+    ) -> object:
         """Prepare a hermetic, separately-provisioned authoritative environment handle."""
         ...
 
@@ -51,8 +100,16 @@ class VerificationAdapter(Protocol):
         """Return canonical test IDs and selection metadata for an invocation."""
         ...
 
-    def classify(self, native_events: object) -> object:
-        """Turn native framework events into phase-aware outcomes."""
+    def classify(
+        self,
+        records: object,
+        *,
+        exit_code: object,
+        timed_out: object,
+        report_present: object,
+        expected_ids: object,
+    ) -> object:
+        """Fuse report records + exit code + timeout flag into a run-level ``BaselineStatus``."""
         ...
 
     def discover_contract_dependencies(self, collection: object) -> object:
