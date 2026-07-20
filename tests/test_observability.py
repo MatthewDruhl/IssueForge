@@ -180,7 +180,6 @@ def _added_diff(added_lines: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_boundary_categories_are_exactly_the_seven_declared(isolated_state_home):
     """The boundary categories are a closed set of exactly seven: HTTP, database, subprocess, filesystem, queue, third-party service, and AI.
 
@@ -192,7 +191,6 @@ def test_boundary_categories_are_exactly_the_seven_declared(isolated_state_home)
     assert set(observability.BoundaryCategory.__members__) == set(GOLDEN_MARKERS)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_boundary_markers_equal_the_curated_v1_contract_and_the_ai_marker_is_the_seam(
     isolated_state_home,
 ):
@@ -218,7 +216,6 @@ def test_boundary_markers_equal_the_curated_v1_contract_and_the_ai_marker_is_the
     assert not any(token in all_markers for token in banned)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_both_classifiers_read_the_shared_marker_tuple_and_it_has_no_public_setter(
     tmp_path, isolated_state_home, monkeypatch
 ):
@@ -253,7 +250,6 @@ def test_both_classifiers_read_the_shared_marker_tuple_and_it_has_no_public_sett
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 @pytest.mark.parametrize("category", list(CATEGORY_SNIPPETS))
 def test_classify_prospective_flags_exactly_the_one_category_with_marker_evidence(
     category, tmp_path, isolated_state_home
@@ -280,7 +276,6 @@ def test_classify_prospective_flags_exactly_the_one_category_with_marker_evidenc
     assert marker in observability.BOUNDARY_MARKERS[expected]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_classify_prospective_resolves_import_aliases_to_canonical_markers(
     tmp_path, isolated_state_home
 ):
@@ -309,7 +304,6 @@ def test_classify_prospective_resolves_import_aliases_to_canonical_markers(
     assert verdict.categories == frozenset({cat.SUBPROCESS, cat.DATABASE, cat.AI})
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_classify_prospective_ignores_prose_comments_and_string_literals(
     tmp_path, isolated_state_home
 ):
@@ -335,7 +329,6 @@ def test_classify_prospective_ignores_prose_comments_and_string_literals(
     assert verdict.categories == frozenset()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_a_raw_vendor_ai_call_is_not_classified_as_ai_only_the_provider_seam_is(
     tmp_path, isolated_state_home
 ):
@@ -363,7 +356,6 @@ def test_a_raw_vendor_ai_call_is_not_classified_as_ai_only_the_provider_seam_is(
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_classification_is_deterministic_and_performs_no_ai_process_or_network_call(
     tmp_path, isolated_state_home, monkeypatch
 ):
@@ -417,7 +409,6 @@ def test_classification_is_deterministic_and_performs_no_ai_process_or_network_c
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 @pytest.mark.parametrize("category", list(CATEGORY_SNIPPETS))
 def test_classify_diff_flags_each_category_from_added_lines(category, isolated_state_home):
     """Each boundary is detected from a diff's ADDED lines alone, for every category, with the concrete matched marker.
@@ -437,7 +428,6 @@ def test_classify_diff_flags_each_category_from_added_lines(category, isolated_s
     assert any(e.category is expected and e.marker == marker for e in verdict.evidence)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_classify_diff_ignores_removed_lines_and_added_comments(isolated_state_home):
     """A removed boundary is not a crossing, and marker text added only in a comment is not a crossing.
 
@@ -461,7 +451,6 @@ def test_classify_diff_ignores_removed_lines_and_added_comments(isolated_state_h
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_reconcile_passes_when_the_diff_crosses_only_approved_boundaries(isolated_state_home):
     """Reconciliation passes when the actual diff crosses only boundaries the approved verdict already anticipated.
 
@@ -476,7 +465,6 @@ def test_reconcile_passes_when_the_diff_crosses_only_approved_boundaries(isolate
     assert observability.reconcile(approved, actual) is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_unanticipated_boundaries_are_a_deterministic_failure_naming_every_new_category(
     isolated_state_home,
 ):
@@ -513,7 +501,6 @@ def test_unanticipated_boundaries_are_a_deterministic_failure_naming_every_new_c
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 @pytest.mark.parametrize(
     "source, flagged",
     [
@@ -567,7 +554,6 @@ def test_global_logging_configuration_is_flagged_with_location_but_a_named_logge
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_detect_logger_convention_reads_target_a_exactly(tmp_path, isolated_state_home):
     """The detector reads the target's own logging conventions exactly — factory, the exact levels used, the installed format, and the correlation field.
 
@@ -598,7 +584,6 @@ def test_detect_logger_convention_reads_target_a_exactly(tmp_path, isolated_stat
     assert convention.correlation_key == "correlation_id"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_detect_logger_convention_reads_target_b_differently(tmp_path, isolated_state_home):
     """A different target yields a different convention — different exact levels, a different exact format, and no correlation field — proving the result tracks the target rather than a hardcoded default.
 
@@ -627,7 +612,6 @@ def test_detect_logger_convention_reads_target_b_differently(tmp_path, isolated_
     assert convention.correlation_key is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_detect_logger_convention_returns_no_factory_when_the_target_has_no_logging(
     tmp_path, isolated_state_home
 ):
@@ -649,7 +633,6 @@ def test_detect_logger_convention_returns_no_factory_when_the_target_has_no_logg
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_capture_logs_forwards_args_runs_once_and_leaves_no_persistent_handler(isolated_state_home):
     """Capturing logs forwards arguments to the callable, runs it exactly once, returns its result and the records it emitted, and installs no lasting handler (a second capture does not see duplicates).
 
@@ -683,7 +666,6 @@ def test_capture_logs_forwards_args_runs_once_and_leaves_no_persistent_handler(i
     assert logging.getLogger("target.capture").handlers == handlers_before
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_sensitive_values_present_detects_deferred_formatting_and_passes_clean_logs(
     isolated_state_home,
 ):
@@ -713,7 +695,6 @@ def test_sensitive_values_present_detects_deferred_formatting_and_passes_clean_l
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_collect_log_evidence_runs_both_paths_and_reports_events_with_no_leak(isolated_state_home):
     """The authoritative evidence run actually executes both the success and the failure callable, capturing the events each emits, and reports no leak when the sensitive/canary sets appear nowhere — even though those sets are non-empty.
 
@@ -756,7 +737,6 @@ def test_collect_log_evidence_runs_both_paths_and_reports_events_with_no_leak(is
     assert evidence.leaked == frozenset()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_collect_log_evidence_reports_a_missing_required_event_on_a_raising_failure_path(
     isolated_state_home,
 ):
@@ -789,7 +769,6 @@ def test_collect_log_evidence_reports_a_missing_required_event_on_a_raising_fail
     assert "request.failed" not in evidence.events_emitted
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#10)")
 def test_collect_log_evidence_flags_a_sensitive_field_or_canary_leaked_on_the_failure_path(
     isolated_state_home,
 ):
