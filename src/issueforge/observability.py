@@ -16,6 +16,8 @@ from __future__ import annotations
 import ast
 import enum
 import logging
+import re
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -129,85 +131,218 @@ class BoundaryVerdict:
     evidence: tuple[BoundaryEvidence, ...]
 
 
-# --- AST alias resolution (mirrors issueforge.boundary._Linter's canonical-name pattern) ------
+# ---------------------------------------------------------------------------
+# AST call collector: alias resolution + shadowing + Path-receiver awareness
+# (mirrors issueforge.boundary._Linter's canonical-name pattern, extended so a
+# shadowed name and an arbitrary receiver never produce a false match)
+# ---------------------------------------------------------------------------
+
+_PATH_INSTANCE = object()  # sentinel: a name provably bound to a pathlib.Path instance
+_PATH_METHODS = frozenset(
+    {"open", "read_text", "read_bytes", "write_text", "write_bytes", "unlink", "mkdir"}
+)
 
 
-class _AliasResolver(ast.NodeVisitor):
-    """Walk a module tracking import aliases and yield (dotted-call-text, canonical-name) pairs."""
+class _CallCollector(ast.NodeVisitor):
+    """Collect every call with the canonical marker candidates it could match.
+
+    Tracks import aliases AND local bindings that SHADOW a module name (parameters, local
+    ``def``/``class``, assignments, ``for``/``with``/``except as`` targets) so a shadowed name
+    resolves to nothing. Attribute calls resolve their receiver: a ``pathlib.Path`` method only
+    matches when the receiver is provably a ``Path(...)`` construction or a name bound to one —
+    never an arbitrary receiver like ``client.open()``.
+    """
 
     def __init__(self) -> None:
-        self.binding_scopes: list[dict[str, str | None]] = [{}]
-        self.calls: list[tuple[ast.Call, str]] = []
+        self.scopes: list[dict[str, object]] = [{}]
+        self.calls: list[tuple[ast.Call, frozenset[str]]] = []
 
+    # --- scope + resolution -------------------------------------------------
+    def _resolve(self, name: str) -> object:
+        for scope in reversed(self.scopes):
+            if name in scope:
+                return scope[name]
+        return name
+
+    def _resolve_dotted(self, node: ast.AST) -> str | None:
+        """Canonical dotted name for a Name / pure attribute-chain-of-Names, else None."""
+        attrs: list[str] = []
+        cur = node
+        while isinstance(cur, ast.Attribute):
+            attrs.append(cur.attr)
+            cur = cur.value
+        if not isinstance(cur, ast.Name):
+            return None
+        val = self._resolve(cur.id)
+        if not isinstance(val, str):  # None (shadowed) or _PATH_INSTANCE
+            return None
+        attrs.reverse()
+        return ".".join([val, *attrs])
+
+    def _is_path_constructor(self, func: ast.AST) -> bool:
+        return self._resolve_dotted(func) == "pathlib.Path"
+
+    def _is_path_instance(self, node: ast.AST) -> bool:
+        if isinstance(node, ast.Call):
+            return self._is_path_constructor(node.func)
+        if isinstance(node, ast.Name):
+            return self._resolve(node.id) is _PATH_INSTANCE
+        return False
+
+    def _binding_for_value(self, value: ast.AST | None) -> object:
+        if isinstance(value, ast.Call) and self._is_path_constructor(value.func):
+            return _PATH_INSTANCE
+        return None  # anything else shadows an import of the same name
+
+    def _record_targets(self, target: ast.AST, binding: object) -> None:
+        if isinstance(target, ast.Name):
+            self.scopes[-1][target.id] = binding
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                self._record_targets(element, None)
+        elif isinstance(target, ast.Starred):
+            self._record_targets(target.value, None)
+        # Attribute / Subscript targets do not rebind a bare name.
+
+    # --- imports ------------------------------------------------------------
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             root = alias.name.split(".")[0]
             local = alias.asname or root
-            self.binding_scopes[-1][local] = alias.name if alias.asname else root
+            self.scopes[-1][local] = alias.name if alias.asname else root
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.level == 0 and node.module:
             for alias in node.names:
                 local = alias.asname or alias.name
-                self.binding_scopes[-1][local] = f"{node.module}.{alias.name}"
+                self.scopes[-1][local] = f"{node.module}.{alias.name}"
         self.generic_visit(node)
 
-    def _canonical(self, dotted: str) -> str:
-        first, separator, rest = dotted.partition(".")
-        bound = first
-        for scope in reversed(self.binding_scopes):
-            if first in scope:
-                bound = scope[first] or first
-                break
-        return bound + (separator + rest if separator else "")
-
+    # --- calls --------------------------------------------------------------
     def visit_Call(self, node: ast.Call) -> None:
-        dotted = ast.unparse(node.func)
-        canonical = self._canonical(dotted)
-        self.calls.append((node, canonical))
+        candidates: set[str] = set()
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr in _PATH_METHODS
+            and self._is_path_instance(func.value)
+        ):
+            candidates.add(f"pathlib.Path.{func.attr}")
+        dotted = self._resolve_dotted(func)
+        if dotted is not None:
+            candidates.add(dotted)
+        self.calls.append((node, frozenset(candidates)))
         self.generic_visit(node)
 
+    # --- scopes + shadowing -------------------------------------------------
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.binding_scopes.append({})
+        self.scopes[-1][node.name] = None  # a local def shadows a same-named import/builtin
+        self.scopes.append({})
+        for arg in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ):
+            self.scopes[-1][arg.arg] = None
+        if node.args.vararg:
+            self.scopes[-1][node.args.vararg.arg] = None
+        if node.args.kwarg:
+            self.scopes[-1][node.args.kwarg.arg] = None
         self.generic_visit(node)
-        self.binding_scopes.pop()
+        self.scopes.pop()
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.scopes.append({})
+        for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
+            self.scopes[-1][arg.arg] = None
+        if node.args.vararg:
+            self.scopes[-1][node.args.vararg.arg] = None
+        if node.args.kwarg:
+            self.scopes[-1][node.args.kwarg.arg] = None
+        self.generic_visit(node)
+        self.scopes.pop()
 
-def _match_source(source: str, location: str) -> list[BoundaryEvidence]:
-    """Match executable calls (never prose/comments/strings) in ``source`` against BOUNDARY_MARKERS."""
-    import textwrap
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.scopes[-1][node.name] = None
+        self.scopes.append({})
+        self.generic_visit(node)
+        self.scopes.pop()
 
+    def visit_Assign(self, node: ast.Assign) -> None:
+        binding = self._binding_for_value(node.value)
+        for target in node.targets:
+            self._record_targets(target, binding)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        binding = self._binding_for_value(node.value) if node.value is not None else None
+        if isinstance(node.target, ast.Name):
+            self.scopes[-1][node.target.id] = binding
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._record_targets(node.target, None)
+        self.generic_visit(node)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self._record_targets(node.target, self._binding_for_value(node.value))
+        self.generic_visit(node)
+
+    def visit_For(self, node: ast.For) -> None:
+        self._record_targets(node.target, None)
+        self.generic_visit(node)
+
+    visit_AsyncFor = visit_For
+
+    def visit_With(self, node: ast.With) -> None:
+        for item in node.items:
+            if item.optional_vars is not None:
+                self._record_targets(item.optional_vars, None)
+        self.generic_visit(node)
+
+    visit_AsyncWith = visit_With
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name:
+            self.scopes[-1][node.name] = None
+        self.generic_visit(node)
+
+
+def _safe_parse(source: str) -> ast.Module | None:
     try:
-        tree = ast.parse(source)
+        return ast.parse(source)
     except SyntaxError:
         try:
-            # A diff's added lines may carry a uniform extra indent; dedent before re-trying so a
-            # syntactically valid snippet still parses (raw, unindentable fragments still fail closed).
-            tree = ast.parse(textwrap.dedent(source))
+            return ast.parse(textwrap.dedent(source))
         except SyntaxError:
-            return []
-    resolver = _AliasResolver()
-    resolver.visit(tree)
+            return None
 
-    marker_lookup: dict[str, BoundaryCategory] = {}
+
+def _collect_calls(tree: ast.AST) -> list[tuple[ast.Call, frozenset[str]]]:
+    collector = _CallCollector()
+    collector.visit(tree)
+    return collector.calls
+
+
+def _evidence_from_calls(
+    calls: list[tuple[ast.Call, frozenset[str]]], location: str
+) -> list[BoundaryEvidence]:
+    """Match collected calls against the CURRENT ``BOUNDARY_MARKERS`` (read at call time)."""
+    lookup: dict[str, BoundaryCategory] = {}
     for category, markers in BOUNDARY_MARKERS.items():
         for marker in markers:
-            marker_lookup[marker] = category
+            lookup[marker] = category
 
     found: list[BoundaryEvidence] = []
-    for _node, canonical in resolver.calls:
-        # `open` is special: a bare Name call, not an attribute chain.
-        candidates = {canonical}
-        if canonical.rsplit(".", 1)[-1] == "open":
-            candidates.add("open")
-        for candidate in candidates:
-            if candidate in marker_lookup:
+    for _node, candidates in calls:
+        for candidate in sorted(candidates):
+            if candidate in lookup:
                 found.append(
                     BoundaryEvidence(
-                        category=marker_lookup[candidate], location=location, marker=candidate
+                        category=lookup[candidate], location=location, marker=candidate
                     )
                 )
                 break
@@ -229,26 +364,92 @@ def classify_prospective(
     """
     del issue_text, repo_root
     evidence: list[BoundaryEvidence] = []
-    for path in footprint_paths:
-        path = Path(path)
+    for raw_path in footprint_paths:
+        path = Path(raw_path)
         try:
             source = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        evidence.extend(_match_source(source, str(path)))
+        tree = _safe_parse(source)
+        if tree is None:
+            continue
+        evidence.extend(_evidence_from_calls(_collect_calls(tree), str(path)))
     return _verdict_from_evidence(evidence)
 
 
-def classify_diff(diff_text: str) -> BoundaryVerdict:
-    """Classify the boundary crossings introduced by a unified diff's ADDED lines only."""
-    added_lines: list[str] = []
+@dataclass
+class _DiffFile:
+    path: str
+    new_source: str
+    added_linenos: set[int]
+    added_contents: list[str]
+
+
+def _parse_diff_files(diff_text: str) -> list[_DiffFile]:
+    """Reconstruct each changed file's NEW side (context + added), tracking added line numbers.
+
+    Hunks from one file are reconstructed together so an alias defined in unchanged context is
+    still in scope; different files are never merged into one parse.
+    """
+    files: list[_DiffFile] = []
+    current: _DiffFile | None = None
+
     for line in diff_text.splitlines():
-        if line.startswith("+++") or line.startswith("---"):
+        if line.startswith("+++"):
+            path = line[3:].strip()
+            if path.startswith("b/"):
+                path = path[2:]
+            current = _DiffFile(
+                path=path or "<diff>", new_source="", added_linenos=set(), added_contents=[]
+            )
+            files.append(current)
+            continue
+        if line.startswith("---") or line.startswith("@@"):
+            continue
+        if current is None:
+            continue
+        if line.startswith("\\"):  # "\\ No newline at end of file"
             continue
         if line.startswith("+"):
-            added_lines.append(line[1:])
-    source = "\n".join(added_lines)
-    evidence = _match_source(source, "<diff>")
+            content = line[1:]
+            current.added_contents.append(content)
+            new_lines = current.new_source.split("\n") if current.new_source else []
+            new_lines.append(content)
+            current.new_source = "\n".join(new_lines)
+            current.added_linenos.add(len(new_lines))
+        elif line.startswith("-"):
+            continue
+        else:  # context line (leading space or a blank line)
+            content = line[1:] if line.startswith(" ") else line
+            new_lines = current.new_source.split("\n") if current.new_source else []
+            new_lines.append(content)
+            current.new_source = "\n".join(new_lines)
+    return files
+
+
+def classify_diff(diff_text: str) -> BoundaryVerdict:
+    """Classify the boundary crossings introduced by a unified diff's ADDED lines only.
+
+    Each file's new side is reconstructed (context + added) so aliases resolve; a marker counts
+    only when its call site lands on an ADDED line (a removed boundary or an added comment does
+    not count).
+    """
+    evidence: list[BoundaryEvidence] = []
+    for diff_file in _parse_diff_files(diff_text):
+        tree = _safe_parse(diff_file.new_source)
+        if tree is not None:
+            calls = [
+                (node, candidates)
+                for node, candidates in _collect_calls(tree)
+                if node.lineno in diff_file.added_linenos
+            ]
+            evidence.extend(_evidence_from_calls(calls, diff_file.path))
+            continue
+        # Fallback: the reconstruction did not parse (e.g. context omitted). Analyze the added
+        # lines alone — every call there is by definition on an added line.
+        fallback = _safe_parse("\n".join(diff_file.added_contents))
+        if fallback is not None:
+            evidence.extend(_evidence_from_calls(_collect_calls(fallback), diff_file.path))
     return _verdict_from_evidence(evidence)
 
 
@@ -268,7 +469,9 @@ def reconcile(approved: BoundaryVerdict, actual: BoundaryVerdict) -> None:
         raise UnanticipatedBoundary(f"unanticipated boundary crossings: {names}")
 
 
-# --- G3: libraries never install global logging configuration ---------------------------------
+# ---------------------------------------------------------------------------
+# G3: libraries never install global logging configuration
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -279,34 +482,63 @@ class GlobalLoggingViolation:
     message: str
 
 
-class _GlobalLoggingVisitor(ast.NodeVisitor):
+_HANDLERS_MUTATORS = frozenset({"append", "extend", "insert", "remove", "clear"})
+
+
+class _G3Visitor(ast.NodeVisitor):
+    """Flag global logging configuration: basicConfig, no-arg root getLogger, root-handler mutation.
+
+    Tracks the ``logging`` import alias and every name bound to a root logger (through regular and
+    annotated assignments) so a root reached indirectly is still caught, while a NAMED logger and
+    its own handler stay clean.
+    """
+
     def __init__(self, filename: str) -> None:
         self.filename = filename
-        self.binding_scopes: list[dict[str, str | None]] = [{}]
+        self.imports: dict[str, str] = {}
+        self.root_names: set[str] = set()
         self.violations: list[GlobalLoggingViolation] = []
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             root = alias.name.split(".")[0]
             local = alias.asname or root
-            self.binding_scopes[-1][local] = alias.name if alias.asname else root
+            self.imports[local] = alias.name if alias.asname else root
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.level == 0 and node.module:
             for alias in node.names:
                 local = alias.asname or alias.name
-                self.binding_scopes[-1][local] = f"{node.module}.{alias.name}"
+                self.imports[local] = f"{node.module}.{alias.name}"
         self.generic_visit(node)
 
-    def _canonical(self, dotted: str) -> str:
-        first, separator, rest = dotted.partition(".")
-        bound = first
-        for scope in reversed(self.binding_scopes):
-            if first in scope:
-                bound = scope[first] or first
-                break
-        return bound + (separator + rest if separator else "")
+    def _canon(self, node: ast.AST) -> str | None:
+        attrs: list[str] = []
+        cur = node
+        while isinstance(cur, ast.Attribute):
+            attrs.append(cur.attr)
+            cur = cur.value
+        if not isinstance(cur, ast.Name):
+            return None
+        head = self.imports.get(cur.id, cur.id)
+        attrs.reverse()
+        return ".".join([head, *attrs])
+
+    def _no_arg_getlogger(self, node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and self._canon(node.func) == "logging.getLogger"
+            and not node.args
+            and not node.keywords
+        )
+
+    def _is_root_expr(self, node: ast.AST) -> bool:
+        if self._no_arg_getlogger(node):
+            return True
+        if self._canon(node) == "logging.root":
+            return True
+        return isinstance(node, ast.Name) and node.id in self.root_names
 
     def _add(self, node: ast.AST, message: str) -> None:
         lineno = getattr(node, "lineno", 0)
@@ -315,35 +547,53 @@ class _GlobalLoggingVisitor(ast.NodeVisitor):
         )
 
     def visit_Call(self, node: ast.Call) -> None:
-        dotted = ast.unparse(node.func)
-        canonical = self._canonical(dotted)
+        canonical = self._canon(node.func)
         if canonical == "logging.basicConfig":
             self._add(node, "logging.basicConfig installs global logging configuration")
-        elif canonical == "logging.getLogger" and not node.args and not node.keywords:
-            self._add(node, "logging.getLogger() with no name binds the root logger")
-        elif canonical.endswith(".addHandler"):
-            target = ast.unparse(node.func).rsplit(".addHandler", 1)[0]
-            if self._canonical(target) == "logging.root" or self._is_root_getlogger(node.func):
-                self._add(node, "addHandler on the root logger mutates global logging state")
+        if self._no_arg_getlogger(node):
+            self._add(node, "no-argument logging.getLogger() binds the root logger")
+        if isinstance(node.func, ast.Attribute):
+            method = node.func.attr
+            receiver = node.func.value
+            if method in ("addHandler", "removeHandler") and self._is_root_expr(receiver):
+                self._add(node, f"{method} on the root logger mutates global logging state")
+            if (
+                method in _HANDLERS_MUTATORS
+                and isinstance(receiver, ast.Attribute)
+                and receiver.attr == "handlers"
+                and self._is_root_expr(receiver.value)
+            ):
+                self._add(node, f"root logger handlers.{method}() mutates global logging state")
         self.generic_visit(node)
 
-    def _is_root_getlogger(self, func: ast.AST) -> bool:
-        if not isinstance(func, ast.Attribute):
-            return False
-        value = func.value
-        if not isinstance(value, ast.Name):
-            return False
-        return self.binding_scopes[-1].get(value.id) == "__root_getlogger__" or any(
-            scope.get(value.id) == "__root_getlogger__" for scope in self.binding_scopes
-        )
+    def _track_binding(self, target: ast.AST, value: ast.AST | None) -> None:
+        if not isinstance(target, ast.Name):
+            return
+        if value is not None and self._is_root_expr(value):
+            self.root_names.add(target.id)
+        else:
+            self.root_names.discard(target.id)
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        if isinstance(node.value, ast.Call):
-            canonical = self._canonical(ast.unparse(node.value.func))
-            if canonical == "logging.getLogger" and not node.value.args and not node.value.keywords:
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        self.binding_scopes[-1][target.id] = "__root_getlogger__"
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and target.attr == "handlers"
+                and self._is_root_expr(target.value)
+            ):
+                self._add(node, "assignment to the root logger's handlers list")
+        for target in node.targets:
+            self._track_binding(target, node.value)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if (
+            isinstance(node.target, ast.Attribute)
+            and node.target.attr == "handlers"
+            and self._is_root_expr(node.target.value)
+        ):
+            self._add(node, "assignment to the root logger's handlers list")
+        self._track_binding(node.target, node.value)
         self.generic_visit(node)
 
 
@@ -351,48 +601,26 @@ def check_global_logging(source_paths: list[Path]) -> list[GlobalLoggingViolatio
     """Return G3 violations: library code installing global logging configuration.
 
     Flags ``logging.basicConfig(...)`` (including via an aliased import), a no-argument root
-    ``logging.getLogger()``, and any root-handler mutation (``root.addHandler(...)``,
-    ``logging.root.handlers.append(...)``). A named ``getLogger(__name__)`` and a named logger's
-    own ``addHandler`` are clean.
+    ``logging.getLogger()``, and every root-handler mutation (``addHandler``, and
+    ``handlers.append/extend/insert/remove/clear`` or assignment to ``.handlers`` on a root
+    logger reached directly or through a bound name). A named ``getLogger(__name__)`` and a named
+    logger's own ``addHandler`` are clean.
     """
     violations: list[GlobalLoggingViolation] = []
-    for path in source_paths:
-        path = Path(path)
-        source = path.read_text(encoding="utf-8")
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
+    for raw_path in source_paths:
+        path = Path(raw_path)
+        tree = _safe_parse(path.read_text(encoding="utf-8"))
+        if tree is None:
             continue
-        visitor = _GlobalLoggingVisitor(path.name)
+        visitor = _G3Visitor(path.name)
         visitor.visit(tree)
-        violations.extend(_check_handlers_append(source, path.name))
         violations.extend(visitor.violations)
     return violations
 
 
-def _check_handlers_append(source: str, filename: str) -> list[GlobalLoggingViolation]:
-    """Catch ``logging.root.handlers.append(...)`` / aliased-root-handlers.append style mutation."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return []
-    resolver = _AliasResolver()
-    resolver.visit(tree)
-    out: list[GlobalLoggingViolation] = []
-    for node, canonical in resolver.calls:
-        if canonical.endswith(".handlers.append") or canonical == "logging.root.handlers.append":
-            base = canonical.rsplit(".append", 1)[0]
-            if base in ("logging.root.handlers",) or base.startswith("logging.root."):
-                out.append(
-                    GlobalLoggingViolation(
-                        location=f"{filename}:{node.lineno}",
-                        message="root logger handlers mutated directly",
-                    )
-                )
-    return out
-
-
-# --- Logger-convention detector: reads the target, never imposes -------------------------------
+# ---------------------------------------------------------------------------
+# Logger-convention detector: reads the target, never imposes
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -405,7 +633,118 @@ class LoggerConvention:
     correlation_key: str | None
 
 
-_LOG_LEVELS = {"debug", "info", "warning", "error", "critical", "exception"}
+_LOG_LEVELS = frozenset({"debug", "info", "warning", "error", "critical", "exception"})
+
+# The complete standard LogRecord attribute set — never a correlation key.
+_STANDARD_LOGRECORD_FIELDS = frozenset(
+    {
+        "name",
+        "msg",
+        "args",
+        "levelname",
+        "levelno",
+        "pathname",
+        "filename",
+        "module",
+        "exc_info",
+        "exc_text",
+        "stack_info",
+        "lineno",
+        "funcName",
+        "created",
+        "msecs",
+        "relativeCreated",
+        "thread",
+        "threadName",
+        "processName",
+        "process",
+        "asctime",
+        "message",
+        "taskName",
+    }
+)
+
+
+class _ConventionVisitor(ast.NodeVisitor):
+    """Detect the target's logger factory, the exact levels called, formats, from one file."""
+
+    def __init__(self) -> None:
+        self.imports: dict[str, str] = {}
+        self.str_consts: dict[str, str] = {}
+        self.logger_names: set[str] = set()
+        self.factory_found = False
+        self.levels: set[str] = set()
+        self.formats: list[tuple[int, str]] = []  # (lineno, format)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            root = alias.name.split(".")[0]
+            local = alias.asname or root
+            self.imports[local] = alias.name if alias.asname else root
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.level == 0 and node.module:
+            for alias in node.names:
+                local = alias.asname or alias.name
+                self.imports[local] = f"{node.module}.{alias.name}"
+        self.generic_visit(node)
+
+    def _canon(self, node: ast.AST) -> str | None:
+        attrs: list[str] = []
+        cur = node
+        while isinstance(cur, ast.Attribute):
+            attrs.append(cur.attr)
+            cur = cur.value
+        if not isinstance(cur, ast.Name):
+            return None
+        head = self.imports.get(cur.id, cur.id)
+        attrs.reverse()
+        return ".".join([head, *attrs])
+
+    def _is_getlogger_call(self, node: ast.AST) -> bool:
+        return isinstance(node, ast.Call) and self._canon(node.func) == "logging.getLogger"
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.str_consts[target.id] = node.value.value
+        if self._is_getlogger_call(node.value):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.logger_names.add(target.id)
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        canonical = self._canon(node.func)
+        if canonical == "logging.getLogger":
+            self.factory_found = True
+        if canonical == "logging.Formatter":
+            fmt = self._formatter_format(node)
+            if fmt is not None:
+                self.formats.append((node.lineno, fmt))
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _LOG_LEVELS:
+            receiver = node.func.value
+            on_logger = (
+                isinstance(receiver, ast.Name) and receiver.id in self.logger_names
+            ) or self._is_getlogger_call(receiver)
+            if on_logger:
+                self.levels.add(node.func.attr)
+        self.generic_visit(node)
+
+    def _formatter_format(self, node: ast.Call) -> str | None:
+        candidate: ast.AST | None = None
+        if node.args:
+            candidate = node.args[0]
+        for keyword in node.keywords:
+            if keyword.arg == "fmt":
+                candidate = keyword.value
+        if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str):
+            return candidate.value
+        if isinstance(candidate, ast.Name) and candidate.id in self.str_consts:
+            return self.str_consts[candidate.id]
+        return None
 
 
 def detect_logger_convention(repo_root: Path) -> LoggerConvention:
@@ -413,47 +752,46 @@ def detect_logger_convention(repo_root: Path) -> LoggerConvention:
     repo_root = Path(repo_root)
     factory: str | None = None
     levels: set[str] = set()
-    fmt: str | None = None
+    formats: list[tuple[int, int, str]] = []  # (file_index, lineno, format)
 
-    for path in sorted(repo_root.rglob("*.py")):
+    for file_index, path in enumerate(sorted(repo_root.rglob("*.py"))):
         try:
             source = path.read_text(encoding="utf-8")
-            tree = ast.parse(source)
-        except (OSError, SyntaxError):
+        except OSError:
             continue
-        resolver = _AliasResolver()
-        resolver.visit(tree)
-        for node, canonical in resolver.calls:
-            if canonical == "logging.getLogger" and factory is None:
-                factory = "logging.getLogger"
-            if canonical == "logging.Formatter" and node.args:
-                first = node.args[0]
-                if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                    fmt = first.value
-            attr = canonical.rsplit(".", 1)[-1]
-            if attr in _LOG_LEVELS and "." in canonical:
-                base = canonical.rsplit(".", 1)[0]
-                # Heuristic: a call like `logger.info(...)` / `log.error(...)` on a bound logger
-                # variable, not e.g. `logging.info`.
-                if base not in ("logging",):
-                    levels.add(attr)
+        tree = _safe_parse(source)
+        if tree is None:
+            continue
+        visitor = _ConventionVisitor()
+        visitor.visit(tree)
+        if visitor.factory_found and factory is None:
+            factory = "logging.getLogger"
+        levels |= visitor.levels
+        for lineno, fmt in visitor.formats:
+            formats.append((file_index, lineno, fmt))
+
+    chosen_format: str | None = None
+    if formats:
+        chosen_format = min(formats, key=lambda item: (item[0], item[1]))[2]
 
     correlation_key: str | None = None
-    if fmt:
-        import re
-
-        fields = re.findall(r"%\((\w+)\)s", fmt)
-        for field in fields:
-            if field not in ("asctime", "message", "levelname", "name", "created"):
-                correlation_key = field
+    if chosen_format:
+        for field_name in re.findall(r"%\((\w+)\)[sdr]", chosen_format):
+            if field_name not in _STANDARD_LOGRECORD_FIELDS:
+                correlation_key = field_name
                 break
 
     return LoggerConvention(
-        factory=factory, levels=frozenset(levels), format=fmt, correlation_key=correlation_key
+        factory=factory,
+        levels=frozenset(levels),
+        format=chosen_format,
+        correlation_key=correlation_key,
     )
 
 
-# --- Runtime log capture + sensitive predicate + evidence collector ----------------------------
+# ---------------------------------------------------------------------------
+# Runtime log capture + sensitive predicate + evidence collector
+# ---------------------------------------------------------------------------
 
 
 class _ListHandler(logging.Handler):
@@ -465,20 +803,37 @@ class _ListHandler(logging.Handler):
         self.records.append(record)
 
 
-def capture_logs(fn, *args, **kwargs):
-    """Run ``fn(*args, **kwargs)`` once, returning ``(result, records)``; installs no lasting handler."""
+def _capture(fn) -> tuple[object, list[logging.LogRecord], BaseException | None]:
+    """Run ``fn`` with a temporary root handler; NEVER leave a lasting handler and NEVER raise.
+
+    Returns ``(result, records, exception)``. A raising ``fn`` still yields the records captured
+    before the exception, with the exception returned (not propagated) for the caller to decide.
+    """
     root = logging.getLogger()
     previous_level = root.level
     handler = _ListHandler()
     handler.setLevel(logging.DEBUG)
     root.addHandler(handler)
     root.setLevel(logging.DEBUG)
+    result: object = None
+    exception: BaseException | None = None
     try:
-        result = fn(*args, **kwargs)
-        return result, list(handler.records)
+        result = fn()
+    except Exception as exc:  # noqa: BLE001 - captured, not swallowed silently
+        exception = exc
     finally:
+        records = list(handler.records)
         root.removeHandler(handler)
         root.setLevel(previous_level)
+    return result, records, exception
+
+
+def capture_logs(fn, *args, **kwargs):
+    """Run ``fn(*args, **kwargs)`` once, returning ``(result, records)``; installs no lasting handler."""
+    result, records, exception = _capture(lambda: fn(*args, **kwargs))
+    if exception is not None:
+        raise exception
+    return result, records
 
 
 def sensitive_values_present(records: list[logging.LogRecord], sensitive: set[str]) -> set[str]:
@@ -490,6 +845,12 @@ def sensitive_values_present(records: list[logging.LogRecord], sensitive: set[st
             if value in message:
                 found.add(value)
     return found
+
+
+def _event_emitted(event: str, messages: list[str]) -> bool:
+    """True when ``event`` appears as a whole token (not a sub-identifier) in any message."""
+    pattern = re.compile(r"(?<!\w)" + re.escape(event) + r"(?!\w)")
+    return any(pattern.search(message) for message in messages)
 
 
 @dataclass(frozen=True)
@@ -509,29 +870,16 @@ def collect_log_evidence(
     canaries: set[str],
 ) -> LogEvidence:
     """Run both callables capturing logs; the failure path may raise (captured, not propagated)."""
-    _, success_records = capture_logs(success_path)
-
-    failure_records: list[logging.LogRecord] = []
-    root = logging.getLogger()
-    previous_level = root.level
-    handler = _ListHandler()
-    handler.setLevel(logging.DEBUG)
-    root.addHandler(handler)
-    root.setLevel(logging.DEBUG)
-    try:
-        failure_path()
-    except Exception:
-        pass
-    finally:
-        failure_records = list(handler.records)
-        root.removeHandler(handler)
-        root.setLevel(previous_level)
+    _, success_records, _ = _capture(success_path)
+    # The failure path MAY raise after logging; _capture keeps its pre-exception records and does
+    # not propagate the exception.
+    _, failure_records, _ = _capture(failure_path)
 
     all_records = success_records + failure_records
-    all_messages = [r.getMessage() for r in all_records]
+    all_messages = [record.getMessage() for record in all_records]
 
     events_emitted = frozenset(
-        event for event in required_events if any(event in message for message in all_messages)
+        event for event in required_events if _event_emitted(event, all_messages)
     )
     leaked = frozenset(sensitive_values_present(all_records, sensitive_fields | canaries))
 
