@@ -559,8 +559,12 @@ def test_park_from_paused_preserves_every_other_field_and_releases_the_worker(
     _enqueue("run-2", 149)
     store.RunStore().apply(
         "run-1",
-        lambda r: {"approvals": ["matt"], "verdicts": {"codex": "ship"}, "attempts": 2,
-                   "pr": {"number": 7}},
+        lambda r: {
+            "approvals": ["matt"],
+            "verdicts": {"codex": "ship"},
+            "attempts": 2,
+            "pr": {"number": 7},
+        },
     )
     before = store.RunStore().read("run-1")
     before_no_status = {k: v for k, v in before.items() if k != "status"}
@@ -678,7 +682,12 @@ def test_continue_resumes_a_parked_run_with_a_free_worker(make_git_repo, isolate
 
     engine.continue_run("run-1")
     assert _transitions("run-1") == [
-        "queued", "running", "paused", "parked", "running", "completed",
+        "queued",
+        "running",
+        "paused",
+        "parked",
+        "running",
+        "completed",
     ]
     assert _status("run-1") == "completed"
 
@@ -740,9 +749,7 @@ def test_continue_halts_and_surfaces_a_pr_fact_divergence_without_touching_the_r
         called.append(record["run_id"])
 
     with pytest.raises(engine.DivergenceError) as excinfo:
-        engine.continue_run(
-            "run-1", github_facts=lambda rid: {key: github_value}, stage=stage_spy
-        )
+        engine.continue_run("run-1", github_facts=lambda rid: {key: github_value}, stage=stage_spy)
 
     assert key in str(excinfo.value)
     assert called == []  # reconcile halted before the stage ever ran
@@ -769,8 +776,12 @@ def test_continue_never_lets_github_facts_overwrite_any_gate_artifact_and_still_
     _admit_paused(make_git_repo, "run-1")
     store.RunStore().apply(
         "run-1",
-        lambda r: {"approvals": ["matt"], "verdicts": {"codex": "ship"}, "attempts": 3,
-                   "merged": None},
+        lambda r: {
+            "approvals": ["matt"],
+            "verdicts": {"codex": "ship"},
+            "attempts": 3,
+            "merged": None,
+        },
     )
     engine.park("run-1")
 
