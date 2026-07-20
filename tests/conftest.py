@@ -11,6 +11,7 @@ developer's real state root.
 from __future__ import annotations
 
 import subprocess
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -85,3 +86,64 @@ def make_git_repo(tmp_path):
         return repo
 
     return _make
+
+
+# A fake provider CLI (issue #11 / S7): a deterministic, network-free stand-in for a real
+# subscription AI CLI. Its behaviour is driven ENTIRELY by argv, so a Profile's start/resume/auth
+# templates fully determine the child's stdout/stderr/exit/duration — the guarded-launch properties
+# are exercised against a real child process, not a mock. Flags come first; the prompt is the
+# trailing positional. It reads stdin ONLY with --read-stdin, so a test that does not opt in can
+# never hang on an inherited stdin (the DEVNULL property is asserted by the one test that opts in).
+_FAKE_PROVIDER_SCRIPT = textwrap.dedent(
+    '''\
+    """A fake provider CLI. Behaviour is fully argv-driven; no network, no real provider."""
+    import argparse
+    import sys
+    import time
+
+
+    def main() -> int:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--exit", type=int, default=0)
+        parser.add_argument("--out", action="append", default=[])
+        parser.add_argument("--err", action="append", default=[])
+        parser.add_argument("--sleep", type=float, default=0.0)
+        parser.add_argument("--read-stdin", action="store_true")
+        parser.add_argument("--echo-args", action="store_true")
+        parser.add_argument("rest", nargs="*")
+        args = parser.parse_args()
+
+        if args.read_stdin:
+            data = sys.stdin.read()
+            sys.stdout.write(f"STDIN_BYTES={len(data)}\\n")
+        for line in args.out:
+            sys.stdout.write(line + "\\n")
+        if args.echo_args:
+            sys.stdout.write(" ".join(args.rest) + "\\n")
+        for line in args.err:
+            sys.stderr.write(line + "\\n")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # Sleep AFTER flushing so a timeout test still captures the already-emitted partial output.
+        if args.sleep:
+            time.sleep(args.sleep)
+        return args.exit
+
+
+    if __name__ == "__main__":
+        raise SystemExit(main())
+    '''
+)
+
+
+@pytest.fixture
+def fake_provider_script(tmp_path) -> Path:
+    """Write the fake provider CLI to disk and return its path.
+
+    Build a ``Profile`` whose ``executable`` is ``[sys.executable, str(fake_provider_script)]`` and
+    whose ``start``/``resume``/``auth`` argv templates carry the flags above; ``invoke`` then runs it
+    through the real subprocess seam.
+    """
+    script = tmp_path / "fake_provider.py"
+    script.write_text(_FAKE_PROVIDER_SCRIPT)
+    return script
