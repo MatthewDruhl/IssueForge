@@ -150,7 +150,6 @@ def _rec(nodeid: str, when: str, outcome: str) -> dict:
 # ------------------------------------------------- the S6 operations on the portable Protocol
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_verification_adapter_protocol_declares_the_s6_signatures():
     """S6 widens the portable Protocol (base.py), not just the pytest adapter, so any adapter must
     implement the real signatures — a stale ``classify(native_events)`` Protocol cannot linger.
@@ -174,7 +173,6 @@ def test_verification_adapter_protocol_declares_the_s6_signatures():
 # --------------------------------------------------------------- the closed run-level enum
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_baseline_status_is_a_closed_nine_member_enum_separate_from_outcome():
     """classify's run-level verdict is a closed 9-member BaselineStatus enum, distinct from the
     per-node Outcome, and GREEN is the sole success member.
@@ -200,7 +198,6 @@ def test_baseline_status_is_a_closed_nine_member_enum_separate_from_outcome():
     assert "GREEN" not in {m.name for m in Outcome}
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_classify_returns_a_status_record_never_a_passed_failed_pair():
     """classify returns a structured result carrying a BaselineStatus + counts + per-node records,
     never a bare (passed, failed) pair.
@@ -229,7 +226,6 @@ def test_classify_returns_a_status_record_never_a_passed_failed_pair():
 # ------------------------------------------------- GREEN is a conjunction, never a residual
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_green_requires_every_expected_node_present_and_passed():
     """GREEN = exit 0 AND collected>0 AND executed>0 AND every EXPECTED id present with outcome
     passed. A missing expected node is not green even at exit 0.
@@ -250,7 +246,6 @@ def test_green_requires_every_expected_node_present_and_passed():
     assert res.status is not BaselineStatus.GREEN
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_an_incomplete_report_at_exit_zero_is_not_green():
     """An exit-0 run whose report is INCOMPLETE (an expected node has no terminal record) is not
     green — report completeness is fused into the verdict, not just the exit code.
@@ -278,7 +273,6 @@ def test_an_incomplete_report_at_exit_zero_is_not_green():
     assert empty.status is not BaselineStatus.GREEN
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_all_skipped_at_exit_zero_is_all_skipped_not_green():
     """Exit 0 with every node skipped (no call phase executed) is ALL_SKIPPED, never GREEN.
 
@@ -301,7 +295,6 @@ def test_all_skipped_at_exit_zero_is_all_skipped_not_green():
 # ------------------------------------------- BROKEN vs RED: distinct diagnostics, never merged
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_zero_collected_is_no_tests_collected_a_distinct_state():
     """Zero collected (pytest exit 5) is NO_TESTS_COLLECTED — a third state, neither GREEN nor
     BEHAVIORAL_RED.
@@ -319,7 +312,6 @@ def test_zero_collected_is_no_tests_collected_a_distinct_state():
     assert res.status not in {BaselineStatus.GREEN, BaselineStatus.BEHAVIORAL_RED}
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_collection_error_and_internal_error_are_never_collapsed():
     """A collection error (exit 2) and an internal error (exit 3) are DISTINCT diagnostics, never
     folded into one anomaly.
@@ -342,7 +334,6 @@ def test_collection_error_and_internal_error_are_never_collapsed():
     assert collection.status is not internal.status
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_usage_error_exit_four_is_its_own_status():
     """A usage error (exit 4) classifies as USAGE_ERROR, not conflated with a collection error.
 
@@ -357,7 +348,6 @@ def test_usage_error_exit_four_is_its_own_status():
     assert res.status is BaselineStatus.USAGE_ERROR
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_a_failed_call_at_exit_one_is_behavioral_red():
     """A failing node at exit 1 is BEHAVIORAL_RED, with the failed node carried as an Outcome.FAILED
     record.
@@ -383,7 +373,6 @@ def test_a_failed_call_at_exit_one_is_behavioral_red():
 # ----------------------------------- evidence fusion: absence is signal (timeout / launch)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_timeout_flag_fuses_to_timeout_even_though_a_report_is_absent():
     """A timeout is fused from the engine-side timed_out flag; the report is absent and that
     absence is expected signal, not an anomaly.
@@ -400,7 +389,6 @@ def test_timeout_flag_fuses_to_timeout_even_though_a_report_is_absent():
     assert res.status is BaselineStatus.TIMEOUT
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_no_report_without_a_timeout_is_launch_failed():
     """A missing report with no timeout and no captured exit is LAUNCH_FAILED — the process never
     produced evidence, distinct from a timeout.
@@ -420,7 +408,6 @@ def test_no_report_without_a_timeout_is_launch_failed():
 # --------------------------------------------- canonical_collect: the source of expected_ids
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_canonical_collect_returns_the_exact_repo_relative_ids_deterministically(tmp_path):
     """canonical_collect returns the EXACT repository-relative node-id set of a real tree,
     identically across repeated calls, plus selection metadata — the frozen expected-id set.
@@ -465,7 +452,6 @@ def test_canonical_collect_returns_the_exact_repo_relative_ids_deterministically
 # ------------------------------------------------ provision_environment: the authoritative env
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#12)")
 def test_provision_environment_delegates_to_the_provisioner_seam(tmp_path):
     """provision_environment builds the authoritative handle through an injectable provisioner
     seam, and reports network OFF.
