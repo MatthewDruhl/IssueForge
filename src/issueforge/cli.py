@@ -90,6 +90,39 @@ def config_check(path: Path) -> None:
     typer.echo(f"sensitive_fields: {config.sensitive_fields}")
 
 
+provider_app = typer.Typer(help="Inspect and verify AI provider configuration.")
+app.add_typer(provider_app, name="provider")
+
+
+@provider_app.command("check")
+def provider_check(
+    config: Path = typer.Option(..., "--config", help="Path to a providers TOML file."),
+) -> None:
+    """Verify the primary provider's CLI is authenticated; fail closed with no fallback launch."""
+    import tomllib
+
+    from issueforge import providers
+    from issueforge.config import ConfigError, load_roles
+
+    try:
+        data = tomllib.loads(config.read_text())
+        roles = load_roles(data)
+    except ConfigError as error:
+        for violation in error.violations:
+            typer.echo(str(violation), err=True)
+        raise typer.Exit(1) from None
+
+    typer.echo(f"role primary -> provider {roles.primary.name}")
+    if roles.secondary is not None:
+        typer.echo(f"role secondary -> provider {roles.secondary.name}")
+
+    if not providers.authenticated(roles.primary):
+        typer.echo(f"provider {roles.primary.name!r} is not authenticated", err=True)
+        raise typer.Exit(1)
+
+    typer.echo("authenticated: primary")
+
+
 repo_app = typer.Typer(help="Register and list verified local clones.")
 app.add_typer(repo_app, name="repo")
 
