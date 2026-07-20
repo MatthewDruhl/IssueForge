@@ -478,3 +478,136 @@ def test_provision_environment_delegates_to_the_provisioner_seam(tmp_path):
     assert calls == [(tmp_path / "wt", {"pytest": "8.3"})]
     assert handle.network is False
     assert handle.interpreter == sys.executable
+
+
+# ======================================================================
+# Issue #58 — S6 hardening: adversarial tests reproducing the 14 Codex-found
+# defects the happy-path S6 suite missed. Each is PENDING until the #58 build.
+# ======================================================================
+
+
+# ===== #58 defect #10 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
+    """The authoritative baseline run has its network cut off at the OS level, not merely flagged.
+
+    A baseline test that opens an outbound TCP connection succeeds when the network is allowed
+    but FAILS inside the authoritative run, because the run executes with OS-level network denial
+    (a Docker container with ``--network none``). ``network=False`` must be enforced by the
+    executor, not just recorded on the handle.
+
+    technical (contract): a target whose only test does
+    ``socket.create_connection(("1.1.1.1", 53), timeout=3)``. Under an allowed-network control
+    (an injected provisioner with ``network=True`` on the host interpreter) run_baseline ->
+    status is BaselineStatus.GREEN (the connect succeeds, proving reachability). Under the REAL
+    default authoritative path (``provisioner=None``) run_baseline -> status is
+    BaselineStatus.BEHAVIORAL_RED, executed == 1, and a call-phase node carries Outcome.FAILED
+    (the connect was denied at the OS level). Skip ONLY when the docker daemon is unreachable.
+    """
+    import os
+    import subprocess
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus, Outcome
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    # Documented skip ONLY when the docker daemon is unreachable — never a weakened assertion.
+    try:
+        info = subprocess.run(["docker", "info"], capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        info = None
+    if info is None or info.returncode != 0:
+        pytest.skip("docker daemon unavailable; OS-level network denial cannot be verified")
+
+    repo = tmp_path / "netdeny"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "tests" / "test_target.py").write_text(
+        textwrap.dedent(
+            """
+            import socket
+
+            def test_outbound_connect():
+                socket.create_connection(("1.1.1.1", 53), timeout=3).close()
+            """
+        )
+    )
+    baseline = ["-m", "pytest"]
+    adapter = PytestAdapter()
+
+    def _allowed_provisioner(worktree, frozen_deps=None):
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+        return SimpleNamespace(
+            interpreter=sys.executable,
+            env=env,
+            artifact_dir=Path(worktree).parent / "if-allowed",
+            network=True,
+        )
+
+    # Allowed-network control: proves the connect is reachable in this environment; if it is not,
+    # denial cannot be meaningfully proven, so skip rather than weaken the assertion.
+    control = verify.run_baseline(
+        repo, baseline, adapter=adapter, provisioner=_allowed_provisioner, timeout=120
+    )
+    if control.status is not BaselineStatus.GREEN:
+        pytest.skip("outbound TCP connect not reachable under allowed network; cannot prove denial")
+
+    # Authoritative run via the REAL default path — its network must be denied at the OS level.
+    authoritative = verify.run_baseline(
+        repo, baseline, adapter=adapter, provisioner=None, timeout=600
+    )
+    assert authoritative.status is BaselineStatus.BEHAVIORAL_RED
+    assert authoritative.executed == 1
+    call_nodes = [n for n in authoritative.nodes if n.phase == "call"]
+    assert call_nodes and any(n.outcome is Outcome.FAILED for n in call_nodes)
+
+
+# ===== #58 defect #11 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_default_provisioning_builds_target_dep_env_and_artifact_dir(tmp_path):
+    """Default provisioning must build the target's dependency environment: install the frozen
+    manifest so a pinned dep the baseline imports is importable in the authoritative interpreter,
+    and create the artifact directory it hands back (never a computed-but-never-made phantom path).
+
+    technical (contract): PytestAdapter().provision_environment(worktree, {"platformdirs":
+    "4.10.0"}) on the DEFAULT path (no injected provisioner) returns a handle whose
+    .artifact_dir is a real EXISTING directory (Path(handle.artifact_dir).is_dir() is True) — the
+    current impl computes Path(state_root())/"artifacts"/<uuid> but never creates it, so this is
+    False today. The authoritative interpreter (handle.interpreter, != sys.executable) carries the
+    frozen manifest: running it as `-c "import platformdirs, sys; sys.stdout.write(
+    platformdirs.__version__)"` exits 0 and prints exactly "4.10.0". platformdirs is NOT a
+    transitive dependency of pytest/pytest-reportlog, so its importability in the SEPARATE venv
+    proves the frozen manifest was installed there, not leaked from the host interpreter.
+    """
+    import subprocess as _sp
+    import sys as _sys
+    from pathlib import Path
+
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    worktree = tmp_path / "target"
+    worktree.mkdir()
+
+    handle = PytestAdapter().provision_environment(worktree, {"platformdirs": "4.10.0"})
+
+    # The artifact dir the handle advertises must actually exist (created + verified), never a
+    # path that was computed and handed back without being made.
+    artifact_dir = Path(handle.artifact_dir)
+    assert artifact_dir.is_dir(), f"artifact_dir advertised but never created: {artifact_dir}"
+
+    # The authoritative interpreter is a SEPARATE venv that must carry the frozen manifest; a
+    # dep that is not a pytest transitive proves the manifest was installed, not host-leaked.
+    interpreter = str(handle.interpreter)
+    assert interpreter != _sys.executable, "authoritative run used the HOST interpreter"
+    proc = _sp.run(
+        [
+            interpreter,
+            "-c",
+            "import platformdirs, sys; sys.stdout.write(platformdirs.__version__)",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"frozen dep not importable in authoritative env: {proc.stderr}"
+    assert proc.stdout.strip() == "4.10.0"

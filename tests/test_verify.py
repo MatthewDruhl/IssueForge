@@ -25,6 +25,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 
 # The baseline command as it appears in .issueforge.toml, minus the interpreter — the runner
 # supplies the interpreter from the PROVISIONED environment (G14), never the candidate's.
@@ -816,4 +818,317 @@ def test_establish_pauses_on_a_non_green_baseline_without_dispatch(tmp_path):
     )
     assert outcome.paused is True
     assert outcome.status is BaselineStatus.BEHAVIORAL_RED
+    assert dispatched == []
+
+
+# ======================================================================
+# Issue #58 — S6 hardening: adversarial tests reproducing the 14 Codex-found
+# defects the happy-path S6 suite missed. Each is PENDING until the #58 build.
+# ======================================================================
+
+
+# ---- helper for #8 ----
+def _appending_provisioner(extra_line: str):
+    """A provisioner seam whose 'interpreter' is a REAL wrapper script: it runs the provisioned
+    pytest verbatim, then APPENDS one extra report-log record (``extra_line``) to the real
+    --report-log before exiting with pytest's own exit code.
+
+    Only the injectable ``provisioner`` seam (a production API param) is used — no issueforge
+    internal is patched. collect-only runs carry no --report-log, so the wrapper leaves them
+    untouched and canonical_collect's expected-id set never sees the injected node; the node
+    appears ONLY in the execution report, exactly the "contradictory report log" the contract
+    forbids from being classified GREEN.
+    """
+    from types import SimpleNamespace
+
+    def _provision(worktree, frozen_deps=None):
+        wdir = Path(worktree).parent / f"if-wrap-{Path(worktree).name}"
+        wdir.mkdir(exist_ok=True)
+        wrapper = wdir / "wrap-python"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            f'"{sys.executable}" "$@"\n'
+            "code=$?\n"
+            'rl=""\n'
+            'for a in "$@"; do\n'
+            '  case "$a" in --report-log=*) rl="${a#--report-log=}";; esac\n'
+            "done\n"
+            f'if [ -n "$rl" ] && [ -f "$rl" ]; then printf \'%s\\n\' \'{extra_line}\' >> "$rl"; fi\n'
+            "exit $code\n"
+        )
+        os.chmod(wrapper, 0o755)
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+        return SimpleNamespace(interpreter=str(wrapper), env=env, artifact_dir=wdir, network=False)
+
+    return _provision
+
+
+# ===== #58 defect #1 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_baseline_argv_executable_resolved_in_env_not_prepended_to_interpreter(tmp_path):
+    """The committed baseline command names its own executable; the runner resolves that
+    executable inside the authoritative environment instead of blindly prepending the provisioned
+    interpreter. So the real grammar baseline = ["pytest"] (the shape S1's config loader actually
+    produces, per tests/test_config.py and conftest's DEFAULT_CONFIG) over one genuinely passing
+    test classifies GREEN end-to-end, and ["uv", "run", "pytest"] launches "uv" as the executable
+    rather than handing "uv" to the interpreter as a script argument.
+
+    Today the runner builds ``[interpreter, *base_command, --report-log=...]`` (verify.py:120 and
+    the mirror in pytest_adapter.canonical_collect), so ["pytest"] becomes ``<py> pytest`` — pytest
+    is treated as a script path, the process exits 2, and the baseline is COLLECTION_ERROR, never
+    GREEN. A correct fix resolves the registered argv's executable in the authoritative env.
+
+    technical (contract):
+      * run_baseline(worktree, ["pytest"], adapter=PytestAdapter(), provisioner=clean) over a
+        target whose one test passes -> evidence.status is BaselineStatus.GREEN, evidence.executed
+        == 1, evidence.exit_code == 0. (Current impl: status COLLECTION_ERROR, exit_code 2.)
+      * run_baseline(worktree, ["uv", "run", "pytest"], ...) -> at least one persisted invocation
+        record whose argv contains both "run" and "pytest" (the uv baseline launch/collect), and
+        EVERY such record's argv[0] is NOT the provisioned interpreter (sys.executable). Current
+        impl records argv[0] == sys.executable with "uv" demoted to argv[1].
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    interpreter = sys.executable
+    provisioner = _clean_provisioner(interpreter)
+    adapter = _adapter()
+
+    # Sub-case 1: the real committed grammar baseline = ["pytest"] over one passing test -> GREEN.
+    # Prepending the interpreter turns "pytest" into a bogus script path (exit 2), so GREEN here
+    # proves the executable was resolved in the authoritative env, not blindly prefixed.
+    worktree = _make_target(tmp_path, "grammar", "def test_ok():\n    assert True\n")
+    ev = verify.run_baseline(worktree, ["pytest"], adapter=adapter, provisioner=provisioner)
+    assert ev.status is BaselineStatus.GREEN
+    assert ev.executed == 1
+    assert ev.exit_code == 0
+
+    # Sub-case 2: ["uv", "run", "pytest"] must resolve "uv" as the executable, never demote it to a
+    # script arg behind the interpreter. Proven from the persisted subprocess-boundary evidence.
+    uv_worktree = _make_target(tmp_path, "uvgrammar", "def test_ok():\n    assert True\n")
+    verify.run_baseline(
+        uv_worktree, ["uv", "run", "pytest"], adapter=adapter, provisioner=provisioner
+    )
+    uv_launches = [r for r in _invocation_records() if "run" in r["argv"] and "pytest" in r["argv"]]
+    assert uv_launches, "no uv baseline launch was recorded"
+    assert all(r["argv"][0] != interpreter for r in uv_launches), (
+        "interpreter was blindly prepended to the uv baseline command"
+    )
+
+
+# ===== #58 defect #2 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_missing_or_malformed_committed_baseline_config_pauses_not_defaults(tmp_path):
+    """An isolated worktree whose committed config is missing, malformed, carries an empty
+    baseline, or a non-list baseline must PAUSE the run (no AI dispatch) instead of silently
+    substituting a default ``["-m", "pytest"]``. The baseline is MANDATORY and comes from the
+    committed git object, so a passing target with no usable committed baseline must never be
+    greened and dispatched.
+
+    technical (contract): for each committed tree carrying a genuinely passing
+    tests/test_target.py but a BAD config -- (1) no .issueforge.toml at all, (2) malformed TOML,
+    (3) baseline = [], (4) baseline = "pytest" (a string, not an argv array) -- a real fetch of
+    default branch 'trunk', a real isolated worktree, and establish_green_baseline(checkout,
+    adapter, provisioner=clean, dispatch=spy) -> outcome.paused is True, the dispatch spy is
+    NEVER called (dispatched == []), and outcome.status is not BaselineStatus.GREEN. The current
+    impl substitutes ["-m", "pytest"], runs the passing target, classifies GREEN, and dispatches
+    -- so green-and-dispatch on any case proves the mandatory committed baseline was skipped and
+    read from the (symlink-able) worktree filesystem rather than from the committed HEAD object.
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    passing = "def test_ok():\n    assert True\n"
+    cases = {
+        "missing": {"tests/test_target.py": passing},
+        "malformed": {"tests/test_target.py": passing, ".issueforge.toml": "baseline = [\n"},
+        "empty_baseline": {"tests/test_target.py": passing, ".issueforge.toml": "baseline = []\n"},
+        "non_list_baseline": {
+            "tests/test_target.py": passing,
+            ".issueforge.toml": 'baseline = "pytest"\n',
+        },
+    }
+
+    for case, files in cases.items():
+        case_root = tmp_path / case
+        case_root.mkdir()
+        _origin, checkout = _origin_with_checkout(case_root, branch="trunk", files=files)
+
+        dispatched = []
+        outcome = verify.establish_green_baseline(
+            checkout,
+            adapter=_adapter(),
+            provisioner=_clean_provisioner(),
+            dispatch=lambda **k: dispatched.append(k),
+        )
+        assert outcome.paused is True, f"{case}: expected pause, got status {outcome.status!r}"
+        assert dispatched == [], f"{case}: AI was dispatched on an invalid committed baseline"
+        assert outcome.status is not BaselineStatus.GREEN, f"{case}: greened on invalid config"
+
+
+# ===== #58 defect #7 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_failed_or_timed_out_canonical_collect_refuses_green(tmp_path):
+    """A --collect-only that exits NONZERO must not seed a GREEN baseline: the runner cannot
+    trust node ids scraped from a broken collection, so run_baseline must refuse green.
+
+    The target's two tests pass when actually run, but a conftest hook raises during collection
+    ONLY under --collect-only (session.config.option.collectonly), so the collect step exits
+    nonzero while still printing the two `tests/test_target.py::` node ids to stdout. Today's
+    canonical_collect ignores that nonzero exit, scrapes those `::` lines as the expected set, and
+    the subsequent real run (collectonly False) passes both — yielding a FALSE GREEN. A correct
+    impl treats the failed collection as non-green evidence and never classifies GREEN.
+
+    technical (contract): a target with test_a + test_b (both pass on a normal run) plus a
+    conftest.py whose pytest_sessionfinish raises RuntimeError when session.config.option.collectonly
+    is set. The interpreter's `-m pytest --collect-only -q` exits nonzero (RuntimeError from the
+    hook) but emits `tests/test_target.py::test_a` and `tests/test_target.py::test_b` on stdout.
+    run_baseline over this target -> evidence.status is NOT BaselineStatus.GREEN. (On the current
+    impl the scraped-ids-ignoring-exit path returns status GREEN, collected==2, executed==2,
+    exit_code==0 — the defect.)
+    """
+    from issueforge.adapters.base import BaselineStatus
+
+    worktree = _make_target(
+        tmp_path,
+        "collectfail",
+        """
+        def test_a():
+            assert True
+
+        def test_b():
+            assert 1 + 1 == 2
+        """,
+    )
+    # A collect-only-gated sabotage: the hook raises during --collect-only (exit nonzero) but the
+    # node ids are already printed to stdout; the real run (collectonly False) passes cleanly.
+    (worktree / "conftest.py").write_text(
+        textwrap.dedent(
+            """
+            def pytest_sessionfinish(session, exitstatus):
+                if session.config.option.collectonly:
+                    raise RuntimeError("collect-only sabotage")
+            """
+        )
+    )
+    ev = _run_baseline(worktree)
+    assert ev.status is not BaselineStatus.GREEN
+
+
+# ===== #58 defect #8 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_incomplete_or_contradictory_report_log_is_not_green(tmp_path):
+    """A contradictory report log is not GREEN: the one expected node passes, but an UNEXPECTED
+    node carries a BROKEN record in the same report. GREEN must be a whole-report property (no
+    failed/BROKEN record anywhere), not just "every expected node passed" — a runner that only
+    inspects the expected nodes' own records would wrongly bless this run.
+
+    technical (contract): a target with a single test_a (real pytest, exit 0, real --report-log).
+    The provisioner seam supplies a REAL wrapper interpreter that runs pytest verbatim, then appends
+    ONE extra report-log record for an UNEXPECTED node
+    (nodeid 'tests/test_target.py::test_ghost', when 'call', outcome 'errored' -> Outcome.BROKEN)
+    to the real report before exiting with pytest's own code. canonical_collect (no --report-log)
+    still expects only {test_a}, so the ghost appears ONLY in the execution report. run_baseline ->
+    evidence.exit_code == 0 (self-proving: exit 0 was seen) AND evidence.status is NOT
+    BaselineStatus.GREEN (the unexpected BROKEN record forbids green). Current impl classifies GREEN
+    because _is_green only checks _node_passed over expected ids and never consults the whole-report
+    has_failure signal.
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    ghost_line = (
+        '{"$report_type": "TestReport", "nodeid": "tests/test_target.py::test_ghost", '
+        '"when": "call", "outcome": "errored", "longrepr": "unexpected node blew up"}'
+    )
+    worktree = _make_target(tmp_path, "contradict", "def test_a():\n    assert True\n")
+    ev = verify.run_baseline(
+        worktree,
+        BASELINE,
+        adapter=_adapter(),
+        provisioner=_appending_provisioner(ghost_line),
+    )
+    assert ev.exit_code == 0
+    assert ev.status is not BaselineStatus.GREEN
+
+
+# ===== #58 defect #9 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_broken_executions_classify_broken_not_behavioral_red(tmp_path):
+    """A broken execution (the interpreter dies from a signal, not a clean call-phase failure) is
+    BROKEN, never BEHAVIORAL_RED. BEHAVIORAL_RED is reserved for a complete report with a real
+    call-phase failure at exit 1 — a signaled/aborted run has no such evidence and must not be
+    mislabeled as a behavioral red baseline.
+
+    technical (contract): a target whose one test calls os.abort() crashes pytest with SIGABRT, so
+    the subprocess dies with a NEGATIVE (signaled) exit code and timed_out is False. run_baseline ->
+    evidence.exit_code is not None and < 0 (a genuine signaled death, not a timeout), and
+    evidence.status is BaselineStatus.BROKEN — explicitly NOT BaselineStatus.BEHAVIORAL_RED. The
+    current impl falls _status through to BEHAVIORAL_RED for any non-green, non-zero exit; the fix
+    maps signaled/reportless/unknown/infra cases to BROKEN and reserves BEHAVIORAL_RED for a
+    complete report with an expected call-phase failure at exit 1.
+    """
+    from issueforge.adapters.base import BaselineStatus
+
+    worktree = _make_target(
+        tmp_path,
+        "aborted",
+        """
+        import os
+
+        def test_crashes_the_interpreter():
+            os.abort()
+        """,
+    )
+    ev = _run_baseline(worktree)
+    # A genuine signaled death, not a timeout — the raw negative exit is the broken signal.
+    assert ev.exit_code is not None and ev.exit_code < 0
+    # The load-bearing contract: a signaled/broken execution is NOT a behavioral red.
+    assert ev.status is not BaselineStatus.BEHAVIORAL_RED
+    assert ev.status is BaselineStatus.BROKEN
+
+
+# ===== #58 defect #12 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_provisioning_or_runner_failure_pauses_never_crashes(tmp_path):
+    """A provisioning/runner failure PAUSES the run with a typed non-green status and never
+    dispatches AI, instead of letting the exception escape and crash the engine before any AI
+    is gated. Missing uv, a write failure, or a provisioner blowing up must all become paused
+    evidence, not an uncaught traceback.
+
+    technical (contract): a real offline bare origin (default branch 'trunk') + checkout carrying
+    a passing test_ok and a committed pytest baseline; a provisioner seam that raises RuntimeError
+    the moment run_baseline provisions the authoritative env. establish_green_baseline(checkout,
+    adapter, provisioner=boom, dispatch=spy) returns WITHOUT raising: outcome.paused is True,
+    outcome.status is a BaselineStatus member that is NOT BaselineStatus.GREEN (typed non-green,
+    not None), and the dispatch spy never fired (dispatched == []). Today the RuntimeError escapes
+    run_baseline (verify.py:93, adapter.provision_environment) and establish_green_baseline
+    (verify.py:217, the runner call), so the call raises instead of returning a paused outcome.
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    _origin, checkout = _origin_with_checkout(
+        tmp_path,
+        branch="trunk",
+        files={
+            "tests/test_target.py": "def test_ok():\n    assert True\n",
+            ".issueforge.toml": 'baseline = ["-m", "pytest"]\nframework = "pytest"\n',
+        },
+    )
+
+    def _boom_provisioner(worktree, frozen_deps=None):
+        # A provisioner that cannot build the authoritative env (e.g. uv missing) raises here.
+        raise RuntimeError("provisioner exploded: uv unavailable")
+
+    dispatched = []
+    outcome = verify.establish_green_baseline(
+        checkout,
+        adapter=_adapter(),
+        provisioner=_boom_provisioner,
+        dispatch=lambda **k: dispatched.append(k),
+    )
+    assert outcome.paused is True
+    assert isinstance(outcome.status, BaselineStatus)
+    assert outcome.status is not BaselineStatus.GREEN
     assert dispatched == []

@@ -13,6 +13,7 @@ cloned from it, so ``git fetch origin`` retrieves genuine commits — never a mo
 
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -499,3 +500,243 @@ def test_reset_worktree_refuses_a_nonexistent_ref(tmp_path):
     with pytest.raises(Exception):
         workspace.reset_worktree(worktree, "no-such-ref-xyz")
     assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == head_before
+
+
+# ======================================================================
+# Issue #58 — S6 hardening: adversarial tests reproducing the 14 Codex-found
+# defects the happy-path S6 suite missed. Each is PENDING until the #58 build.
+# ======================================================================
+
+
+# ===== #58 defect #3 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_default_branch_with_slash_resolved_fully_not_last_segment(tmp_path):
+    """A default branch whose name contains a slash (e.g. 'release/v1') must resolve to the WHOLE
+    branch name, not just the segment after the last slash, or the fetch targets a branch that does
+    not exist and the build can never start.
+
+    technical (contract): an origin whose default branch is 'release/v1'
+    (origin/HEAD -> refs/remotes/origin/release/v1); origin then advances that branch by one commit
+    (NEXT). fetch_default_sha(checkout) must strip exactly the 'refs/remotes/origin/' prefix and
+    fetch 'release/v1' -> ok=True, sha=NEXT (the just-fetched tip), while the checkout's own HEAD is
+    unmoved; a worktree created at that sha has HEAD == NEXT. The current impl rsplits on '/',
+    resolves the branch to 'v1', fetches a nonexistent branch, and returns ok=False / sha=None.
+    """
+    from issueforge import workspace
+
+    origin, checkout = _bare_origin_with_checkout(tmp_path, branch="release/v1")
+    # origin/HEAD points at the slash-bearing default branch, as `git clone` records it.
+    symref = _git(checkout, "symbolic-ref", "refs/remotes/origin/HEAD")
+    assert symref.stdout.strip() == "refs/remotes/origin/release/v1"
+
+    local_before = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+    new_sha = _advance_origin(tmp_path, origin, branch="release/v1")
+    assert new_sha != local_before
+
+    fetched = workspace.fetch_default_sha(checkout)
+    assert fetched.ok is True and fetched.sha == new_sha
+    assert _git(checkout, "rev-parse", "HEAD").stdout.strip() == local_before
+
+    result = workspace.create_isolated_worktree(checkout, fetched.sha)
+    assert result.ok is True
+    assert _git(result.path, "rev-parse", "HEAD").stdout.strip() == new_sha
+
+
+# ===== #58 defect #4 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_worktree_creation_fails_when_add_is_a_noop(tmp_path):
+    """Creation must PROVE the worktree exists — an unchanged checkout snapshot is necessary but
+    not sufficient. When the ``add`` seam is a no-op (git failed, or added nothing), no worktree was
+    created, so create_isolated_worktree must return ok=False, never infer success from the fact
+    that the checkout was left untouched.
+
+    technical (contract): with an injected ``add`` that does nothing, create_isolated_worktree ->
+    ok=False, isolated=False, non-empty reason (today ``_default_add`` discards git's return code
+    and the unchanged before/after snapshot yields ok=True, isolated=True — the defect). A positive
+    control with the real default creator must still succeed AND be provably a registered, detached
+    linked worktree at exactly ``sha`` (path exists, appears in ``git worktree list``, ``symbolic-ref
+    -q HEAD`` fails, ``rev-parse HEAD`` == sha) so the fix cannot be a lazy always-False.
+    """
+    from issueforge import workspace
+
+    _origin, checkout = _bare_origin_with_checkout(tmp_path)
+    sha = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+
+    # A no-op add: creates no worktree, so the checkout snapshot is unchanged — the exact condition
+    # today's impl mistakes for proven isolation.
+    def _noop_add(checkout_dir, worktree_path, target_sha):
+        return None
+
+    result = workspace.create_isolated_worktree(
+        checkout, sha, worktrees_root=tmp_path / "wtroot", add=_noop_add
+    )
+    assert result.ok is False
+    assert result.isolated is False
+    assert result.reason
+
+    # Positive control: the real creator succeeds and is a proven registered/detached worktree at sha.
+    good = workspace.create_isolated_worktree(checkout, sha, worktrees_root=tmp_path / "wtroot2")
+    assert good.ok is True and good.isolated is True
+    assert good.path is not None and good.path.exists()
+    assert good.path.name in _worktree_list(checkout)
+    assert _git(good.path, "rev-parse", "HEAD").stdout.strip() == sha
+    symref = _git(good.path, "symbolic-ref", "-q", "HEAD", check=False)
+    assert symref.returncode != 0  # detached: no symbolic HEAD → no branch to delete
+
+
+# ===== #58 defect #5 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_byte_isolation_proof_holds_on_linked_worktree_checkout(tmp_path):
+    """When the checkout handed to create_isolated_worktree is itself a linked worktree (its ``.git``
+    is a FILE pointing at a gitdir, not a directory), an index mutation during creation must still be
+    caught as unprovable isolation. The byte-identical proof must not go blind just because ``.git``
+    is a gitfile.
+
+    technical (contract): build a primary checkout, then a DETACHED linked worktree of it whose
+    ``.git`` is a file (precondition: ``(linked / '.git').is_file()``). Pass that linked worktree as
+    the ``checkout`` with an injected ``add`` that stages a file into ITS index.
+    create_isolated_worktree -> ok=False, isolated=False, non-empty reason. Today ``_snapshot`` reads
+    ``<checkout>/.git/HEAD`` and ``<checkout>/.git/index`` as files under a ``.git`` DIRECTORY; on a
+    linked worktree neither path exists, so both snapshots are b"" before AND after, the mutation is
+    invisible, and isolation is falsely proven (ok=True/isolated=True). A correct impl resolves the
+    real paths via ``git rev-parse --git-path HEAD`` / ``--git-path index`` (every read succeeding)
+    and detects the index change.
+    """
+    from issueforge import workspace
+
+    _origin, primary = _bare_origin_with_checkout(tmp_path)
+    sha = _git(primary, "rev-parse", "HEAD").stdout.strip()
+
+    # The checkout we hand in is ITSELF a linked worktree: its .git is a gitfile, not a directory.
+    linked = tmp_path / "linked-checkout"
+    _git(primary, "worktree", "add", "--detach", str(linked), sha)
+    assert (linked / ".git").is_file()  # precondition: a linked-worktree .git is a FILE
+
+    def _index_mutating_add(checkout_dir, worktree_path, target_sha):
+        # Stage a file into the linked checkout's OWN index (its real index lives in the gitdir the
+        # gitfile points at, not at <checkout>/.git/index).
+        (Path(checkout_dir) / "sneaked.txt").write_text("x\n")
+        _git(Path(checkout_dir), "add", "sneaked.txt")
+
+    result = workspace.create_isolated_worktree(
+        linked, sha, worktrees_root=tmp_path / "wtroot", add=_index_mutating_add
+    )
+    assert result.ok is False and result.isolated is False and result.reason
+
+
+# ===== #58 defect #6 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_ambient_git_env_vars_cannot_redirect_operations(tmp_path):
+    """Ambient GIT_* environment variables cannot redirect a workspace git operation away from the
+    requested checkout. With GIT_WORK_TREE / GIT_INDEX_FILE (the GIT_DIR family) set in the
+    environment to point elsewhere, ``reset_worktree`` still resets the requested worktree's own
+    working tree and index — the malicious index/work-tree override does not let the mutation escape
+    to a decoy tree, leaving the real worktree silently dirty.
+
+    technical (contract): a worktree detached at ``sha`` with README committed as 'seed\\n' and a
+    working-tree edit to 'mid-attempt edit\\n'. With ambient GIT_WORK_TREE=<decoy_tree> and
+    GIT_INDEX_FILE=<decoy.index> set, reset_worktree(worktree, sha) -> the worktree's README is back
+    to 'seed\\n', `git rev-parse HEAD` == sha, and `git status --porcelain` is empty (index + work
+    tree both targeted the requested worktree). A non-scrubbing impl leaves README at
+    'mid-attempt edit\\n' with status ' M README.md' because the reset materialized into the decoy
+    GIT_WORK_TREE / GIT_INDEX_FILE.
+    """
+    from issueforge import workspace
+
+    _origin, checkout = _bare_origin_with_checkout(tmp_path)
+    sha = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+    worktree = workspace.create_isolated_worktree(checkout, sha).path
+    assert (worktree / "README.md").read_text() == "seed\n"
+    (worktree / "README.md").write_text("mid-attempt edit\n")
+
+    # A hostile/misconfigured environment points git at a decoy work tree and index. A correct impl
+    # scrubs the GIT_* family off its own subprocess env so the reset still targets `worktree`.
+    decoy_tree = tmp_path / "decoy_tree"
+    decoy_tree.mkdir()
+    decoy_index = tmp_path / "decoy.index"
+    hostile = {"GIT_WORK_TREE": str(decoy_tree), "GIT_INDEX_FILE": str(decoy_index)}
+    saved = {k: os.environ.get(k) for k in hostile}
+    os.environ.update(hostile)
+    try:
+        workspace.reset_worktree(worktree, sha)
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    assert (worktree / "README.md").read_text() == "seed\n"
+    assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == sha
+    assert _git(worktree, "status", "--porcelain").stdout.strip() == ""
+
+
+# ===== #58 defect #13 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_reset_worktree_refuses_non_isolated_path(tmp_path):
+    """reset_worktree may destroy tracked work only inside a PROVEN-isolated linked worktree.
+    Pointed at a dirty NORMAL checkout it must refuse before any reset --hard, so the developer's
+    uncommitted edit survives; a real isolated worktree still resets. The two are distinguished by
+    worktree registration (git-common-dir vs git-dir), not by trusting whatever path it is handed.
+
+    technical (contract): clone a normal checkout (README committed as 'seed\\n'); write an
+    uncommitted tracked edit 'precious edit on a normal checkout\\n'. reset_worktree(checkout,
+    <HEAD commit sha>) RAISES; the checkout's HEAD is unchanged, the edit is byte-preserved, and
+    `git status --porcelain` still reports it dirty (no reset --hard ran on the normal checkout).
+    Then create_isolated_worktree(checkout, sha) -> a linked worktree; dirty it to 'mid-attempt
+    edit\\n'; reset_worktree(worktree, sha) SUCCEEDS: HEAD == sha and README is back to committed
+    'seed\\n' (the proven-isolated path still resets, so the fix distinguishes rather than refusing all).
+    """
+    from issueforge import workspace
+
+    _origin, checkout = _bare_origin_with_checkout(tmp_path)
+    sha = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+
+    # Leg 1: a dirty NORMAL checkout (not a linked worktree) must be REFUSED before any reset --hard.
+    (checkout / "README.md").write_text("precious edit on a normal checkout\n")
+    head_before = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+    with pytest.raises(Exception):
+        workspace.reset_worktree(checkout, sha)
+    assert _git(checkout, "rev-parse", "HEAD").stdout.strip() == head_before
+    assert (checkout / "README.md").read_text() == "precious edit on a normal checkout\n"
+    assert _git(checkout, "status", "--porcelain").stdout.strip() != ""
+
+    # Leg 2: a proven-isolated worktree still resets (distinguish, do not refuse everything).
+    worktree = workspace.create_isolated_worktree(checkout, sha).path
+    (worktree / "README.md").write_text("mid-attempt edit\n")
+    workspace.reset_worktree(worktree, sha)
+    assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == sha
+    assert (worktree / "README.md").read_text() == "seed\n"
+
+
+# ===== #58 defect #14 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_reset_worktree_requires_successful_reset_and_removes_untracked(tmp_path):
+    """After reset_worktree, a worktree left contaminated by a prior attempt is fully clean: an
+    untracked file that existed before is GONE (clean -fd ran), a dirty tracked edit is reverted,
+    and HEAD sits at base_sha with a clean status. A reset that merely reverts tracked files but
+    leaves untracked contamination is not enough; the next attempt would inherit stale files.
+
+    technical (contract): a worktree with README committed as 'seed\\n'; before reset it carries an
+    untracked 'leftover_untracked.txt' AND a dirty tracked edit ('mid-attempt edit\\n' in README).
+    reset_worktree(worktree, <base_commit_sha>) -> 'leftover_untracked.txt' no longer exists,
+    README is back to 'seed\\n', `git rev-parse HEAD` == base_sha, and `git status --porcelain` is
+    empty (clean -fd removed the untracked file; a reset --hard alone leaves it behind).
+    """
+    from issueforge import workspace
+
+    _origin, checkout = _bare_origin_with_checkout(tmp_path)
+    sha = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+    worktree = workspace.create_isolated_worktree(checkout, sha).path
+
+    # Contamination from a prior attempt: an untracked file plus a dirty tracked edit.
+    (worktree / "leftover_untracked.txt").write_text("contaminant from a prior attempt\n")
+    (worktree / "README.md").write_text("mid-attempt edit\n")
+
+    workspace.reset_worktree(worktree, sha)
+
+    # clean -fd must have removed the untracked contaminant; tracked edit reverts to committed.
+    assert not (worktree / "leftover_untracked.txt").exists()
+    assert (worktree / "README.md").read_text() == "seed\n"
+    assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == sha
+    assert _git(worktree, "status", "--porcelain").stdout.strip() == ""
