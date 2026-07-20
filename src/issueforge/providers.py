@@ -125,7 +125,11 @@ def invoke(
         returncode=result.returncode,
         timed_out=result.timed_out,
     )
-    artifact_path = store.write_artifact(run_id, "transcript.txt", transcript, secrets=secrets)
+    # Unique per invocation: two invokes on the same run_id (authoring + review) must each get
+    # their own transcript file, never clobber a shared name. A resume reuses session_id, so a
+    # fresh uuid segment (not session_id alone) is what guarantees distinctness.
+    artifact_name = f"transcript-{session_id}-{uuid.uuid4().hex[:8]}.txt"
+    artifact_path = store.write_artifact(run_id, artifact_name, transcript, secrets=secrets)
 
     return AIResult(
         role=role,

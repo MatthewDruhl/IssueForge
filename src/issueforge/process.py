@@ -60,13 +60,29 @@ def emit_invocation(record: dict, *, secrets: set[str] | None = None) -> None:
     seam = WriteSeam()
     directory = Path(state_root()) / "invocations" / uuid.uuid4().hex
     target = directory / "invocation.json"
-    payload = json.dumps(record, default=str, sort_keys=True)
-    for secret in sorted(secrets or (), key=len, reverse=True):
-        if secret:
-            payload = payload.replace(secret, "[REDACTED]")
+    # Redact each secret out of the record's RAW string values BEFORE serialization. json.dumps
+    # escapes newlines/quotes/backslashes/control chars/non-ASCII, so a post-serialization
+    # str.replace would miss any secret containing such a character and leak it in escaped form.
+    # Longest-first so a longer secret is masked before a shorter one it contains.
+    redacted = _redact_record(record, sorted(secrets or (), key=len, reverse=True))
+    payload = json.dumps(redacted, default=str, sort_keys=True)
     # The seam is the sanctioned writer; dispatch through the instance so the guarded
     # write_text runs (the boundary lint's name heuristic cannot see a raw write here).
     getattr(seam, "write_text")(target, payload)
+
+
+def _redact_record(value: object, secrets: list[str]) -> object:
+    """Recursively replace each raw secret string with ``[REDACTED]`` in every string value."""
+    if isinstance(value, str):
+        for secret in secrets:
+            if secret:
+                value = value.replace(secret, "[REDACTED]")
+        return value
+    if isinstance(value, dict):
+        return {key: _redact_record(item, secrets) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_record(item, secrets) for item in value]
+    return value
 
 
 def run(
