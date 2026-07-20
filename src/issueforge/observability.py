@@ -377,79 +377,111 @@ def classify_prospective(
     return _verdict_from_evidence(evidence)
 
 
-@dataclass
-class _DiffFile:
-    path: str
-    new_source: str
-    added_linenos: set[int]
-    added_contents: list[str]
+def _try_parse(source: str) -> ast.Module | None:
+    try:
+        return ast.parse(source)
+    except SyntaxError:
+        return None
 
 
-def _parse_diff_files(diff_text: str) -> list[_DiffFile]:
-    """Reconstruct each changed file's NEW side (context + added), tracking added line numbers.
+def _parse_diff_hunks(diff_text: str) -> list[tuple[str, list[tuple[str, bool]]]]:
+    """Split a unified diff into (file_path, hunk_fragment) pairs.
 
-    Hunks from one file are reconstructed together so an alias defined in unchanged context is
-    still in scope; different files are never merged into one parse.
+    Metadata lines (``diff --git``, ``index``, ``--- ``, ``+++ ``, ``@@``, ``\\``) are skipped and
+    never parsed. Each hunk fragment is the NEW-side sequence of ``(content, is_added)`` — context
+    (``  ``) and added (``+``) lines in order, with removed (``-``) lines dropped — so an alias in
+    unchanged context is retained. Files are kept separate (no cross-file bleed).
     """
-    files: list[_DiffFile] = []
-    current: _DiffFile | None = None
+    hunks: list[tuple[str, list[tuple[str, bool]]]] = []
+    path = "<diff>"
+    fragment: list[tuple[str, bool]] | None = None
 
     for line in diff_text.splitlines():
-        if line.startswith("+++"):
-            path = line[3:].strip()
-            if path.startswith("b/"):
-                path = path[2:]
-            current = _DiffFile(
-                path=path or "<diff>", new_source="", added_linenos=set(), added_contents=[]
-            )
-            files.append(current)
+        if line.startswith("diff --git"):
+            parts = line.split()
+            if len(parts) >= 4 and parts[-1].startswith("b/"):
+                path = parts[-1][2:]
+            fragment = None
             continue
-        if line.startswith("---") or line.startswith("@@"):
+        if line.startswith("+++ "):
+            candidate = line[4:].strip()
+            if candidate.startswith("b/"):
+                candidate = candidate[2:]
+            if candidate and candidate != "/dev/null":
+                path = candidate
+            fragment = None
             continue
-        if current is None:
+        if line.startswith("--- ") or line.startswith("index ") or line.startswith("diff "):
+            continue
+        if line.startswith("@@"):
+            fragment = []
+            hunks.append((path, fragment))
+            continue
+        if fragment is None:
             continue
         if line.startswith("\\"):  # "\\ No newline at end of file"
             continue
         if line.startswith("+"):
-            content = line[1:]
-            current.added_contents.append(content)
-            new_lines = current.new_source.split("\n") if current.new_source else []
-            new_lines.append(content)
-            current.new_source = "\n".join(new_lines)
-            current.added_linenos.add(len(new_lines))
+            fragment.append((line[1:], True))
         elif line.startswith("-"):
             continue
         else:  # context line (leading space or a blank line)
-            content = line[1:] if line.startswith(" ") else line
-            new_lines = current.new_source.split("\n") if current.new_source else []
-            new_lines.append(content)
-            current.new_source = "\n".join(new_lines)
-    return files
+            fragment.append((line[1:] if line.startswith(" ") else line, False))
+    return hunks
+
+
+def _hunk_evidence(fragment: list[tuple[str, bool]], location: str) -> list[BoundaryEvidence]:
+    """Match a single hunk's ADDED-line calls, resolving aliases against its retained context.
+
+    The fragment is parsed as-is; if it does not parse standalone (a hunk is often an indented
+    body fragment) it is dedented, and failing that wrapped in a synthetic function so an indented
+    body parses. The context lines are ALWAYS retained (never degraded to added-lines-only) so a
+    context-defined alias still resolves; a marker counts only on an added line.
+    """
+    contents = [content for content, _ in fragment]
+    added_at = {index + 1 for index, (_, is_added) in enumerate(fragment) if is_added}
+    raw = "\n".join(contents)
+
+    tree = _try_parse(raw)
+    if tree is not None:
+        return _filter_added(tree, added_at, location)
+
+    dedented = textwrap.dedent(raw)
+    tree = _try_parse(dedented)
+    if tree is not None:  # dedent preserves the line-to-added mapping
+        return _filter_added(tree, added_at, location)
+
+    indented_body = "\n".join(
+        ("    " + line) if line.strip() else line for line in dedented.split("\n")
+    )
+    wrapped = "def __hunk__():\n" + indented_body
+    tree = _try_parse(wrapped)
+    if tree is not None:  # the synthetic def shifts every body line down by one
+        return _filter_added(tree, {lineno + 1 for lineno in added_at}, location)
+    return []
+
+
+def _filter_added(tree: ast.AST, added_linenos: set[int], location: str) -> list[BoundaryEvidence]:
+    calls = [
+        (node, candidates)
+        for node, candidates in _collect_calls(tree)
+        if node.lineno in added_linenos
+    ]
+    return _evidence_from_calls(calls, location)
 
 
 def classify_diff(diff_text: str) -> BoundaryVerdict:
     """Classify the boundary crossings introduced by a unified diff's ADDED lines only.
 
-    Each file's new side is reconstructed (context + added) so aliases resolve; a marker counts
-    only when its call site lands on an ADDED line (a removed boundary or an added comment does
-    not count).
+    The diff is parsed per file and per hunk; each hunk's added-line calls are matched with its
+    unchanged context retained so aliases resolve. Removed boundaries and added comments/strings
+    never count, and files never bleed into one another.
     """
     evidence: list[BoundaryEvidence] = []
-    for diff_file in _parse_diff_files(diff_text):
-        tree = _safe_parse(diff_file.new_source)
-        if tree is not None:
-            calls = [
-                (node, candidates)
-                for node, candidates in _collect_calls(tree)
-                if node.lineno in diff_file.added_linenos
-            ]
-            evidence.extend(_evidence_from_calls(calls, diff_file.path))
+    for path, fragment in _parse_diff_hunks(diff_text):
+        if not any(is_added for _, is_added in fragment):
             continue
-        # Fallback: the reconstruction did not parse (e.g. context omitted). Analyze the added
-        # lines alone — every call there is by definition on an added line.
-        fallback = _safe_parse("\n".join(diff_file.added_contents))
-        if fallback is not None:
-            evidence.extend(_evidence_from_calls(_collect_calls(fallback), diff_file.path))
+        evidence.extend(_hunk_evidence(fragment, path))
     return _verdict_from_evidence(evidence)
 
 

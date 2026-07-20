@@ -74,6 +74,72 @@ def test_classify_diff_resolves_alias_defined_in_unchanged_context():
     assert observability.classify_diff(diff).categories == frozenset({Cat.SUBPROCESS})
 
 
+def test_classify_diff_realistic_git_diff_with_metadata_resolves_context_alias():
+    # A full `git diff` — diff --git + index + ---/+++ headers must not corrupt reconstruction,
+    # and the alias defined on an UNCHANGED context line must still resolve.
+    diff = (
+        "diff --git a/mod.py b/mod.py\n"
+        "index abc1234..def5678 100644\n"
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " import subprocess as sp\n"
+        " def f():\n"
+        '+    sp.run(["x"])\n'
+    )
+    assert observability.classify_diff(diff).categories == frozenset({Cat.SUBPROCESS})
+
+
+def test_classify_diff_indented_body_hunk_resolves_context_alias():
+    # An indented body fragment (does not parse standalone) must still resolve a context alias
+    # without dropping context.
+    diff = (
+        "diff --git a/mod.py b/mod.py\n"
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -5,3 +5,4 @@ def outer():\n"
+        "     import sqlite3\n"
+        "     x = 1\n"
+        '+    sqlite3.connect("d")\n'
+    )
+    assert observability.classify_diff(diff).categories == frozenset({Cat.DATABASE})
+
+
+def test_classify_diff_http_indented_body_with_context_import():
+    diff = (
+        "diff --git a/mod.py b/mod.py\n"
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -1,3 +1,4 @@\n"
+        " import httpx\n"
+        " def f():\n"
+        '+    httpx.get("http://x")\n'
+        "     return 1\n"
+    )
+    assert observability.classify_diff(diff).categories == frozenset({Cat.HTTP})
+
+
+def test_classify_diff_multi_file_no_cross_bleed_and_comment_ignored():
+    # File A adds a real DB crossing; file B adds only a comment. Result is {DATABASE} — no bleed,
+    # and the comment is not a crossing.
+    diff = (
+        "diff --git a/a.py b/a.py\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " import sqlite3\n"
+        " def f():\n"
+        '+    sqlite3.connect("d")\n'
+        "diff --git a/b.py b/b.py\n"
+        "--- a/b.py\n"
+        "+++ b/b.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " def g():\n"
+        "+    # subprocess.run(['x']) discussed only\n"
+    )
+    assert observability.classify_diff(diff).categories == frozenset({Cat.DATABASE})
+
+
 def test_classify_diff_does_not_count_a_call_only_in_context():
     # subprocess.run is present only as an UNCHANGED context line -> not an added crossing.
     diff = (
@@ -82,6 +148,18 @@ def test_classify_diff_does_not_count_a_call_only_in_context():
         " def f():\n"
         "     subprocess.run(['x'])\n"
         "+    y = 1\n"
+    )
+    assert observability.classify_diff(diff).categories == frozenset()
+
+
+def test_classify_diff_added_comment_is_not_a_crossing():
+    diff = (
+        "diff --git a/mod.py b/mod.py\n"
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " def f():\n"
+        "+    # subprocess.run(['x']) is only discussed\n"
     )
     assert observability.classify_diff(diff).categories == frozenset()
 
