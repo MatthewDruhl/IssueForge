@@ -48,17 +48,22 @@ class _Spec:
     cwd: Path
 
 
-def emit_invocation(record: dict) -> None:
+def emit_invocation(record: dict, *, secrets: set[str] | None = None) -> None:
     """Persist one invocation's boundary fields through the guarded write seam.
 
     The raw stdout/stderr body is never part of ``record`` (S4 owns redacted persistence);
     this writes only argv/cwd/duration/exit/timed_out, to a fresh directory per invocation
     under ``state_root()`` created through the S25 ``WriteSeam`` (never a static path).
+    ``secrets``, when given, is redacted out of the serialized payload before it is written —
+    the argv can carry a caller's prompt, so this record is a persisted artifact too.
     """
     seam = WriteSeam()
     directory = Path(state_root()) / "invocations" / uuid.uuid4().hex
     target = directory / "invocation.json"
     payload = json.dumps(record, default=str, sort_keys=True)
+    for secret in sorted(secrets or (), key=len, reverse=True):
+        if secret:
+            payload = payload.replace(secret, "[REDACTED]")
     # The seam is the sanctioned writer; dispatch through the instance so the guarded
     # write_text runs (the boundary lint's name heuristic cannot see a raw write here).
     getattr(seam, "write_text")(target, payload)
@@ -70,9 +75,12 @@ def run(
     cwd: Path,
     timeout: float,
     env: dict | None = None,
+    secrets: set[str] | None = None,
 ) -> CommandResult:
     """Run ``argv`` in ``cwd`` with a hard ``timeout``, capturing output, never raising on
     a non-zero exit. On expiry the whole process group is killed so no descendant survives.
+    ``secrets`` is forwarded to the invocation record so a caller-provided prompt in ``argv``
+    is redacted from that persisted artifact too.
     """
     spec = _Spec(argv=list(argv), cwd=Path(cwd))
     command: Command = Command.from_config(spec.argv, cwd=spec.cwd)
@@ -88,6 +96,7 @@ def run(
         command,
         cwd=command.cwd,
         env=env,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -115,15 +124,20 @@ def run(
         duration_ms=duration_ms,
         timed_out=timed_out,
     )
-    emit_invocation(
-        {
-            "argv": result.argv,
-            "cwd": str(spec.cwd),
-            "duration_ms": result.duration_ms,
-            "returncode": result.returncode,
-            "timed_out": result.timed_out,
-        }
-    )
+    record = {
+        "argv": result.argv,
+        "cwd": str(spec.cwd),
+        "duration_ms": result.duration_ms,
+        "returncode": result.returncode,
+        "timed_out": result.timed_out,
+    }
+    # Only pass secrets through when the caller actually gave us some — this keeps
+    # emit_invocation's positional-only call shape intact for any existing caller that has not
+    # been updated to accept the (new, optional) redaction kwarg.
+    if secrets:
+        emit_invocation(record, secrets=secrets)
+    else:
+        emit_invocation(record)
     return result
 
 

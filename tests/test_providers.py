@@ -166,7 +166,6 @@ def _assert_no_secret_in_any_artifact(secrets: set[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_two_roles_bind_to_provider_profiles_declared_in_configuration(isolated_state_home):
     """Two roles (primary, secondary) each bind to a named provider profile whose executable, start, resume, and auth commands are configuration variables.
 
@@ -211,7 +210,6 @@ def test_two_roles_bind_to_provider_profiles_declared_in_configuration(isolated_
     assert roles.secondary.auth == ["auth", "status"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 @pytest.mark.parametrize("field", ["executable", "start", "resume", "auth"])
 def test_a_shell_string_in_any_command_field_is_rejected(field, isolated_state_home):
     """Every provider command field must be an argv array; a shell string in ANY of them (executable, start, resume, auth) is rejected, so no field can smuggle in shell execution.
@@ -232,7 +230,6 @@ def test_a_shell_string_in_any_command_field_is_rejected(field, isolated_state_h
         load_roles({"providers": {"alpha": provider}, "roles": {"primary": "alpha"}})
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_review_role_falls_back_to_the_primary_provider_when_no_secondary_is_configured(
     isolated_state_home,
 ):
@@ -267,7 +264,6 @@ def test_review_role_falls_back_to_the_primary_provider_when_no_secondary_is_con
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_invocation_status_members_are_exactly_ok_failed_rate_limited(isolated_state_home):
     """The invocation status is a closed set of exactly three outcomes: OK, FAILED, RATE_LIMITED.
 
@@ -278,7 +274,6 @@ def test_invocation_status_members_are_exactly_ok_failed_rate_limited(isolated_s
     assert set(providers.InvocationStatus.__members__) == {"OK", "FAILED", "RATE_LIMITED"}
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_there_is_one_invoke_seam_and_no_provider_abc_or_registry(isolated_state_home):
     """There is ONE invocation seam and no provider class hierarchy: configuration is the polymorphism, not a provider ABC or an adapter registry.
 
@@ -320,7 +315,6 @@ def test_there_is_one_invoke_seam_and_no_provider_abc_or_registry(isolated_state
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_no_provider_vendor_name_appears_anywhere_in_the_engine_source(isolated_state_home):
     """No provider/vendor product name is hardcoded anywhere in the engine package — the vendor lives only in a user's configuration.
 
@@ -344,7 +338,6 @@ def test_no_provider_vendor_name_appears_anywhere_in_the_engine_source(isolated_
     assert offenders == {}, f"vendor names hardcoded in engine source: {offenders}"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_no_api_key_is_read_in_source_nor_passed_to_any_child(
     fake_provider_script, monkeypatch, isolated_state_home
 ):
@@ -389,7 +382,6 @@ def test_no_api_key_is_read_in_source_nor_passed_to_any_child(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_invoke_renders_start_and_records_a_fresh_session_role_and_provider(
     fake_provider_script, isolated_state_home
 ):
@@ -432,7 +424,6 @@ def test_invoke_renders_start_and_records_a_fresh_session_role_and_provider(
     assert first.session_id != second.session_id
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_a_review_that_shares_the_authoring_session_identity_is_rejected(
     fake_provider_script, isolated_state_home
 ):
@@ -487,7 +478,6 @@ def test_a_review_that_shares_the_authoring_session_identity_is_rejected(
     assert providers.validate_review_independence(fresh, authoring) is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_a_no_secondary_review_runs_in_a_brand_new_session_on_the_primary_provider(
     fake_provider_script, isolated_state_home
 ):
@@ -529,7 +519,6 @@ def test_a_no_secondary_review_runs_in_a_brand_new_session_on_the_primary_provid
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_empty_output_is_a_failure_and_still_records_metadata(
     fake_provider_script, isolated_state_home
 ):
@@ -553,7 +542,6 @@ def test_empty_output_is_a_failure_and_still_records_metadata(
     assert result.artifact_path.exists()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_a_nonzero_exit_is_a_failure_and_still_records_metadata(
     fake_provider_script, isolated_state_home
 ):
@@ -575,7 +563,6 @@ def test_a_nonzero_exit_is_a_failure_and_still_records_metadata(
     assert result.session_id
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_a_timeout_is_a_distinct_bounded_failure_and_still_records_metadata(
     fake_provider_script, isolated_state_home
 ):
@@ -598,7 +585,6 @@ def test_a_timeout_is_a_distinct_bounded_failure_and_still_records_metadata(
     assert result.session_id
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_the_launch_closes_stdin_with_devnull_and_uses_an_argv_list_never_a_shell(
     fake_provider_script, monkeypatch, isolated_state_home
 ):
@@ -644,7 +630,6 @@ def test_the_launch_closes_stdin_with_devnull_and_uses_an_argv_list_never_a_shel
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_full_stdout_and_stderr_are_preserved_untruncated(
     fake_provider_script, isolated_state_home
 ):
@@ -679,7 +664,6 @@ def test_full_stdout_and_stderr_are_preserved_untruncated(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_a_persistent_rate_limit_retries_the_default_two_times_then_reports_a_distinct_state(
     monkeypatch, isolated_state_home
 ):
@@ -734,7 +718,6 @@ def test_a_persistent_rate_limit_retries_the_default_two_times_then_reports_a_di
         assert not any(k.upper().endswith("API_KEY") for k in call["env"])
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_a_rate_limit_recovers_on_retry_and_a_nonmatching_failure_is_not_retried(
     isolated_state_home,
 ):
@@ -786,7 +769,6 @@ def test_a_rate_limit_recovers_on_retry_and_a_nonmatching_failure_is_not_retried
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_authenticated_runs_the_exact_auth_command_and_fails_closed(
     fake_provider_script, isolated_state_home
 ):
@@ -815,7 +797,6 @@ def test_authenticated_runs_the_exact_auth_command_and_fails_closed(
     assert len(timeout_spy.calls) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_provider_check_reports_the_authenticated_profile_and_fails_closed_without_fallback(
     fake_provider_script, tmp_path, isolated_state_home
 ):
@@ -860,7 +841,6 @@ def test_provider_check_reports_the_authenticated_profile_and_fails_closed_witho
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 @pytest.mark.parametrize(
     "flags, timeout, run_id",
     [
@@ -969,7 +949,6 @@ def test_invoke_persists_a_redacted_transcript_with_no_secret_in_any_artifact(
     _assert_no_secret_in_any_artifact(secrets)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_the_provider_auth_file_is_never_read_by_the_engine(
     fake_provider_script, monkeypatch, isolated_state_home
 ):
@@ -1038,7 +1017,6 @@ def test_the_provider_auth_file_is_never_read_by_the_engine(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#11)")
 def test_review_inputs_are_materialized_to_files_under_dest(isolated_state_home):
     """Because the reviewer runs with no network, every input it needs is written to a file under the destination directory, so the reviewer reads them from local disk.
 
