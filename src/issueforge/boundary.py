@@ -134,6 +134,11 @@ class _Linter(ast.NodeVisitor):
         self.command_scopes: list[dict[str, bool]] = [{}]
         # class 6 (#40): names provably bound to WriteSeam()/io.WriteSeam() in each scope.
         self.seam_scopes: list[dict[str, bool]] = [{}]
+        # Parallel marker: True only for a real function / async-function body, where a
+        # local `seam = WriteSeam()` may confer exemption. False for the module scope (so a
+        # module-level seam never exempts) and for lambda / comprehension scopes (so a seam
+        # shadowed by a lambda param or comprehension target is never exempt inside it) (#40).
+        self.scope_is_function: list[bool] = [False]
 
     def _add(self, node: ast.AST, rule: str, detail: str) -> None:
         self.violations.append(f"{self.filename}:{node.lineno}: {rule}: {detail}")
@@ -312,6 +317,7 @@ class _Linter(ast.NodeVisitor):
         self._check_default(node, node.value)
         for target in node.targets:
             self._record_assignment(target, node.value)
+            self._apply_seam_binding(target, node.value)
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
@@ -322,13 +328,39 @@ class _Linter(ast.NodeVisitor):
             )
             self._record_rebinding(node.target.id, node.value)
             self.command_scopes[-1][node.target.id] = is_command
-            self.seam_scopes[-1][node.target.id] = self._is_writeseam_construction(node.value)
+            self._apply_seam_binding(node.target, node.value)
         self.generic_visit(node)
+
+    # --- class 6 (#40): seam-trust granting (one place) vs clearing (every other binder) ---
+    def _apply_seam_binding(self, target: ast.AST, value: ast.AST | None) -> None:
+        """Grant seam trust ONLY for a simple ``name = WriteSeam()``; clear it for anything else.
+
+        A destructuring/tuple/list target, or any binder whose value is not a provable
+        WriteSeam()/io.WriteSeam() construction, CLEARS trust for every name it binds — the lint
+        fails toward flagging, so a name bound by anything but a proven construction is untrusted.
+        """
+        if isinstance(target, ast.Name):
+            self.seam_scopes[-1][target.id] = self._is_writeseam_construction(value)
+        else:
+            self._clear_seam(target)
+
+    def _clear_seam(self, target: ast.AST | None) -> None:
+        for name in self._bound_names(target):
+            self.seam_scopes[-1][name] = False
+
+    def _bound_names(self, target: ast.AST | None):
+        """Yield every name a binder target binds (Name, Starred, and nested Tuple/List)."""
+        if isinstance(target, ast.Name):
+            yield target.id
+        elif isinstance(target, ast.Starred):
+            yield from self._bound_names(target.value)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                yield from self._bound_names(element)
 
     def _record_assignment(self, target: ast.AST, value: ast.AST | None) -> None:
         if isinstance(target, ast.Name):
             self.command_scopes[-1][target.id] = False
-            self.seam_scopes[-1][target.id] = self._is_writeseam_construction(value)
             self._record_rebinding(target.id, value)
         elif (
             isinstance(target, (ast.Tuple, ast.List))
@@ -361,15 +393,20 @@ class _Linter(ast.NodeVisitor):
         self.binding_scopes[-1][target] = value
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        # An aug-assign (`seam += ...`) clobbers the binding: trust is cleared, never granted.
         self._record_assignment(node.target, None)
+        self._clear_seam(node.target)
         self.generic_visit(node)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        # A walrus binding is treated as non-simple: it always clears seam trust for its name.
         self._record_assignment(node.target, node.value)
+        self._clear_seam(node.target)
         self.generic_visit(node)
 
     def visit_For(self, node: ast.For) -> None:
         self._record_assignment(node.target, None)
+        self._clear_seam(node.target)
         self.generic_visit(node)
 
     visit_AsyncFor = visit_For
@@ -378,6 +415,7 @@ class _Linter(ast.NodeVisitor):
         for item in node.items:
             if item.optional_vars is not None:
                 self._record_assignment(item.optional_vars, None)
+                self._clear_seam(item.optional_vars)
         self.generic_visit(node)
 
     visit_AsyncWith = visit_With
@@ -386,6 +424,8 @@ class _Linter(ast.NodeVisitor):
         if node.name:
             self._record_rebinding(node.name, None)
             self.command_scopes[-1][node.name] = False
+            # `except ... as seam` binds an exception, not a WriteSeam: clear trust.
+            self.seam_scopes[-1][node.name] = False
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -401,12 +441,47 @@ class _Linter(ast.NodeVisitor):
         self.command_scopes.append(dict.fromkeys(parameter_names, False))
         self.binding_scopes.append(dict.fromkeys(parameter_names))
         self.seam_scopes.append(dict.fromkeys(parameter_names, False))
+        self.scope_is_function.append(True)
         self.generic_visit(node)
+        self.scope_is_function.pop()
         self.seam_scopes.pop()
         self.binding_scopes.pop()
         self.command_scopes.pop()
 
     visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        # A lambda opens its own scope: its parameters shadow any outer trusted seam, and the
+        # scope is marked non-function so no write inside the lambda body is ever exempt (#40).
+        parameter_names = {
+            arg.arg for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+        }
+        if node.args.vararg:
+            parameter_names.add(node.args.vararg.arg)
+        if node.args.kwarg:
+            parameter_names.add(node.args.kwarg.arg)
+        self.seam_scopes.append(dict.fromkeys(parameter_names, False))
+        self.scope_is_function.append(False)
+        self.generic_visit(node)
+        self.scope_is_function.pop()
+        self.seam_scopes.pop()
+
+    def _visit_comprehension(self, node: ast.AST) -> None:
+        # A comprehension opens its own scope: its ``for`` targets shadow any outer trusted seam,
+        # and the scope is non-function so a shadowed seam is never exempt in the body (#40).
+        targets: set[str] = set()
+        for generator in node.generators:
+            targets.update(self._bound_names(generator.target))
+        self.seam_scopes.append(dict.fromkeys(targets, False))
+        self.scope_is_function.append(False)
+        self.generic_visit(node)
+        self.scope_is_function.pop()
+        self.seam_scopes.pop()
+
+    visit_ListComp = _visit_comprehension
+    visit_SetComp = _visit_comprehension
+    visit_DictComp = _visit_comprehension
+    visit_GeneratorExp = _visit_comprehension
 
     def _is_command_annotation(self, node: ast.AST | None) -> bool:
         return (
@@ -502,5 +577,14 @@ class _Linter(ast.NodeVisitor):
         )
 
     def _is_trusted_seam(self, node: ast.AST) -> bool:
-        """True when ``node`` is a local name provably bound to a WriteSeam in the CURRENT scope."""
-        return isinstance(node, ast.Name) and self.seam_scopes[-1].get(node.id, False)
+        """True when ``node`` is a function-local name provably bound to a WriteSeam here.
+
+        Exemption is granted only inside a real function body (``scope_is_function``) and only
+        for a name trusted in the CURRENT scope — never a module-global, and never a name a
+        lambda/comprehension has shadowed.
+        """
+        return (
+            isinstance(node, ast.Name)
+            and self.scope_is_function[-1]
+            and self.seam_scopes[-1].get(node.id, False)
+        )
