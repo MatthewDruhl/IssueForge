@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from issueforge.boundary import check_source
@@ -545,3 +546,165 @@ def test_class4_nested_literal_containers_are_scanned(tmp_path: Path) -> None:
 def test_class6_rename_keyword_form_flagged(tmp_path: Path) -> None:
     v = lint(tmp_path, "def f(p, q):\n    p.rename(target=q)\n")
     assert any("rename" in x for x in v)
+
+
+# --- issue #40: receiver-aware WriteSeam.write_text exemption (Option A) ------
+# The write-surface heuristic flags ANY `.write_text` outside io.py, including a call
+# to the sanctioned WriteSeam.write_text — so engine modules that legitimately write
+# through the seam are forced into `getattr(seam, "write_text")(...)` dispatch to evade
+# the lint (process.py:97). Option A adds a RECEIVER-AWARE exemption: allow `.write_text`
+# when the receiver is provably a LOCAL bound to WriteSeam()/io.WriteSeam() in the CURRENT
+# scope. The exemption must be receiver-PRECISE and never over-broaden; the guard tests
+# below pin every shape it must still flag. Assertions match the FULL emitted rule identity
+# (`write-surface: .write_text() outside the IO seam`), not a bare "write_text" substring, so
+# an unrelated violation cannot satisfy a guard and hide a regression.
+
+_WRITE_TEXT_RULE = "write-surface: .write_text() outside the IO seam"
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#40)")
+def test_class6_process_style_plain_seam_write_is_clean(tmp_path: Path) -> None:
+    """(#40) The plain seam.write_text(target, payload) form process.run wants (no getattr) passes.
+
+    Provable-binding form 1: a bare local `seam = WriteSeam()` (Assign) in realistic surroundings.
+    """
+    code = (
+        "from pathlib import Path\n"
+        "from issueforge.io import WriteSeam\n"
+        "from issueforge.paths import state_root\n"
+        "def emit_invocation(payload):\n"
+        "    seam = WriteSeam()\n"
+        "    directory = Path(state_root()) / 'invocations'\n"
+        "    target = directory / 'invocation.json'\n"
+        "    seam.write_text(target, payload)\n"
+    )
+    assert lint(tmp_path, code) == []
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#40)")
+def test_class6_write_text_on_qualified_writeseam_is_exempt(tmp_path: Path) -> None:
+    """(#40) Provable-binding form 2: a receiver bound to the qualified io.WriteSeam() constructor."""
+    code = (
+        "from issueforge import io\n"
+        "def emit(target, payload):\n"
+        "    seam = io.WriteSeam()\n"
+        "    seam.write_text(target, payload)\n"
+    )
+    assert lint(tmp_path, code) == []
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#40)")
+def test_class6_write_text_on_annotated_writeseam_is_exempt(tmp_path: Path) -> None:
+    """(#40) Provable-binding form 3: an annotated construction `seam: WriteSeam = WriteSeam()` (AnnAssign).
+
+    Distinct AST from the bare Assign in form 1; the binding-type tracking is analogous to the
+    command-scope machinery, which already tracks annotated bindings (visit_AnnAssign), so the
+    exemption must cover this shape too — an implementation that exempts the bare local but not
+    the annotated one would be inconsistent.
+    """
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, payload):\n"
+        "    seam: WriteSeam = WriteSeam()\n"
+        "    seam.write_text(target, payload)\n"
+    )
+    assert lint(tmp_path, code) == []
+
+
+def test_class6_raw_path_write_text_still_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A raw path.write_text stays flagged — the exemption is receiver-precise."""
+    v = lint(tmp_path, "def f(path, payload):\n    path.write_text(payload)\n")
+    assert any(_WRITE_TEXT_RULE in x for x in v)
+
+
+def test_class6_seam_named_non_writeseam_receiver_still_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A receiver merely NAMED 'seam' but not bound to WriteSeam() is NOT exempt.
+
+    A by-name exemption would let these real raw writes slip through and defeat the boundary.
+    Both a parameter named `seam` and a `seam = path` alias rebind must stay flagged.
+    """
+    param = lint(tmp_path, "def f(seam, target):\n    seam.write_text(target, 'x')\n")
+    assert any(_WRITE_TEXT_RULE in x for x in param)
+    rebind = lint(
+        tmp_path, "def f(path, target):\n    seam = path\n    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in rebind)
+
+
+def test_class6_seam_from_call_result_still_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A receiver assigned from an arbitrary CALL is not a provable WriteSeam() — stays flagged.
+
+    Only a literal WriteSeam()/io.WriteSeam() construction is provable; `get_seam()` could return
+    anything, so the boundary must not trust it.
+    """
+    code = (
+        "def make():\n    return object()\n"
+        "def emit(target):\n"
+        "    seam = make()\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_seam_stale_trust_reassignment_still_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) Rebinding a trusted seam to a non-WriteSeam value CLEARS trust — the later write stays flagged."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(path, target):\n"
+        "    seam = WriteSeam()\n"
+        "    seam = path\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_seam_augassign_clobber_still_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) An aug-assign to a trusted seam clobbers the WriteSeam binding — the later write stays flagged."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(path, target):\n"
+        "    seam = WriteSeam()\n"
+        "    seam += path\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_module_global_seam_not_local_still_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A MODULE-GLOBAL `seam = WriteSeam()` referenced inside a function is not a local binding.
+
+    The exemption is scoped to a provable LOCAL in the current scope, matching the actual motivating
+    case (process.py binds `seam` as a local inside emit_invocation). Keeping module-global out of
+    the exemption keeps the write boundary as tight as possible: the global write stays flagged.
+    """
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "seam = WriteSeam()\n"
+        "def emit(target):\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_shadowed_seam_param_still_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) An outer trusted `seam = WriteSeam()` must not exempt an inner function whose PARAMETER is `seam`.
+
+    The inner parameter shadows the outer trusted binding, so the inner write is on an untrusted
+    receiver and stays flagged (cf. test_class2_lexically_shadowed_command_annotation_is_flagged).
+    """
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def outer(target):\n"
+        "    seam = WriteSeam()\n"
+        "    def inner(seam):\n"
+        "        seam.write_text(target, 'x')\n"
+        "    return inner\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_rebound_write_text_attr_still_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) `write = path.write_text; write(...)` stays flagged (cf. test_class6_rebound_write_apis)."""
+    code = "def f(path):\n    write = path.write_text\n    write('x')\n"
+    v = lint(tmp_path, code)
+    assert any("write-surface: write() outside the IO seam" in x for x in v)
