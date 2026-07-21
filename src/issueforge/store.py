@@ -189,33 +189,58 @@ class RunStore:
         self._seam.write_text_atomic(queue_path(), self._dump(queue))
 
     # --- crash-transactionality: reconcile queue.json against the manifests (#48) -------------
+    def _live_status(self, run_id: str) -> str | None:
+        """The run's status if its manifest exists AND is a VALID, KNOWN record, else ``None``.
+
+        A missing, unparseable, or invalid manifest (an unknown/absent status that ``validate_record``
+        would reject) yields ``None`` — such a record is NEVER silently declared live. Only a manifest
+        that both exists and re-validates through the ONE record validator returns its status string.
+        """
+        if not manifest_path(run_id).exists():
+            return None
+        try:
+            record = self.read(run_id)  # re-validates via validate_record
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return None
+        status = record.get("status")
+        return status if status in ALLOWED_STATUS else None
+
     def reconcile(self) -> None:
         """Idempotent, lock-guarded sweep making ``queue.json`` consistent with the manifests.
 
         Admission and completion each write the manifest and ``queue.json`` under one lock, but the
-        pair is not crash-atomic. This recovers a torn write by clearing a bad active slot:
+        pair is not crash-atomic. This reconciles the ENTIRE queue against the manifests:
 
-        - an ORPHAN active — ``queue.active`` names a run with NO manifest (a crash hit between
-          admission's queue-first write and the manifest write);
-        - a STUCK-occupied slot — ``queue.active`` names a run whose manifest is TERMINAL (a crash
-          hit between finalize's terminal manifest write and the slot release).
+        - the ACTIVE slot is freed to ``None`` when its run has NO manifest (an ORPHAN left by a
+          crash between admission's queue-first write and the manifest write), a TERMINAL manifest
+          (a STUCK-occupied slot left by a crash between finalize's terminal write and the slot
+          release), or a MALFORMED/unknown manifest (never treated as a live run);
+        - a QUEUED WAITER is dropped when its manifest is missing, terminal, or malformed, or when
+          its status is anything other than exactly ``queued`` — so the drain that later promotes the
+          head never resurrects a terminal run nor crashes admission on a phantom waiter.
 
-        In both cases the active slot is released to ``None``; the manifest is never fabricated nor
-        mutated, and the queued waiters are left untouched (a valid waiter is never dropped). A
-        no-op on an already-consistent store: when ``active`` is ``None`` or names an existing
-        non-terminal run, nothing is written and ``queue.json`` stays byte-for-byte unchanged.
+        A manifest is never fabricated nor mutated; only ``queue.json`` is rewritten, and only when a
+        bad entry is actually removed. A no-op on an already-consistent store: when ``active`` is
+        ``None`` or names a valid non-terminal run and every waiter is a valid ``queued`` run, nothing
+        is written and ``queue.json`` stays byte-for-byte unchanged.
         """
         with self._lock():
             queue = self.read_queue()
             active = queue.get("active")
-            if active is None:
-                return
-            if manifest_path(active).exists():
-                status = self._read_unlocked(active).get("status")
-                if status not in _TERMINAL_STATUS:
-                    return  # consistent: active names an existing, non-terminal run
-            # orphan (no manifest) or stuck-occupied (terminal manifest): free the slot.
-            queue["active"] = None
+            waiters = list(queue.get("queue", []))
+
+            active_status = self._live_status(active) if active is not None else None
+            new_active = (
+                active
+                if (active_status is not None and active_status not in _TERMINAL_STATUS)
+                else None
+            )
+            new_waiters = [w for w in waiters if self._live_status(w) == State.QUEUED.value]
+
+            if new_active == active and new_waiters == waiters:
+                return  # consistent: byte-for-byte unchanged
+            queue["active"] = new_active
+            queue["queue"] = new_waiters
             self.write_queue_unlocked(queue)
 
     def _read_unlocked(self, run_id: str) -> dict:

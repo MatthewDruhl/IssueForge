@@ -97,7 +97,7 @@ def _advance_unlocked(s: store.RunStore, run_id: str) -> str | None:
     Only acts when ``run_id`` actually owns the slot (``queue.active == run_id``); otherwise the
     queue is left untouched and ``None`` is returned (no spurious advance). When a waiter exists it
     is popped to the active slot and its manifest is set ``running`` under this same lock; the
-    caller then dispatches it OUTSIDE the lock via :func:`_dispatch`. Returns the promoted run id.
+    caller's :func:`_drain` loop then dispatches it OUTSIDE the lock. Returns the promoted run id.
     """
     queue = s.read_queue()
     if queue.get("active") != run_id:
@@ -120,32 +120,39 @@ def _drain_stranded_waiters(s: store.RunStore) -> None:
     Normal operation never leaves ``active is None`` while the FIFO is non-empty (a released slot
     immediately promotes the head). Only :meth:`store.RunStore.reconcile`, having dropped an orphan
     or stuck active, can strand a valid waiter behind the freed slot. This promotes the head waiter
-    under the lock and dispatches it OUTSIDE the lock; its own release then advances the rest, so the
+    under the lock and drains it OUTSIDE the lock; its own release then advances the rest, so the
     pre-crash queue drains head-first BEFORE the caller admits a new run (recovery preserves order).
+
+    ``reconcile`` has already dropped any waiter without a valid ``queued`` manifest, but the head's
+    manifest is still READ before ``queue.json`` is mutated: an unreadable head aborts the promotion
+    without persisting a new orphan into the active slot.
     """
     while True:
         with s.locked():
             queue = s.read_queue()
             if queue.get("active") is not None or not queue["queue"]:
                 return
-            next_id = queue["queue"].pop(0)
+            next_id = queue["queue"][0]
+            record = s._read_unlocked(next_id)  # read BEFORE persisting active
+            queue["queue"].pop(0)
             queue["active"] = next_id
             s.write_queue_unlocked(queue)
-            record = s._read_unlocked(next_id)
             s.write_record_unlocked(next_id, {**record, "status": RUNNING})
-        _dispatch(s, next_id)
+        _drain(s, next_id)
 
 
-def _dispatch(s: store.RunStore, next_id: str) -> None:
-    """OUTSIDE the lock: emit the promoted run's ``running`` event, run the default stage, finalize.
+def _drain(s: store.RunStore, next_id: str | None) -> None:
+    """ITERATIVELY dispatch ``next_id`` and each waiter its release promotes, head-first FIFO.
 
-    Draining is iterative-by-recursion: the dispatched head finalizes, and its own release advances
-    the next waiter, so a run of waiters drains head-first in FIFO order.
+    Each promoted run emits its ``running`` event, runs the default stage, and finalizes; finalize
+    RETURNS the next promoted run rather than dispatching it, so this drains a queue of any length in
+    one flat loop — no per-waiter recursion frame, so a long persistent FIFO cannot blow the stack.
     """
-    s.append_event(next_id, {"transition": RUNNING})
-    record = s.read(next_id)
-    result = _execute_stage(s, next_id, _default_stage, record)
-    _finalize(s, next_id, result)
+    while next_id is not None:
+        s.append_event(next_id, {"transition": RUNNING})
+        record = s.read(next_id)
+        result = _execute_stage(s, next_id, _default_stage, record)
+        next_id = _finalize(s, next_id, result)
 
 
 def _execute_stage(
@@ -170,14 +177,15 @@ def _execute_stage(
         _persist_captured(s, run_id, out, err, secrets)
         with s.locked():
             next_id = _advance_unlocked(s, run_id)
-        if next_id is not None:
-            _dispatch(s, next_id)
+        _drain(s, next_id)
         raise
     _persist_captured(s, run_id, out, err, secrets)
     return result
 
 
-def _finalize(s: store.RunStore, run_id: str, result: Any, secrets: set[str] | None = None) -> None:
+def _finalize(
+    s: store.RunStore, run_id: str, result: Any, secrets: set[str] | None = None
+) -> str | None:
     """Land the run after its stage returns, HONORING any non-running status the stage set.
 
     Manifest transition + slot release/advance happen in ONE locked transaction (state re-read under
@@ -216,8 +224,7 @@ def _finalize(s: store.RunStore, run_id: str, result: Any, secrets: set[str] | N
         # else: paused (keep slot, no advance) or parked (already advanced by park): do nothing.
     if event is not None:
         s.append_event(run_id, {"transition": event})
-    if next_id is not None:
-        _dispatch(s, next_id)
+    return next_id  # the caller's :func:`_drain` loop dispatches the promoted waiter (no recursion)
 
 
 def run(
@@ -280,7 +287,8 @@ def run(
     s.append_event(run_id, {"transition": RUNNING})
     record = s.read(run_id)
     result = _execute_stage(s, run_id, stage, record, secrets)
-    _finalize(s, run_id, result, secrets)
+    next_id = _finalize(s, run_id, result, secrets)
+    _drain(s, next_id)
     return s.read(run_id)
 
 
@@ -318,8 +326,7 @@ def park(run_id: str) -> dict:
         s.write_record_unlocked(run_id, {**record, "status": State.PARKED.value})
         next_id = _advance_unlocked(s, run_id)
     s.append_event(run_id, {"transition": State.PARKED.value})
-    if next_id is not None:
-        _dispatch(s, next_id)
+    _drain(s, next_id)
     return s.read(run_id)
 
 
@@ -358,8 +365,7 @@ def cancel(run_id: str) -> dict:
             # Status changed out from under the caller (e.g. promoted then started): refuse.
             transition(current, State.CANCELLED)  # raises IllegalTransition
     s.append_event(run_id, {"transition": State.CANCELLED.value})
-    if next_id is not None:
-        _dispatch(s, next_id)
+    _drain(s, next_id)
     return s.read(run_id)
 
 
@@ -465,5 +471,6 @@ def continue_run(
 
     record = s.read(run_id)
     result = _execute_stage(s, run_id, stage, record)
-    _finalize(s, run_id, result)
+    next_id = _finalize(s, run_id, result)
+    _drain(s, next_id)
     return s.read(run_id)

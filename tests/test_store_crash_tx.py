@@ -1,4 +1,4 @@
-"""Committed PENDING acceptance suite for #48 — run-store crash-transactionality + reconcile.
+"""Acceptance suite for #48 — run-store crash-transactionality + reconcile (SHIPPED).
 
 The store's admission and completion each write TWO files under one lock (the manifest and
 ``queue.json``), but the pair is not crash-atomic: a crash between the two writes can leave
@@ -6,7 +6,7 @@ The store's admission and completion each write TWO files under one lock (the ma
 completed run whose slot was never cleared (STUCK occupied). #48 makes that transition recoverable:
 a startup reconcile / sweep that, run at the beginning of a mutating admission, restores a
 consistent store — clearing a stuck-occupied slot and dropping an orphan ``active`` whose run has no
-manifest.
+manifest, and dropping any queued waiter that lacks a valid ``queued`` manifest.
 
 This suite pins the RECOVERY BEHAVIOR, not the mechanism. It never asserts derive-active-from-
 manifests vs a transactional commit; it asserts the observable postcondition on ``queue.json`` +
@@ -15,19 +15,21 @@ store seams (``RunStore.locked`` + ``write_queue_unlocked`` + ``apply``) — the
 admission and completion use — to write one side of the pair without the other, never by mocking
 store internals.
 
-Authored surface (ATDD): ``RunStore.reconcile()`` — an idempotent, lock-guarded sweep that makes
-``queue.json`` consistent with the manifests (a no-op on an already-consistent store), plus the
-admission-time wiring so ``engine.run`` reconciles before it decides the active slot (the hook
-deferred at engine.py:241). "Recoverable/consistent" means: after reconcile, ``queue.active`` is
-either ``None`` or names a run whose manifest exists AND is non-terminal.
+Shipped surface: ``RunStore.reconcile()`` — an idempotent, lock-guarded sweep that makes
+``queue.json`` consistent with the manifests across the ENTIRE queue (a no-op on an already-
+consistent store), plus the admission-time wiring so ``engine.run`` reconciles before it decides the
+active slot and drains any stranded waiter iteratively (no per-waiter recursion). "Recoverable/
+consistent" means: after reconcile, ``queue.active`` is either ``None`` or names a run whose manifest
+exists AND is non-terminal.
 
-Each test is ``@pytest.mark.xfail(strict=True, reason="PENDING (#48)")`` — reconcile does not exist
-yet (``AttributeError``), and the admission hook is not wired, so every test fails today. Imports of
-the pending surface live INSIDE each test. Dual-layer docstrings: a plain-English behavior line,
-then the exact golden values under ``technical (contract):``.
+The suite is live (no xfail markers): reconcile and the admission wiring are implemented. Imports of
+the surface live INSIDE each test. Dual-layer docstrings: a plain-English behavior line, then the
+exact golden values under ``technical (contract):``.
 """
 
 from __future__ import annotations
+
+import json
 
 _TERMINAL = {"completed", "cancelled", "failed"}
 
@@ -274,4 +276,136 @@ def test_recovery_preserves_fifo_a_new_run_does_not_jump_a_pre_existing_waiter(
     q = store.RunStore().read_queue()
     assert q["active"] != "run-ghost"
     assert "run-ghost" not in q["queue"]
+    _assert_recoverable(q)
+
+
+# ---------------------------------------------------------------------------
+# (g) a queued waiter whose manifest was never written is dropped, not promoted
+# ---------------------------------------------------------------------------
+
+
+def _seed_raw_manifest(run_id, payload):
+    """Write raw manifest bytes directly (bypassing validation) to seed a malformed record."""
+    from issueforge import store
+
+    path = store.manifest_path(run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+
+
+def _seed_many_queued(run_ids):
+    """Seed many valid ``queued`` manifests + a queue of them under ONE lock (fast bulk seed)."""
+    from issueforge import store
+
+    s = store.RunStore()
+    with s.locked():
+        for run_id in run_ids:
+            s.write_record_unlocked(run_id, {"run_id": run_id, "status": "queued"}, create=True)
+        s.write_queue_unlocked({"active": None, "queue": list(run_ids)})
+
+
+def test_reconcile_drops_a_queued_waiter_whose_manifest_is_missing(isolated_state_home):
+    """A queued waiter whose manifest write was torn (an orphan waiter) is dropped by reconcile — never promoted to active, never crashing the next admission on a phantom.
+
+    technical (contract): with queue.json seeded {"active":None,"queue":["run-phantom"]} and NO
+    manifest for run-phantom (the torn state after a waiter's queue append crashed before its manifest
+    write), store.RunStore().reconcile() leaves read_queue() == {"active":None,"queue":[]},
+    manifest_path("run-phantom") still absent, and the queue recoverable.
+    """
+    from issueforge import store
+
+    _seed_queue(None, ["run-phantom"])
+    assert not store.manifest_path("run-phantom").exists()
+
+    store.RunStore().reconcile()
+
+    q = store.RunStore().read_queue()
+    assert q == {"active": None, "queue": []}
+    assert not store.manifest_path("run-phantom").exists()
+    _assert_recoverable(q)
+
+
+# ---------------------------------------------------------------------------
+# (h) a queued waiter whose manifest is terminal is dropped, not resurrected
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_drops_a_queued_waiter_whose_manifest_is_terminal(isolated_state_home):
+    """A queued FIFO entry whose manifest is already terminal is dropped by reconcile — never re-marked running and re-dispatched (no resurrection of a finished run).
+
+    technical (contract): with a live manifest for run-live (status "running"), a terminal manifest
+    for run-old-done (status "completed"), and queue.json {"active":"run-live","queue":
+    ["run-old-done"]}, store.RunStore().reconcile() leaves read_queue() == {"active":"run-live",
+    "queue":[]} (waiter dropped, active untouched), read("run-old-done")["status"] still "completed"
+    (untouched), and the queue recoverable.
+    """
+    from issueforge import store
+
+    _seed_manifest("run-live", "running")
+    _seed_manifest("run-old-done", "completed")
+    _seed_queue("run-live", ["run-old-done"])
+
+    store.RunStore().reconcile()
+
+    q = store.RunStore().read_queue()
+    assert q == {"active": "run-live", "queue": []}
+    assert store.RunStore().read("run-old-done")["status"] == "completed"
+    _assert_recoverable(q)
+
+
+# ---------------------------------------------------------------------------
+# (i) a long persistent FIFO drains fully without blowing the recursion limit
+# ---------------------------------------------------------------------------
+
+
+def test_recovery_drains_a_long_persistent_fifo_without_recursionerror(
+    make_git_repo, isolated_state_home
+):
+    """A crash-recovery of a very long queue drains iteratively: a 1200-deep FIFO of valid waiters runs to completion on the next admission without a per-waiter recursion frame blowing the stack.
+
+    technical (contract): with 1200 valid queued manifests seeded as queue.json {"active":None,
+    "queue":[run-w0000..run-w1199]}, engine.run("DandD#148", issue_open=lambda s,n:True,
+    new_run_id=lambda:"run-new") drains every waiter (no RecursionError) -> read(run-w0000)/
+    read(run-w1199)/read(run-new) all "completed"; read_queue() == {"active":None,"queue":[]}.
+    """
+    from issueforge import engine, store
+
+    _register(make_git_repo)
+    waiters = [f"run-w{i:04d}" for i in range(1200)]
+    _seed_many_queued(waiters)
+
+    engine.run("DandD#148", issue_open=lambda s, n: True, new_run_id=lambda: "run-new")
+
+    assert store.RunStore().read(waiters[0])["status"] == "completed"
+    assert store.RunStore().read(waiters[-1])["status"] == "completed"
+    assert store.RunStore().read("run-new")["status"] == "completed"
+    q = store.RunStore().read_queue()
+    assert q == {"active": None, "queue": []}
+    _assert_recoverable(q)
+
+
+# ---------------------------------------------------------------------------
+# (j) a malformed/unknown-status active manifest is not treated as a live run
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_does_not_treat_a_malformed_active_manifest_as_live(isolated_state_home):
+    """An active slot pointing at a manifest with an unknown/invalid status is not silently declared live — reconcile frees the slot (quarantine) rather than leaving a malformed record wedging admission, and never mutates the bad manifest.
+
+    technical (contract): with a raw manifest for run-bad at an unknown status "bogus" (one
+    validate_record rejects) and queue.json {"active":"run-bad","queue":[]},
+    store.RunStore().reconcile() leaves read_queue() == {"active":None,"queue":[]}, the run-bad
+    manifest bytes byte-for-byte unchanged, and the queue recoverable.
+    """
+    from issueforge import store
+
+    _seed_raw_manifest("run-bad", json.dumps({"run_id": "run-bad", "status": "bogus"}))
+    _seed_queue("run-bad", [])
+    before = store.manifest_path("run-bad").read_bytes()
+
+    store.RunStore().reconcile()
+
+    q = store.RunStore().read_queue()
+    assert q == {"active": None, "queue": []}
+    assert store.manifest_path("run-bad").read_bytes() == before
     _assert_recoverable(q)
