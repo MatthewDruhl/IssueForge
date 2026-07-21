@@ -478,3 +478,177 @@ def test_provision_environment_delegates_to_the_provisioner_seam(tmp_path):
     assert calls == [(tmp_path / "wt", {"pytest": "8.3"})]
     assert handle.network is False
     assert handle.interpreter == sys.executable
+
+
+# ======================================================================
+# Issue #58 — S6 hardening: adversarial tests reproducing the 14 Codex-found
+# defects the happy-path S6 suite missed. Each is PENDING until the #58 build.
+# ======================================================================
+
+
+# ===== #58 defect #10 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
+    """The authoritative baseline RUN executes with OS-level network denial (a container with
+    ``--network none``), enforced by the executor — not merely recorded on the handle, NOT fakeable
+    by an in-interpreter ``socket`` stub, and NOT satisfiable by a merely-broken environment.
+
+    Attribution is pinned by TWO baseline tests: ``test_local_compute`` spawns a ``-S`` child that
+    does pure local work (must PASS — it proves the interpreter + subprocess machinery work inside
+    the authoritative run), and ``test_child_egress`` spawns a ``-S`` child that attempts real
+    outbound egress (must FAIL only because the OS denied it). The ``-S`` flag (site disabled) means
+    an injected ``sitecustomize`` / in-interpreter ``socket`` monkeypatch cannot reach either child.
+    A broken env (invalid interpreter, patched ``subprocess.run``, missing stdlib) fails BOTH
+    children, so the compute node stops passing and the assertion fails — a broken environment can
+    never masquerade as network denial. Only real OS-level denial makes egress fail while compute
+    still passes.
+
+    Documented limitation (an honest skip, never a weakened assertion): OS-level denial can only be
+    verified where the mechanism exists, so the test skips when the docker daemon is unreachable or
+    when this host has no outbound egress at all (denial would be indistinguishable from an
+    already-down network). IssueForge CI runs on ubuntu-latest, which has both, so the gate is
+    enforced there; a no-docker dev box cannot verify this OS property and skips.
+
+    technical (contract): the target has two tests, each spawning a ``-S`` child — ``test_local_compute``
+    runs ``print(2 + 2)`` and asserts stdout "4"; ``test_child_egress`` runs
+    ``socket.create_connection(('1.1.1.1', 53), timeout=5).close()`` and asserts returncode 0. Under
+    ``_allowed_provisioner`` (network=True, host interpreter) run_baseline -> BaselineStatus.GREEN
+    (both pass). Under ``provisioner=None`` (the REAL default authoritative path) run_baseline ->
+    BaselineStatus.BEHAVIORAL_RED, executed == 2, the ``test_local_compute`` call node PASSED and the
+    ``test_child_egress`` call node FAILED. Today the default path applies no OS-level denial, egress
+    connects, and the authoritative run is GREEN — the reproduction.
+    """
+    import os
+    import subprocess
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus, Outcome
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    # Documented skip #1: the docker daemon is unreachable, so OS-level denial cannot be enforced.
+    try:
+        info = subprocess.run(["docker", "info"], capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        info = None
+    if info is None or info.returncode != 0:
+        pytest.skip(
+            "docker daemon unreachable; OS-level network denial cannot be enforced/verified"
+        )
+
+    # Two -S children (no site, no sitecustomize): a local-compute probe that must PASS and an
+    # egress probe that must FAIL. Their divergence is what proves DENIAL rather than a broken env.
+    repo = tmp_path / "netdeny"
+    (repo / "tests").mkdir(parents=True)
+    (repo / "tests" / "test_target.py").write_text(
+        textwrap.dedent(
+            """
+            import subprocess
+            import sys
+
+            def test_local_compute():
+                # Pure local work in a -S child: proves the interpreter + subprocess machinery run.
+                # A broken authoritative env fails THIS too, so denial cannot be confused with it.
+                result = subprocess.run(
+                    [sys.executable, "-S", "-c", "print(2 + 2)"],
+                    capture_output=True,
+                    text=True,
+                )
+                assert result.returncode == 0 and result.stdout.strip() == "4"
+
+            def test_child_egress():
+                # Real outbound egress in a -S child: only OS-level denial makes THIS fail while
+                # test_local_compute still passes.
+                probe = (
+                    "import socket; "
+                    "socket.create_connection(('1.1.1.1', 53), timeout=5).close()"
+                )
+                result = subprocess.run([sys.executable, "-S", "-c", probe])
+                assert result.returncode == 0
+            """
+        )
+    )
+    baseline = ["-m", "pytest"]
+    adapter = PytestAdapter()
+
+    def _allowed_provisioner(worktree, frozen_deps=None):
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+        return SimpleNamespace(
+            interpreter=sys.executable,
+            env=env,
+            artifact_dir=Path(worktree).parent / "if-allowed",
+            network=True,
+        )
+
+    # Allowed-network control proves BOTH children run and egress is reachable here; if not, denial
+    # is indistinguishable from an already-down network. Documented skip #2 — never weakened.
+    control = verify.run_baseline(
+        repo, baseline, adapter=adapter, provisioner=_allowed_provisioner, timeout=120
+    )
+    if control.status is not BaselineStatus.GREEN:
+        pytest.skip("outbound egress not reachable in this environment; cannot prove denial")
+
+    # The REAL default authoritative path must deny egress at the OS level. Requiring the compute
+    # node PASSED and the egress node FAILED (not merely "not GREEN") means a broken environment —
+    # which fails compute too — can never masquerade as network denial.
+    authoritative = verify.run_baseline(
+        repo, baseline, adapter=adapter, provisioner=None, timeout=600
+    )
+    assert authoritative.status is BaselineStatus.BEHAVIORAL_RED
+    assert authoritative.executed == 2
+    calls = {n.nodeid: n for n in authoritative.nodes if n.phase == "call"}
+    compute = next((n for nid, n in calls.items() if "test_local_compute" in nid), None)
+    egress = next((n for nid, n in calls.items() if "test_child_egress" in nid), None)
+    assert compute is not None and compute.outcome is Outcome.PASSED
+    assert egress is not None and egress.outcome is Outcome.FAILED
+
+
+# ===== #58 defect #11 =====
+@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
+def test_default_provisioning_builds_target_dep_env_and_artifact_dir(tmp_path):
+    """Default provisioning must build the target's dependency environment: install the frozen
+    manifest so a pinned dep the baseline imports is importable in the authoritative interpreter,
+    and create the artifact directory it hands back (never a computed-but-never-made phantom path).
+
+    technical (contract): PytestAdapter().provision_environment(worktree, {"platformdirs":
+    "4.10.0"}) on the DEFAULT path (no injected provisioner) returns a handle whose
+    .artifact_dir is a real EXISTING directory (Path(handle.artifact_dir).is_dir() is True) — the
+    current impl computes Path(state_root())/"artifacts"/<uuid> but never creates it, so this is
+    False today. The authoritative interpreter (handle.interpreter, != sys.executable) carries the
+    frozen manifest: running it as `-c "import platformdirs, sys; sys.stdout.write(
+    platformdirs.__version__)"` exits 0 and prints exactly "4.10.0". platformdirs is NOT a
+    transitive dependency of pytest/pytest-reportlog, so its importability in the SEPARATE venv
+    proves the frozen manifest was installed there, not leaked from the host interpreter.
+    """
+    import subprocess as _sp
+    import sys as _sys
+    from pathlib import Path
+
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    worktree = tmp_path / "target"
+    worktree.mkdir()
+
+    handle = PytestAdapter().provision_environment(worktree, {"platformdirs": "4.10.0"})
+
+    # The artifact dir the handle advertises must actually exist (created + verified), never a
+    # path that was computed and handed back without being made.
+    artifact_dir = Path(handle.artifact_dir)
+    assert artifact_dir.is_dir(), f"artifact_dir advertised but never created: {artifact_dir}"
+
+    # The authoritative interpreter is a SEPARATE venv that must carry the frozen manifest; a
+    # dep that is not a pytest transitive proves the manifest was installed, not host-leaked.
+    interpreter = str(handle.interpreter)
+    assert interpreter != _sys.executable, "authoritative run used the HOST interpreter"
+    proc = _sp.run(
+        [
+            interpreter,
+            "-c",
+            "import platformdirs, sys; sys.stdout.write(platformdirs.__version__)",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"frozen dep not importable in authoritative env: {proc.stderr}"
+    assert proc.stdout.strip() == "4.10.0"
