@@ -460,6 +460,13 @@ class _Linter(ast.NodeVisitor):
         self.generic_visit(node)
         self.control_depth[-1] -= 1
 
+    def visit_Match(self, node: ast.Match) -> None:
+        # Each `case` body is a conditional branch: a WriteSeam bound inside one is not provably
+        # the value at a later write, so raise control depth for the whole match (#40).
+        self.control_depth[-1] += 1
+        self.generic_visit(node)
+        self.control_depth[-1] -= 1
+
     def visit_Global(self, node: ast.Global) -> None:
         # A `global name` makes the name refer to the module global, not a function-local: never
         # trustable as a local seam. Record it and clear any trust (#40).

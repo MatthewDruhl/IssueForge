@@ -848,3 +848,18 @@ def test_class6_global_declared_seam_write_text_flagged_guard(tmp_path: Path) ->
         "    seam.write_text(target, 'x')\n"
     )
     assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_match_case_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A `seam = WriteSeam()` inside a `case` body is conditional — trust is not granted."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, command):\n"
+        "    match command:\n"
+        "        case 'go':\n"
+        "            seam = WriteSeam()\n"
+        "        case _:\n"
+        "            seam = target\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
