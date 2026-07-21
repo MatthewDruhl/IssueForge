@@ -489,20 +489,30 @@ def test_provision_environment_delegates_to_the_provisioner_seam(tmp_path):
 # ===== #58 defect #10 =====
 @pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
-    """The authoritative baseline run has its network cut off at the OS level, not merely flagged.
+    """The authoritative baseline RUN executes with OS-level network denial (a container with
+    ``--network none``), enforced by the executor — not merely recorded on the handle, and NOT
+    fakeable by stubbing ``socket`` in the interpreter.
 
-    A baseline test that opens an outbound TCP connection succeeds when the network is allowed
-    but FAILS inside the authoritative run, because the run executes with OS-level network denial
-    (a Docker container with ``--network none``). ``network=False`` must be enforced by the
-    executor, not just recorded on the handle.
+    The baseline's egress probe runs in a CHILD interpreter launched with ``-S`` (site disabled),
+    so an injected ``sitecustomize`` (or any in-interpreter ``socket`` monkeypatch) cannot intercept
+    it — only real OS-level denial makes the child's connect fail. Asserting ``executed == 1`` plus
+    a call-phase ``FAILED`` (not merely "not GREEN") means a provisioning crash — which yields a
+    different status and ``executed == 0`` — can never masquerade as network denial, so the xfail
+    cannot mask a provisioning failure.
 
-    technical (contract): a target whose only test does
-    ``socket.create_connection(("1.1.1.1", 53), timeout=3)``. Under an allowed-network control
-    (an injected provisioner with ``network=True`` on the host interpreter) run_baseline ->
-    status is BaselineStatus.GREEN (the connect succeeds, proving reachability). Under the REAL
-    default authoritative path (``provisioner=None``) run_baseline -> status is
-    BaselineStatus.BEHAVIORAL_RED, executed == 1, and a call-phase node carries Outcome.FAILED
-    (the connect was denied at the OS level). Skip ONLY when the docker daemon is unreachable.
+    Skips (documented, never a weakened assertion) ONLY when the docker daemon is unreachable, or
+    when outbound egress is not reachable in this environment at all (so denial cannot be told apart
+    from an already-down network). On a docker-capable host with egress (CI ubuntu-latest included)
+    the test runs and, on today's impl, reproduces the defect.
+
+    technical (contract): the target's one test spawns
+    ``[sys.executable, "-S", "-c", "import socket;
+    socket.create_connection(('1.1.1.1', 53), timeout=5).close()"]`` and asserts returncode == 0
+    (egress reachable). Under ``_allowed_provisioner`` (network=True, host interpreter) run_baseline
+    -> BaselineStatus.GREEN. Under ``provisioner=None`` (the REAL default authoritative path)
+    run_baseline -> BaselineStatus.BEHAVIORAL_RED, executed == 1, and a call-phase node carries
+    Outcome.FAILED. Today the default path applies no OS-level denial, the child connects, and the
+    authoritative run is GREEN — the reproduction.
     """
     import os
     import subprocess
@@ -513,23 +523,33 @@ def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
     from issueforge.adapters.base import BaselineStatus, Outcome
     from issueforge.adapters.pytest_adapter import PytestAdapter
 
-    # Documented skip ONLY when the docker daemon is unreachable — never a weakened assertion.
+    # Documented skip #1: the docker daemon is unreachable, so OS-level denial cannot be enforced.
     try:
-        info = subprocess.run(["docker", "info"], capture_output=True, timeout=30)
+        info = subprocess.run(["docker", "info"], capture_output=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
         info = None
     if info is None or info.returncode != 0:
-        pytest.skip("docker daemon unavailable; OS-level network denial cannot be verified")
+        pytest.skip(
+            "docker daemon unreachable; OS-level network denial cannot be enforced/verified"
+        )
 
+    # The egress probe runs in a CHILD interpreter with -S (no site, no sitecustomize), so an
+    # in-interpreter socket stub cannot fake the connection failure — only real OS denial can.
     repo = tmp_path / "netdeny"
     (repo / "tests").mkdir(parents=True)
     (repo / "tests" / "test_target.py").write_text(
         textwrap.dedent(
             """
-            import socket
+            import subprocess
+            import sys
 
-            def test_outbound_connect():
-                socket.create_connection(("1.1.1.1", 53), timeout=3).close()
+            def test_child_egress_reaches_network():
+                probe = (
+                    "import socket; "
+                    "socket.create_connection(('1.1.1.1', 53), timeout=5).close()"
+                )
+                result = subprocess.run([sys.executable, "-S", "-c", probe])
+                assert result.returncode == 0
             """
         )
     )
@@ -545,15 +565,16 @@ def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
             network=True,
         )
 
-    # Allowed-network control: proves the connect is reachable in this environment; if it is not,
-    # denial cannot be meaningfully proven, so skip rather than weaken the assertion.
+    # Allowed-network control proves egress is reachable here; if not, denial is indistinguishable
+    # from an already-down network. Documented skip #2 — never a weakened assertion.
     control = verify.run_baseline(
         repo, baseline, adapter=adapter, provisioner=_allowed_provisioner, timeout=120
     )
     if control.status is not BaselineStatus.GREEN:
-        pytest.skip("outbound TCP connect not reachable under allowed network; cannot prove denial")
+        pytest.skip("outbound egress not reachable in this environment; cannot prove denial")
 
-    # Authoritative run via the REAL default path — its network must be denied at the OS level.
+    # The REAL default authoritative path must deny egress at the OS level. The call-phase FAILED
+    # requirement (not merely "not GREEN") means a provisioning crash cannot pass this as denial.
     authoritative = verify.run_baseline(
         repo, baseline, adapter=adapter, provisioner=None, timeout=600
     )

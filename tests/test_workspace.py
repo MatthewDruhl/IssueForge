@@ -613,7 +613,11 @@ def test_byte_isolation_proof_holds_on_linked_worktree_checkout(tmp_path):
     assert (linked / ".git").is_file()  # precondition: a linked-worktree .git is a FILE
 
     def _index_mutating_add(checkout_dir, worktree_path, target_sha):
-        # Stage a file into the linked checkout's OWN index (its real index lives in the gitdir the
+        # Create the REAL target worktree so the existence proof (defect #4) is satisfied — this
+        # forces the ONLY remaining reason to reject to be the detected index mutation (defect #5),
+        # not a missing worktree. A #4 fix alone must NOT green this test.
+        _git(Path(checkout_dir), "worktree", "add", "--detach", str(worktree_path), target_sha)
+        # Mutate the SOURCE linked checkout's OWN index (its real index lives in the gitdir the
         # gitfile points at, not at <checkout>/.git/index).
         (Path(checkout_dir) / "sneaked.txt").write_text("x\n")
         _git(Path(checkout_dir), "add", "sneaked.txt")
@@ -621,7 +625,12 @@ def test_byte_isolation_proof_holds_on_linked_worktree_checkout(tmp_path):
     result = workspace.create_isolated_worktree(
         linked, sha, worktrees_root=tmp_path / "wtroot", add=_index_mutating_add
     )
+    # ok=False must be caused by the DETECTED index mutation. A correct #5 fix resolves the real
+    # index via `git rev-parse --git-path index` (reads succeed on a gitfile checkout) and sees the
+    # staged sneaked.txt; the reason must name the index change, not a missing/absent worktree.
     assert result.ok is False and result.isolated is False and result.reason
+    assert (tmp_path / "wtroot").exists()  # the target worktree WAS really created
+    assert "index" in result.reason.lower()
 
 
 # ===== #58 defect #6 =====
