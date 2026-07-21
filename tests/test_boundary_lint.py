@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from issueforge.boundary import check_source
@@ -562,7 +561,6 @@ def test_class6_rename_keyword_form_flagged(tmp_path: Path) -> None:
 _WRITE_TEXT_RULE = "write-surface: .write_text() outside the IO seam"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#40)")
 def test_class6_process_style_plain_seam_write_is_clean(tmp_path: Path) -> None:
     """(#40) The plain seam.write_text(target, payload) form process.run wants (no getattr) passes.
 
@@ -581,7 +579,6 @@ def test_class6_process_style_plain_seam_write_is_clean(tmp_path: Path) -> None:
     assert lint(tmp_path, code) == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#40)")
 def test_class6_write_text_on_qualified_writeseam_is_exempt(tmp_path: Path) -> None:
     """(#40) Provable-binding form 2: a receiver bound to the qualified io.WriteSeam() constructor."""
     code = (
@@ -593,7 +590,6 @@ def test_class6_write_text_on_qualified_writeseam_is_exempt(tmp_path: Path) -> N
     assert lint(tmp_path, code) == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#40)")
 def test_class6_write_text_on_annotated_writeseam_is_exempt(tmp_path: Path) -> None:
     """(#40) Provable-binding form 3: an annotated construction `seam: WriteSeam = WriteSeam()` (AnnAssign).
 

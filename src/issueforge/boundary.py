@@ -132,6 +132,8 @@ class _Linter(ast.NodeVisitor):
         self.binding_scopes: list[dict[str, str | None]] = [{}]
         self.path_names = {"Path"}
         self.command_scopes: list[dict[str, bool]] = [{}]
+        # class 6 (#40): names provably bound to WriteSeam()/io.WriteSeam() in each scope.
+        self.seam_scopes: list[dict[str, bool]] = [{}]
 
     def _add(self, node: ast.AST, rule: str, detail: str) -> None:
         self.violations.append(f"{self.filename}:{node.lineno}: {rule}: {detail}")
@@ -246,6 +248,8 @@ class _Linter(ast.NodeVisitor):
         elif isinstance(node.func, ast.Attribute):
             attr = node.func.attr
             if attr in _WRITE_METHODS:
+                if attr == "write_text" and self._is_trusted_seam(node.func.value):
+                    return  # #40: sanctioned WriteSeam.write_text is exempt
                 self._add(node, "write-surface", f".{attr}() outside the IO seam")
             elif attr in ("rename", "replace") and len(node.args) + len(node.keywords) == 1:
                 # Path.rename(target) / Path.replace(target); str.replace needs >= 2 args.
@@ -318,11 +322,13 @@ class _Linter(ast.NodeVisitor):
             )
             self._record_rebinding(node.target.id, node.value)
             self.command_scopes[-1][node.target.id] = is_command
+            self.seam_scopes[-1][node.target.id] = self._is_writeseam_construction(node.value)
         self.generic_visit(node)
 
     def _record_assignment(self, target: ast.AST, value: ast.AST | None) -> None:
         if isinstance(target, ast.Name):
             self.command_scopes[-1][target.id] = False
+            self.seam_scopes[-1][target.id] = self._is_writeseam_construction(value)
             self._record_rebinding(target.id, value)
         elif (
             isinstance(target, (ast.Tuple, ast.List))
@@ -394,7 +400,9 @@ class _Linter(ast.NodeVisitor):
             parameter_names.add(node.args.kwarg.arg)
         self.command_scopes.append(dict.fromkeys(parameter_names, False))
         self.binding_scopes.append(dict.fromkeys(parameter_names))
+        self.seam_scopes.append(dict.fromkeys(parameter_names, False))
         self.generic_visit(node)
+        self.seam_scopes.pop()
         self.binding_scopes.pop()
         self.command_scopes.pop()
 
@@ -484,3 +492,15 @@ class _Linter(ast.NodeVisitor):
             if name in scope:
                 return scope[name]
         return False
+
+    # --- class 6 (#40): receiver-aware WriteSeam.write_text exemption ---------
+    def _is_writeseam_construction(self, node: ast.AST | None) -> bool:
+        """True only for a literal WriteSeam()/io.WriteSeam() call (a provable seam)."""
+        return (
+            isinstance(node, ast.Call)
+            and self._canonical(ast.unparse(node.func)) == "issueforge.io.WriteSeam"
+        )
+
+    def _is_trusted_seam(self, node: ast.AST) -> bool:
+        """True when ``node`` is a local name provably bound to a WriteSeam in the CURRENT scope."""
+        return isinstance(node, ast.Name) and self.seam_scopes[-1].get(node.id, False)
