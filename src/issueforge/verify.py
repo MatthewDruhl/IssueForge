@@ -358,7 +358,7 @@ def _execute_baseline(
 
 
 _DOCKER_INSPECT_TIMEOUT = 60.0
-_DOCKER_PULL_TIMEOUT = 600.0
+_DOCKER_PULL_TIMEOUT = 300.0
 # In-container mount points (absolute paths are composed inline; a bare ``/``-leading literal here
 # would trip the class-4 checkout-relative-default lint).
 _CONTAINER_WORKDIR = "if-work"
@@ -367,21 +367,26 @@ _CONTAINER_SITE_PACKAGES = "if-deps"
 
 
 def _ensure_base_image(image: str) -> None:
-    """Ensure the base ``python`` image is present, pulling it once if absent.
+    """Ensure the base ``python`` image is present, pulling it once if genuinely absent.
 
-    ``docker image inspect`` is a cheap presence probe; only a cache miss triggers a ``docker pull``
-    (which uses the DAEMON's network — legitimate provisioning, distinct from the container run that
-    is denied). The pull runs BEFORE the ``--network none`` container, so denial never blocks it. A
-    failed pull raises so ``run_baseline`` pauses with a typed non-green record rather than executing
-    an unverifiable run.
+    ``docker image inspect`` is a cheap presence probe; only a COMPLETED inspect that reports absence
+    triggers a ``docker pull`` (which uses the DAEMON's network — legitimate provisioning, distinct
+    from the container run that is denied). The pull runs BEFORE the ``--network none`` container, so
+    denial never blocks it. An inspect that TIMES OUT means an unresponsive daemon, not a cache miss —
+    it fails fast rather than cascading into a full-length pull that would only fail closed minutes
+    later. A failed/timed-out pull raises so ``run_baseline`` pauses with a typed non-green record
+    rather than executing an unverifiable run.
     """
     inspect = process.run(
         ["docker", "image", "inspect", image],
         cwd=Path(state_root()),
         timeout=_DOCKER_INSPECT_TIMEOUT,
     )
+    if inspect.timed_out:
+        raise RuntimeError("docker image inspect timed out; daemon is unresponsive")
     if inspect.returncode == 0:
         return
+    # Inspect completed and reported absence -> pull once, on a bounded timeout.
     pull = process.run(
         ["docker", "pull", image],
         cwd=Path(state_root()),
@@ -438,8 +443,9 @@ def _execute_denied_network(
     timeout: float,
 ) -> process.CommandResult:
     """Execute the baseline inside ``docker run --network none``, bind-mounting the worktree, the
-    provisioned venv's site-packages, and the out-of-repo report directory, so the run has NO network
-    at the OS level while its deps are importable and its report-log is written back to the host.
+    provisioned venv's site-packages, and the out-of-repo report directory, so the run has no
+    host/external IP egress at the OS level (loopback remains inside the container) while its deps are
+    importable and its report-log is written back to the host.
 
     The docker argv is a plain list handed to the ``process.run`` seam (which wraps it in the typed
     ``boundary.Command`` before it reaches subprocess) — the same provenance path every engine
