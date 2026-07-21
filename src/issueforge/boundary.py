@@ -139,6 +139,13 @@ class _Linter(ast.NodeVisitor):
         # module-level seam never exempts) and for lambda / comprehension scopes (so a seam
         # shadowed by a lambda param or comprehension target is never exempt inside it) (#40).
         self.scope_is_function: list[bool] = [False]
+        # Control-flow nesting depth within the current scope: 0 only at a scope's top level.
+        # A `seam = WriteSeam()` under an `if`/`try`/`for`/`while`/`with` body is CONDITIONAL —
+        # not provably the value at the write site — so trust is granted only at depth 0 (#40).
+        self.control_depth: list[int] = [0]
+        # Names declared `global`/`nonlocal` in the current scope: such a name is not a provable
+        # function-LOCAL binding, so it can never be a trusted seam (#40).
+        self.global_nonlocal_names: list[set[str]] = [set()]
 
     def _add(self, node: ast.AST, rule: str, detail: str) -> None:
         self.violations.append(f"{self.filename}:{node.lineno}: {rule}: {detail}")
@@ -338,9 +345,17 @@ class _Linter(ast.NodeVisitor):
         A destructuring/tuple/list target, or any binder whose value is not a provable
         WriteSeam()/io.WriteSeam() construction, CLEARS trust for every name it binds — the lint
         fails toward flagging, so a name bound by anything but a proven construction is untrusted.
+        Trust is granted ONLY for an UNCONDITIONAL binding (``control_depth == 0`` — not nested in
+        an ``if``/``try``/``for``/``while``/``with`` body, where the WriteSeam value is not
+        guaranteed at the write site) whose name is not declared ``global``/``nonlocal`` (#40).
         """
         if isinstance(target, ast.Name):
-            self.seam_scopes[-1][target.id] = self._is_writeseam_construction(value)
+            provable = (
+                self._is_writeseam_construction(value)
+                and self.control_depth[-1] == 0
+                and target.id not in self.global_nonlocal_names[-1]
+            )
+            self.seam_scopes[-1][target.id] = provable
         else:
             self._clear_seam(target)
 
@@ -407,7 +422,11 @@ class _Linter(ast.NodeVisitor):
     def visit_For(self, node: ast.For) -> None:
         self._record_assignment(node.target, None)
         self._clear_seam(node.target)
+        # The loop body is conditional (may run zero times): a WriteSeam bound inside it is not
+        # provably the value afterward, so raise control depth for the whole node (#40).
+        self.control_depth[-1] += 1
         self.generic_visit(node)
+        self.control_depth[-1] -= 1
 
     visit_AsyncFor = visit_For
 
@@ -416,9 +435,44 @@ class _Linter(ast.NodeVisitor):
             if item.optional_vars is not None:
                 self._record_assignment(item.optional_vars, None)
                 self._clear_seam(item.optional_vars)
+        self.control_depth[-1] += 1
         self.generic_visit(node)
+        self.control_depth[-1] -= 1
 
     visit_AsyncWith = visit_With
+
+    def visit_If(self, node: ast.If) -> None:
+        # A binding inside either branch is conditional: raise control depth so a WriteSeam bound
+        # under `if`/`else` is not trusted at the write site (#40).
+        self.control_depth[-1] += 1
+        self.generic_visit(node)
+        self.control_depth[-1] -= 1
+
+    def visit_Try(self, node: ast.Try) -> None:
+        self.control_depth[-1] += 1
+        self.generic_visit(node)
+        self.control_depth[-1] -= 1
+
+    visit_TryStar = visit_Try
+
+    def visit_While(self, node: ast.While) -> None:
+        self.control_depth[-1] += 1
+        self.generic_visit(node)
+        self.control_depth[-1] -= 1
+
+    def visit_Global(self, node: ast.Global) -> None:
+        # A `global name` makes the name refer to the module global, not a function-local: never
+        # trustable as a local seam. Record it and clear any trust (#40).
+        for name in node.names:
+            self.global_nonlocal_names[-1].add(name)
+            self.seam_scopes[-1][name] = False
+        self.generic_visit(node)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        for name in node.names:
+            self.global_nonlocal_names[-1].add(name)
+            self.seam_scopes[-1][name] = False
+        self.generic_visit(node)
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         if node.name:
@@ -442,7 +496,11 @@ class _Linter(ast.NodeVisitor):
         self.binding_scopes.append(dict.fromkeys(parameter_names))
         self.seam_scopes.append(dict.fromkeys(parameter_names, False))
         self.scope_is_function.append(True)
+        self.control_depth.append(0)
+        self.global_nonlocal_names.append(set())
         self.generic_visit(node)
+        self.global_nonlocal_names.pop()
+        self.control_depth.pop()
         self.scope_is_function.pop()
         self.seam_scopes.pop()
         self.binding_scopes.pop()
@@ -462,7 +520,11 @@ class _Linter(ast.NodeVisitor):
             parameter_names.add(node.args.kwarg.arg)
         self.seam_scopes.append(dict.fromkeys(parameter_names, False))
         self.scope_is_function.append(False)
+        self.control_depth.append(0)
+        self.global_nonlocal_names.append(set())
         self.generic_visit(node)
+        self.global_nonlocal_names.pop()
+        self.control_depth.pop()
         self.scope_is_function.pop()
         self.seam_scopes.pop()
 
@@ -474,7 +536,11 @@ class _Linter(ast.NodeVisitor):
             targets.update(self._bound_names(generator.target))
         self.seam_scopes.append(dict.fromkeys(targets, False))
         self.scope_is_function.append(False)
+        self.control_depth.append(0)
+        self.global_nonlocal_names.append(set())
         self.generic_visit(node)
+        self.global_nonlocal_names.pop()
+        self.control_depth.pop()
         self.scope_is_function.pop()
         self.seam_scopes.pop()
 

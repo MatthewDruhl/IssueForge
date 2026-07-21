@@ -804,3 +804,47 @@ def test_class6_comprehension_shadowed_seam_write_text_flagged_guard(tmp_path: P
         "    return [seam.write_text(target, 'x') for seam in seams]\n"
     )
     assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+# --- issue #40 (round 3): unconditional-binding guards from the Codex confirmation ------------
+# Trust is granted ONLY for an UNCONDITIONAL binding — one not nested under an if/try/for/while/
+# with body, where the WriteSeam value is not guaranteed at the write site — and never for a name
+# declared global/nonlocal. These pin the three shapes round 2 still exempted.
+
+
+def test_class6_conditional_if_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A `seam = WriteSeam()` under an `if` is conditional — not provably a WriteSeam later."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, flag):\n"
+        "    if flag:\n"
+        "        seam = WriteSeam()\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_try_body_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A `seam = WriteSeam()` inside a `try` body is conditional — trust is not granted."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target):\n"
+        "    try:\n"
+        "        seam = WriteSeam()\n"
+        "    finally:\n"
+        "        pass\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_global_declared_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A `global seam; seam = WriteSeam()` names the module global, not a local — flagged."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target):\n"
+        "    global seam\n"
+        "    seam = WriteSeam()\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
