@@ -29,8 +29,6 @@ then the exact golden values under ``technical (contract):``.
 
 from __future__ import annotations
 
-import pytest
-
 _TERMINAL = {"completed", "cancelled", "failed"}
 
 
@@ -77,7 +75,6 @@ def _register(make_git_repo, alias="DandD"):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#48)")
 def test_reconcile_drops_an_orphan_active_whose_run_has_no_manifest(isolated_state_home):
     """A crash between the fail-safe queue write and the manifest write leaves active pointing at a run with no manifest; reconcile drops that orphan and never fabricates a manifest for it.
 
@@ -104,7 +101,6 @@ def test_reconcile_drops_an_orphan_active_whose_run_has_no_manifest(isolated_sta
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#48)")
 def test_reconcile_clears_a_slot_stuck_on_a_completed_run(isolated_state_home):
     """A crash between the completion manifest write and the slot release leaves active pointing at an already-completed run; reconcile clears that stuck-occupied slot.
 
@@ -132,7 +128,6 @@ def test_reconcile_clears_a_slot_stuck_on_a_completed_run(isolated_state_home):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#48)")
 def test_reconcile_is_a_noop_on_a_consistent_store_and_is_idempotent(isolated_state_home):
     """Reconcile changes nothing on an already-consistent store, and running it twice equals running it once — so read-only paths that reconcile never mutate a healthy store.
 
@@ -171,7 +166,6 @@ def test_reconcile_is_a_noop_on_a_consistent_store_and_is_idempotent(isolated_st
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#48)")
 def test_admission_after_a_crash_reconciles_and_admits_a_new_run(
     make_git_repo, isolated_state_home
 ):
@@ -203,7 +197,6 @@ def test_admission_after_a_crash_reconciles_and_admits_a_new_run(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#48)")
 def test_reconcile_drops_the_orphan_active_but_never_strands_a_valid_waiter(isolated_state_home):
     """Dropping an orphan active must not throw away a legitimate queued waiter behind it: after reconcile the phantom is gone but the waiter (which has a valid non-terminal manifest) survives — promoted to active OR still queued, never lost.
 
@@ -238,7 +231,6 @@ def test_reconcile_drops_the_orphan_active_but_never_strands_a_valid_waiter(isol
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#48)")
 def test_recovery_preserves_fifo_a_new_run_does_not_jump_a_pre_existing_waiter(
     make_git_repo, isolated_state_home, monkeypatch
 ):

@@ -114,6 +114,28 @@ def _advance_unlocked(s: store.RunStore, run_id: str) -> str | None:
     return next_id
 
 
+def _drain_stranded_waiters(s: store.RunStore) -> None:
+    """Dispatch any waiter left with an empty active slot after a crash-recovery, in FIFO order.
+
+    Normal operation never leaves ``active is None`` while the FIFO is non-empty (a released slot
+    immediately promotes the head). Only :meth:`store.RunStore.reconcile`, having dropped an orphan
+    or stuck active, can strand a valid waiter behind the freed slot. This promotes the head waiter
+    under the lock and dispatches it OUTSIDE the lock; its own release then advances the rest, so the
+    pre-crash queue drains head-first BEFORE the caller admits a new run (recovery preserves order).
+    """
+    while True:
+        with s.locked():
+            queue = s.read_queue()
+            if queue.get("active") is not None or not queue["queue"]:
+                return
+            next_id = queue["queue"].pop(0)
+            queue["active"] = next_id
+            s.write_queue_unlocked(queue)
+            record = s._read_unlocked(next_id)
+            s.write_record_unlocked(next_id, {**record, "status": RUNNING})
+        _dispatch(s, next_id)
+
+
 def _dispatch(s: store.RunStore, next_id: str) -> None:
     """OUTSIDE the lock: emit the promoted run's ``running`` event, run the default stage, finalize.
 
@@ -223,6 +245,15 @@ def run(
 
     run_id = new_run_id()
     s = store.RunStore(secrets=secrets)
+
+    # Startup reconcile (#48): before deciding the active slot, recover the queue from a torn
+    # admission/completion — drop an orphan active or clear a slot stuck on a terminal run — so a
+    # crash cannot wedge admission behind a phantom. This runs ONLY here, at mutating admission
+    # (never in read-only verbs). A crash-recovery can then leave the slot empty with a valid waiter
+    # stranded behind the dropped orphan: drain those pre-existing waiters (FIFO) before admitting
+    # the new run, so a freshly admitted run never jumps a waiter that was already pending.
+    s.reconcile()
+    _drain_stranded_waiters(s)
 
     # Admission is decided INSIDE the store lock: a lock-free check-then-start would admit two.
     with s.locked():

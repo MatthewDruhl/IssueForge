@@ -23,9 +23,13 @@ from typing import Any
 
 from issueforge.io import WriteSeam
 from issueforge.paths import state_root
-from issueforge.state import State
+from issueforge.state import TERMINAL, State
 
 ALLOWED_STATUS = {s.value for s in State}
+
+# The persisted status strings with no outgoing edge: an active slot pointing at one of these is a
+# stuck-occupied slot (finalize wrote the terminal manifest but crashed before releasing the slot).
+_TERMINAL_STATUS = {s.value for s in TERMINAL}
 
 REDACTED = "[REDACTED]"
 
@@ -183,6 +187,36 @@ class RunStore:
     def write_queue_unlocked(self, queue: dict) -> None:
         """Atomically persist the admission queue; caller MUST hold the store lock."""
         self._seam.write_text_atomic(queue_path(), self._dump(queue))
+
+    # --- crash-transactionality: reconcile queue.json against the manifests (#48) -------------
+    def reconcile(self) -> None:
+        """Idempotent, lock-guarded sweep making ``queue.json`` consistent with the manifests.
+
+        Admission and completion each write the manifest and ``queue.json`` under one lock, but the
+        pair is not crash-atomic. This recovers a torn write by clearing a bad active slot:
+
+        - an ORPHAN active — ``queue.active`` names a run with NO manifest (a crash hit between
+          admission's queue-first write and the manifest write);
+        - a STUCK-occupied slot — ``queue.active`` names a run whose manifest is TERMINAL (a crash
+          hit between finalize's terminal manifest write and the slot release).
+
+        In both cases the active slot is released to ``None``; the manifest is never fabricated nor
+        mutated, and the queued waiters are left untouched (a valid waiter is never dropped). A
+        no-op on an already-consistent store: when ``active`` is ``None`` or names an existing
+        non-terminal run, nothing is written and ``queue.json`` stays byte-for-byte unchanged.
+        """
+        with self._lock():
+            queue = self.read_queue()
+            active = queue.get("active")
+            if active is None:
+                return
+            if manifest_path(active).exists():
+                status = self._read_unlocked(active).get("status")
+                if status not in _TERMINAL_STATUS:
+                    return  # consistent: active names an existing, non-terminal run
+            # orphan (no manifest) or stuck-occupied (terminal manifest): free the slot.
+            queue["active"] = None
+            self.write_queue_unlocked(queue)
 
     def _read_unlocked(self, run_id: str) -> dict:
         return json.loads(manifest_path(run_id).read_text(encoding="utf-8"))
