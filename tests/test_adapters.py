@@ -490,29 +490,33 @@ def test_provision_environment_delegates_to_the_provisioner_seam(tmp_path):
 @pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
     """The authoritative baseline RUN executes with OS-level network denial (a container with
-    ``--network none``), enforced by the executor — not merely recorded on the handle, and NOT
-    fakeable by stubbing ``socket`` in the interpreter.
+    ``--network none``), enforced by the executor — not merely recorded on the handle, NOT fakeable
+    by an in-interpreter ``socket`` stub, and NOT satisfiable by a merely-broken environment.
 
-    The baseline's egress probe runs in a CHILD interpreter launched with ``-S`` (site disabled),
-    so an injected ``sitecustomize`` (or any in-interpreter ``socket`` monkeypatch) cannot intercept
-    it — only real OS-level denial makes the child's connect fail. Asserting ``executed == 1`` plus
-    a call-phase ``FAILED`` (not merely "not GREEN") means a provisioning crash — which yields a
-    different status and ``executed == 0`` — can never masquerade as network denial, so the xfail
-    cannot mask a provisioning failure.
+    Attribution is pinned by TWO baseline tests: ``test_local_compute`` spawns a ``-S`` child that
+    does pure local work (must PASS — it proves the interpreter + subprocess machinery work inside
+    the authoritative run), and ``test_child_egress`` spawns a ``-S`` child that attempts real
+    outbound egress (must FAIL only because the OS denied it). The ``-S`` flag (site disabled) means
+    an injected ``sitecustomize`` / in-interpreter ``socket`` monkeypatch cannot reach either child.
+    A broken env (invalid interpreter, patched ``subprocess.run``, missing stdlib) fails BOTH
+    children, so the compute node stops passing and the assertion fails — a broken environment can
+    never masquerade as network denial. Only real OS-level denial makes egress fail while compute
+    still passes.
 
-    Skips (documented, never a weakened assertion) ONLY when the docker daemon is unreachable, or
-    when outbound egress is not reachable in this environment at all (so denial cannot be told apart
-    from an already-down network). On a docker-capable host with egress (CI ubuntu-latest included)
-    the test runs and, on today's impl, reproduces the defect.
+    Documented limitation (an honest skip, never a weakened assertion): OS-level denial can only be
+    verified where the mechanism exists, so the test skips when the docker daemon is unreachable or
+    when this host has no outbound egress at all (denial would be indistinguishable from an
+    already-down network). IssueForge CI runs on ubuntu-latest, which has both, so the gate is
+    enforced there; a no-docker dev box cannot verify this OS property and skips.
 
-    technical (contract): the target's one test spawns
-    ``[sys.executable, "-S", "-c", "import socket;
-    socket.create_connection(('1.1.1.1', 53), timeout=5).close()"]`` and asserts returncode == 0
-    (egress reachable). Under ``_allowed_provisioner`` (network=True, host interpreter) run_baseline
-    -> BaselineStatus.GREEN. Under ``provisioner=None`` (the REAL default authoritative path)
-    run_baseline -> BaselineStatus.BEHAVIORAL_RED, executed == 1, and a call-phase node carries
-    Outcome.FAILED. Today the default path applies no OS-level denial, the child connects, and the
-    authoritative run is GREEN — the reproduction.
+    technical (contract): the target has two tests, each spawning a ``-S`` child — ``test_local_compute``
+    runs ``print(2 + 2)`` and asserts stdout "4"; ``test_child_egress`` runs
+    ``socket.create_connection(('1.1.1.1', 53), timeout=5).close()`` and asserts returncode 0. Under
+    ``_allowed_provisioner`` (network=True, host interpreter) run_baseline -> BaselineStatus.GREEN
+    (both pass). Under ``provisioner=None`` (the REAL default authoritative path) run_baseline ->
+    BaselineStatus.BEHAVIORAL_RED, executed == 2, the ``test_local_compute`` call node PASSED and the
+    ``test_child_egress`` call node FAILED. Today the default path applies no OS-level denial, egress
+    connects, and the authoritative run is GREEN — the reproduction.
     """
     import os
     import subprocess
@@ -533,8 +537,8 @@ def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
             "docker daemon unreachable; OS-level network denial cannot be enforced/verified"
         )
 
-    # The egress probe runs in a CHILD interpreter with -S (no site, no sitecustomize), so an
-    # in-interpreter socket stub cannot fake the connection failure — only real OS denial can.
+    # Two -S children (no site, no sitecustomize): a local-compute probe that must PASS and an
+    # egress probe that must FAIL. Their divergence is what proves DENIAL rather than a broken env.
     repo = tmp_path / "netdeny"
     (repo / "tests").mkdir(parents=True)
     (repo / "tests" / "test_target.py").write_text(
@@ -543,7 +547,19 @@ def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
             import subprocess
             import sys
 
-            def test_child_egress_reaches_network():
+            def test_local_compute():
+                # Pure local work in a -S child: proves the interpreter + subprocess machinery run.
+                # A broken authoritative env fails THIS too, so denial cannot be confused with it.
+                result = subprocess.run(
+                    [sys.executable, "-S", "-c", "print(2 + 2)"],
+                    capture_output=True,
+                    text=True,
+                )
+                assert result.returncode == 0 and result.stdout.strip() == "4"
+
+            def test_child_egress():
+                # Real outbound egress in a -S child: only OS-level denial makes THIS fail while
+                # test_local_compute still passes.
                 probe = (
                     "import socket; "
                     "socket.create_connection(('1.1.1.1', 53), timeout=5).close()"
@@ -565,23 +581,27 @@ def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
             network=True,
         )
 
-    # Allowed-network control proves egress is reachable here; if not, denial is indistinguishable
-    # from an already-down network. Documented skip #2 — never a weakened assertion.
+    # Allowed-network control proves BOTH children run and egress is reachable here; if not, denial
+    # is indistinguishable from an already-down network. Documented skip #2 — never weakened.
     control = verify.run_baseline(
         repo, baseline, adapter=adapter, provisioner=_allowed_provisioner, timeout=120
     )
     if control.status is not BaselineStatus.GREEN:
         pytest.skip("outbound egress not reachable in this environment; cannot prove denial")
 
-    # The REAL default authoritative path must deny egress at the OS level. The call-phase FAILED
-    # requirement (not merely "not GREEN") means a provisioning crash cannot pass this as denial.
+    # The REAL default authoritative path must deny egress at the OS level. Requiring the compute
+    # node PASSED and the egress node FAILED (not merely "not GREEN") means a broken environment —
+    # which fails compute too — can never masquerade as network denial.
     authoritative = verify.run_baseline(
         repo, baseline, adapter=adapter, provisioner=None, timeout=600
     )
     assert authoritative.status is BaselineStatus.BEHAVIORAL_RED
-    assert authoritative.executed == 1
-    call_nodes = [n for n in authoritative.nodes if n.phase == "call"]
-    assert call_nodes and any(n.outcome is Outcome.FAILED for n in call_nodes)
+    assert authoritative.executed == 2
+    calls = {n.nodeid: n for n in authoritative.nodes if n.phase == "call"}
+    compute = next((n for nid, n in calls.items() if "test_local_compute" in nid), None)
+    egress = next((n for nid, n in calls.items() if "test_child_egress" in nid), None)
+    assert compute is not None and compute.outcome is Outcome.PASSED
+    assert egress is not None and egress.outcome is Outcome.FAILED
 
 
 # ===== #58 defect #11 =====
