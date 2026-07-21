@@ -45,18 +45,27 @@ def _to_outcome(value: object) -> Outcome:
 
 
 def _is_valid_node_id(line: str) -> bool:
-    """A pytest node id carries no UNBRACKETED whitespace: ``path::test`` and ``path::test[a b]``
-    are valid, but ``path::test MALFORMED TRAILER`` (a well-formed node id followed by garbage) is
-    not. A collect-only line containing ``::`` but failing this grammar is broken evidence, not a
-    trustworthy node id, so it invalidates the whole collection (#58 hardening / gap #5)."""
-    depth = 0
-    for ch in line:
-        if ch == "[":
-            depth += 1
-        elif ch == "]":
-            depth = max(0, depth - 1)
-        elif ch in " \t" and depth == 0:
-            return False
+    """A pytest node id is ``path::test`` optionally followed by a single trailing parametrization
+    group ``[...]`` whose contents are arbitrary (an explicit param id may legally contain brackets
+    and spaces, e.g. ``path::test[] space]``). Valid: ``path::test``, ``path::test[a b]``,
+    ``path::test[] space]``. Invalid: ``path::test MALFORMED TRAILER`` (a well-formed id followed by
+    unbracketed garbage) and ``path::test[a] TRAILER`` (garbage after the closing ``]``).
+
+    The grammar splits at the FIRST ``[``: the head (``path::test``) must carry no whitespace, and
+    the parametrization tail (from the first ``[`` to end) must CLOSE at the very end of the line
+    (its last character is ``]``) — everything between is param content, brackets and spaces
+    included. A naive per-character bracket-depth scan wrongly closes at the first ``]`` inside an
+    explicit id and then rejects the legal trailing space (#58 second-round gap E), while still
+    needing to reject genuine trailing garbage (the #5 gap — never regress it).
+    """
+    bracket = line.find("[")
+    head = line if bracket == -1 else line[:bracket]
+    # The head (path::test portion) must carry no whitespace.
+    if any(ch in " \t" for ch in head):
+        return False
+    # A parametrization tail, when present, must terminate the id: it has to end at the closing ``]``.
+    if bracket != -1 and not line.endswith("]"):
+        return False
     return True
 
 
@@ -316,6 +325,12 @@ class PytestAdapter:
         # the run never ran to a terminal record for it, so it is not a trustworthy red.
         if any(nodeid not in by_node for nodeid in expected):
             return False
+        # Lifecycle-complete report (#58 second-round gap D): every expected node must have REACHED a
+        # call phase (or terminated its lifecycle). A node that produced only a non-call record — a
+        # setup:passed with no following call — never ran its test body, so the report is incomplete
+        # and this is not a trustworthy red, even though another node has a call failure.
+        if any(not self._reached_call_or_terminal(by_node.get(nodeid, ())) for nodeid in expected):
+            return False
         # Infra contamination: a setup/teardown FAILED/BROKEN anywhere means the baseline is corrupted
         # by infrastructure breakage, not a clean behavioral failure.
         for records in by_node.values():
@@ -326,6 +341,18 @@ class PytestAdapter:
                 ):
                     return False
         return self._has_expected_call_failure(expected, by_node)
+
+    def _reached_call_or_terminal(self, records: object) -> bool:
+        """True when a node's records show it reached a call phase or otherwise terminated its
+        lifecycle: a ``call`` record (the body ran), a ``teardown`` record (the lifecycle completed),
+        or a ``setup`` FAILED/BROKEN (the node terminated early without a call). A node with ONLY a
+        passing ``setup`` and no call never ran its body — an incomplete, mid-lifecycle report."""
+        for record in records:
+            if record.phase in ("call", "teardown"):
+                return True
+            if record.phase == "setup" and record.outcome in (Outcome.FAILED, Outcome.BROKEN):
+                return True
+        return False
 
     def _has_expected_call_failure(self, expected: set, by_node: dict) -> bool:
         """True when some EXPECTED node has a call-phase FAILED record — a genuine behavioral red.

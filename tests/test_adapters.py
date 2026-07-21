@@ -743,3 +743,31 @@ def test_behavioral_red_requires_a_complete_report_and_no_infra_failure():
     )
     assert mixed.status is BaselineStatus.BROKEN
     assert mixed.status is not BaselineStatus.BEHAVIORAL_RED
+
+
+# ===== #58 hardening (PR#60 second round — gap D: setup-only node counted complete) =====
+def test_behavioral_red_requires_every_expected_node_to_reach_a_call_phase():
+    """BEHAVIORAL_RED requires every expected node to have reached a call phase (or a terminal
+    lifecycle). A node that produced ONLY a non-call record — e.g. ``setup:passed`` with no
+    following call — never ran its test body, so the report is INCOMPLETE and the run is BROKEN, not
+    a trustworthy behavioral red. The current completeness check only asks whether each expected node
+    produced ANY record, so a setup-only node is wrongly counted as complete and the run latches onto
+    the other node's call failure as BEHAVIORAL_RED.
+
+    technical (contract): classify(records=[a:call:failed, b:setup:passed], exit_code=1,
+    timed_out=False, report_present=True, expected_ids={a, b}) -> status is BaselineStatus.BROKEN
+    (b never reached a call/terminal lifecycle), and is NOT BEHAVIORAL_RED. Current impl: b's
+    setup:passed record satisfies the "produced a record" check, so status is BEHAVIORAL_RED.
+    """
+    from issueforge.adapters.base import BaselineStatus
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    res = PytestAdapter().classify(
+        [_rec("t::a", "call", "failed"), _rec("t::b", "setup", "passed")],
+        exit_code=1,
+        timed_out=False,
+        report_present=True,
+        expected_ids={"t::a", "t::b"},
+    )
+    assert res.status is BaselineStatus.BROKEN
+    assert res.status is not BaselineStatus.BEHAVIORAL_RED

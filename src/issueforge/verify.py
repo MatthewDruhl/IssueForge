@@ -12,6 +12,7 @@ isolation, or a non-green baseline — before it ever dispatches AI.
 from __future__ import annotations
 
 import json
+import os
 import tomllib
 import uuid
 from dataclasses import dataclass
@@ -57,18 +58,22 @@ class BaselineOutcome:
     pause_reason: str | None
 
 
-def _parse_report_log(text: str) -> tuple[list[dict], bool]:
+def _parse_report_log(text: str, exit_code: int | None = None) -> tuple[list[dict], bool]:
     """Extract per-phase TestReport records from a pytest report-log JSONL body.
 
     Returns ``(records, well_formed)``. A report is ``well_formed`` only when EVERY non-empty line
-    parses as JSON AND a terminal ``SessionFinish`` record is present (#58 hardening / gap #6): a
-    report cut off mid-flush (a dropped/garbage final line, or a missing session-end marker) is
+    parses as JSON, a ``SessionFinish`` record is the LAST (terminal) record, and its ``exitstatus``
+    is consistent with the subprocess ``exit_code`` (#58 hardening / gap #6 + second-round gap C).
+    A report cut off mid-flush (a dropped/garbage final line, a missing session-end marker), or one
+    whose session-end marker does not TERMINATE the log (a later record follows it — a spliced or
+    reordered report), or one whose recorded ``exitstatus`` contradicts the process exit, is
     untrustworthy evidence and must not be laundered into GREEN off the passing records that
     survived. A malformed line is no longer silently swallowed — it flips ``well_formed`` False.
     """
     records: list[dict] = []
     well_formed = True
-    saw_session_finish = False
+    last_report_type: str | None = None
+    session_finish_exitstatus: object = None
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -79,8 +84,9 @@ def _parse_report_log(text: str) -> tuple[list[dict], bool]:
             well_formed = False
             continue
         report_type = data.get("$report_type")
+        last_report_type = report_type
         if report_type == "SessionFinish":
-            saw_session_finish = True
+            session_finish_exitstatus = data.get("exitstatus")
         elif report_type == "TestReport":
             records.append(
                 {
@@ -90,32 +96,113 @@ def _parse_report_log(text: str) -> tuple[list[dict], bool]:
                     "longrepr": data.get("longrepr"),
                 }
             )
-    return records, (well_formed and saw_session_finish)
+    # The SessionFinish must be the TERMINAL record: a session-end marker followed by any later
+    # record is a spliced/reordered/truncated log, not a clean session end.
+    terminal_session_finish = last_report_type == "SessionFinish"
+    # The recorded session exit status, when present, must agree with the real subprocess exit code —
+    # a report claiming a different exit than the process actually returned is contradictory evidence.
+    exit_consistent = (
+        session_finish_exitstatus is None
+        or exit_code is None
+        or session_finish_exitstatus == exit_code
+    )
+    return records, (well_formed and terminal_session_finish and exit_consistent)
+
+
+# Leading tokens that are pip include/editable/option DIRECTIVES, not package specs: a
+# requirements line beginning with one of these (or any other ``-``-prefixed option) carries no
+# installable package name and must be skipped, never passed to ``uv pip install`` as a spec.
+_REQUIREMENTS_DIRECTIVES = frozenset(
+    {
+        "-r",
+        "--requirement",
+        "-c",
+        "--constraint",
+        "-e",
+        "--editable",
+        "-f",
+        "--find-links",
+        "-i",
+        "--index-url",
+        "--extra-index-url",
+        "--no-index",
+        "--pre",
+        "--hash",
+    }
+)
+
+
+def _parse_requirement_specs(text: str) -> list[str]:
+    """Parse a pip/pip-freeze ``requirements.txt`` body into installable package specs.
+
+    Handles the standard shapes a naive line-splitter breaks on (#58 second-round gap A):
+      * line continuations — a spec whose line ends with ``\\`` continues on the next physical line;
+        the continuation is JOINED before parsing so a hashed pin is ONE spec, not a backslash-bearing
+        package plus a stray ``--hash`` arg.
+      * hash / option lines — ``--hash=sha256:...`` and any other ``-``/``--`` option token are
+        dropped, never handed to the installer as a package spec.
+      * include / editable / constraint directives — ``-r base.txt``, ``-e .``, ``-c c.txt`` carry no
+        package name and are skipped rather than passed through as bogus specs.
+    Each surviving line contributes its leading non-option tokens (the requirement spec, including any
+    PEP 508 marker) as a single spec.
+    """
+    joined = text.replace("\\\r\n", " ").replace("\\\n", " ")
+    specs: list[str] = []
+    for raw in joined.splitlines():
+        # Drop a full-line or inline comment (pip requires a space before an inline ``#``).
+        line = raw.split(" #", 1)[0].strip()
+        if not line or line.startswith("#"):
+            continue
+        tokens = line.split()
+        first = tokens[0]
+        # An include/editable/constraint directive or a bare option line has no package spec.
+        if first in _REQUIREMENTS_DIRECTIVES or first.startswith("-"):
+            continue
+        # The spec is the run of leading non-option tokens; a ``-``-prefixed token (``--hash=...``)
+        # ends it. Markers (``; python_version < "3.11"``) carry no ``-`` and stay in the spec.
+        spec_tokens: list[str] = []
+        for tok in tokens:
+            if tok.startswith("-"):
+                break
+            spec_tokens.append(tok)
+        if spec_tokens:
+            specs.append(" ".join(spec_tokens))
+    return specs
 
 
 def _discover_frozen_manifest(worktree: Path) -> list[str] | None:
     """Discover the target's committed frozen dependency manifest (#58 hardening / gap #2).
 
     The authoritative environment must install the SAME pinned deps the target committed, so a
-    baseline that imports a pinned dep is importable in the separate run. Prefers a committed
-    ``requirements.txt`` (each non-comment line is a pinned spec), falling back to a committed
-    ``pyproject.toml``'s ``[project].dependencies`` list. Returns the discovered specs, or ``None``
-    when the target commits no manifest (the provisioner then installs only the reporter toolchain).
+    baseline that imports a pinned dep is importable in the separate run. The manifest is read from
+    the committed git object (``git show HEAD:<file>``), NEVER the worktree filesystem — consistent
+    with the #2 committed-baseline discipline, so a post-checkout-mutated or symlinked manifest can
+    not substitute deps. Prefers a committed ``requirements.txt`` (parsed robustly for continuations,
+    hashes, and include/editable directives), falling back to a committed ``pyproject.toml``'s
+    ``[project].dependencies`` list. Returns the discovered specs, or ``None`` when the target commits
+    no usable manifest (the provisioner then installs only the reporter toolchain).
     """
     wt = Path(worktree)
-    requirements = wt / "requirements.txt"
-    if requirements.is_file():
-        specs = [
-            line.strip()
-            for line in requirements.read_text().splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
+    scrubbed = _workspace_mod._scrubbed_git_env()
+
+    def _show(path: str) -> str | None:
+        shown = process.run(
+            ["git", "-C", str(wt), "show", f"HEAD:{path}"],
+            cwd=wt,
+            timeout=_GIT_TIMEOUT,
+            env=scrubbed,
+        )
+        return shown.stdout if shown.returncode == 0 else None
+
+    requirements = _show("requirements.txt")
+    if requirements is not None:
+        specs = _parse_requirement_specs(requirements)
         if specs:
             return specs
-    pyproject = wt / "pyproject.toml"
-    if pyproject.is_file():
+    pyproject = _show("pyproject.toml")
+    if pyproject is not None:
         try:
-            data = tomllib.loads(pyproject.read_text())
+            data = tomllib.loads(pyproject)
         except tomllib.TOMLDecodeError:
             return None
         deps = data.get("project", {}).get("dependencies")
@@ -192,7 +279,7 @@ def run_baseline(
     report_present = False
     if not launch_failed and not timed_out and report_file.exists():
         text = report_file.read_text()
-        records, well_formed = _parse_report_log(text)
+        records, well_formed = _parse_report_log(text, exit_code)
         # A report only counts as PRESENT evidence when it is well-formed and cleanly terminated: a
         # truncated/corrupt report with no terminal SessionFinish is not trustworthy behavioral
         # evidence and must not seed GREEN (#58 hardening / gap #6).
@@ -289,7 +376,10 @@ def _committed_baseline(worktree: Path) -> tuple[bool, list[str] | None]:
         # committed worktree) must PAUSE — there is no readable committed baseline, and the run must
         # never fall back to the forbidden default and dispatch AI (#58 hardening / gap #3). Only a
         # path that is not a git tree at all (no ``.git``) is a seam/unit context that may default.
-        if (wt / ".git").exists():
+        # ``os.path.lexists`` (not ``Path.exists``) is load-bearing: a PRESENT-but-dangling ``.git``
+        # symlink is a corrupt worktree, but ``exists`` FOLLOWS the link and reports False, which
+        # would wrongly default and dispatch on unreadable metadata (#58 second-round gap B).
+        if os.path.lexists(wt / ".git"):
             return (True, None)
         return (False, None)  # not a committed git worktree — a seam context, not enforceable
     shown = process.run(

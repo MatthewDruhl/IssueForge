@@ -1670,3 +1670,279 @@ def test_corrupt_truncated_report_without_terminal_sessionfinish_is_not_green(tm
     )
     assert ev.exit_code == 0
     assert ev.status is not BaselineStatus.GREEN
+
+
+# ======================================================================
+# PR #60 SECOND Codex round — 5 remaining GREEN-safety edge-case gaps.
+# PENDING until the final hardening pass closes them (#58).
+# ======================================================================
+
+
+# ---- helper for hardening gap A ----
+def _committed_requirements_target(root: Path, name: str, body: str, *, requirements: str) -> Path:
+    """A git-committed target carrying one test module plus ONLY a committed requirements.txt.
+
+    No pyproject.toml is written, so the manifest can ONLY be discovered from requirements.txt —
+    a fix that silently falls back to a pyproject dependency list cannot mask a requirements
+    parser that drops the pinned spec. The target is a real committed repo so a discovery that
+    reads the committed git object (``git show HEAD:requirements.txt``) resolves.
+    """
+    repo = root / name
+    (repo / "tests").mkdir(parents=True)
+    (repo / "tests" / "test_target.py").write_text(textwrap.dedent(body))
+    (repo / "requirements.txt").write_text(requirements)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "seed")
+    return repo
+
+
+# ---- helper for hardening gap B ----
+def _dangling_git_symlink_worktree(root: Path, files: dict[str, str]) -> Path:
+    """A REAL isolated worktree whose working files are on disk but whose ``.git`` entry is a
+    PRESENT-but-dangling symlink (it points at a path that does not exist).
+
+    ``Path.exists()`` FOLLOWS the symlink and reports False (the target is missing), yet the
+    ``.git`` entry is genuinely PRESENT — exactly the condition where a real
+    ``git -C <wt> rev-parse HEAD`` fails while the checked-out working files remain, so a runner
+    that keys "is this a committed git tree?" off ``.exists()`` wrongly treats it as a
+    non-git seam context and substitutes the forbidden default baseline.
+    """
+    wt = root / "wt"
+    wt.mkdir(parents=True)
+    for rel, content in files.items():
+        p = wt / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    (wt / ".git").symlink_to(root / "nonexistent-git-admin-dir")
+    return wt
+
+
+# ---- helper for hardening gap C ----
+def _sessionfinish_not_terminal_provisioner():
+    """A provisioner seam whose 'interpreter' is a REAL wrapper script: it runs the provisioned
+    pytest verbatim, then rewrites the real --report-log so the terminal ``SessionFinish`` record
+    is MOVED to the FRONT (a TestReport becomes the last record), before exiting with pytest's own
+    code.
+
+    Only the injectable ``provisioner`` seam is used — no issueforge internal is patched.
+    collect-only runs carry no --report-log and are left untouched, so canonical_collect's
+    expected-id set is unaffected. Every TestReport survives verbatim and a SessionFinish is still
+    PRESENT — only its position changes: it no longer terminates the report. This reproduces the
+    literal "SessionFinish precedes a later TestReport" ordering the contract forbids from GREEN.
+    """
+    from types import SimpleNamespace
+
+    def _provision(worktree, frozen_deps=None):
+        wdir = Path(worktree).parent / f"if-reorder-{Path(worktree).name}"
+        wdir.mkdir(exist_ok=True)
+        reorder = wdir / "reorder_report.py"
+        reorder.write_text(
+            textwrap.dedent(
+                """
+                import sys
+                p = sys.argv[1]
+                lines = [l for l in open(p).read().splitlines() if l.strip()]
+                sf = [l for l in lines if '"SessionFinish"' in l]
+                rest = [l for l in lines if '"SessionFinish"' not in l]
+                with open(p, "w") as f:
+                    f.write("\\n".join(sf + rest))
+                    f.write("\\n")
+                """
+            )
+        )
+        wrapper = wdir / "wrap-python"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            f'"{sys.executable}" "$@"\n'
+            "code=$?\n"
+            'rl=""\n'
+            'for a in "$@"; do\n'
+            '  case "$a" in --report-log=*) rl="${a#--report-log=}";; esac\n'
+            "done\n"
+            f'if [ -n "$rl" ] && [ -f "$rl" ]; then "{sys.executable}" "{reorder}" "$rl"; fi\n'
+            "exit $code\n"
+        )
+        os.chmod(wrapper, 0o755)
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+        return SimpleNamespace(interpreter=str(wrapper), env=env, artifact_dir=wdir, network=False)
+
+    return _provision
+
+
+# ===== #58 hardening (PR#60 second round — gap A: robust committed requirements parsing) =====
+def test_hashed_committed_requirements_are_parsed_and_installed_not_broken_apart(tmp_path):
+    """A standard pip-freeze-style requirements.txt — a pinned spec with a line-continuation and a
+    ``--hash=`` option line — must be parsed into the SINGLE pinned spec and installed in the
+    authoritative env, so a legitimately-green target does NOT pause. The current parser splits
+    every physical non-comment line into its own package arg, so ``platformdirs==4.10.0 \\`` and a
+    standalone ``--hash=sha256:...`` are handed to ``uv pip install`` as two bogus package specs; uv
+    rejects them, provisioning raises, and run_baseline PAUSES (LAUNCH_FAILED) a repo whose baseline
+    simply imports platformdirs.
+
+    technical (contract): a git-committed target whose committed requirements.txt is
+    ``platformdirs==4.10.0 \\\\\\n    --hash=sha256:<64 hex>\\n`` and whose baseline does
+    ``import platformdirs``. run_baseline(target, ["-m","pytest"], adapter=PytestAdapter()) on the
+    DEFAULT provisioning path -> evidence.status is BaselineStatus.GREEN, executed == 1,
+    exit_code == 0. Current impl -> not GREEN (the backslash-bearing spec + the ``--hash`` arg break
+    the install, so provisioning fails and the run pauses non-green).
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    fake_hash = "sha256:" + "0" * 64
+    target = _committed_requirements_target(
+        tmp_path,
+        "hashed_reqs",
+        """
+        import platformdirs
+
+        def test_imports_pinned_dep():
+            assert platformdirs is not None
+        """,
+        requirements=f"platformdirs==4.10.0 \\\n    --hash={fake_hash}\n",
+    )
+    ev = verify.run_baseline(target, ["-m", "pytest"], adapter=_adapter())
+    assert ev.status is BaselineStatus.GREEN, f"expected GREEN, got {ev.status!r}"
+    assert ev.executed == 1
+    assert ev.exit_code == 0
+
+
+# ===== #58 hardening (PR#60 second round — gap B: dangling .git symlink) =====
+def test_dangling_git_symlink_worktree_pauses_not_defaults(tmp_path):
+    """An isolated worktree whose ``.git`` is a PRESENT-but-dangling symlink must PAUSE the run, not
+    default. ``Path.exists()`` follows the symlink and reports False, so a check keyed off
+    ``.exists()`` mistakes a corrupt-but-present ``.git`` for a non-git seam context and substitutes
+    the forbidden default baseline — greening and dispatching on a target whose committed baseline is
+    unreadable. A present ``.git`` entry (even dangling) with a failing rev-parse must PAUSE.
+
+    technical (contract): a real worktree with a passing tests/test_target.py and a
+    ``.git`` dangling symlink injected via the workspace seam. establish_green_baseline(checkout,
+    adapter, workspace=dangling, provisioner=clean, dispatch=spy) -> outcome.paused is True, the
+    dispatch spy NEVER fired (dispatched == []), and outcome.status is not BaselineStatus.GREEN.
+    Current impl: _committed_baseline sees rev-parse fail and ``(wt/".git").exists()`` False (the
+    symlink dangles), returns (False, None), the caller substitutes ``["-m","pytest"]``, runs the
+    passing target, classifies GREEN, and dispatches.
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    wt = _dangling_git_symlink_worktree(
+        tmp_path,
+        {
+            "tests/test_target.py": "def test_ok():\n    assert True\n",
+            ".issueforge.toml": 'baseline = ["-m", "pytest"]\nframework = "pytest"\n',
+        },
+    )
+    # Precondition: the .git entry is PRESENT (lexists) but dangling (exists follows the link -> False),
+    # and a real rev-parse in the worktree genuinely fails.
+    assert os.path.lexists(wt / ".git"), "precondition: .git symlink must be present"
+    assert not (wt / ".git").exists(), "precondition: .git symlink must dangle"
+    probe = subprocess.run(
+        ["git", "-C", str(wt), "rev-parse", "--verify", "HEAD"], capture_output=True, text=True
+    )
+    assert probe.returncode != 0, "precondition: rev-parse must fail on the dangling worktree"
+
+    class _DanglingWorkspace:
+        def fetch_default_sha(self, checkout):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(sha="0" * 40, ok=True, reason=None)
+
+        def create_isolated_worktree(self, checkout, sha, **k):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(path=wt, ok=True, isolated=True, reason=None)
+
+    dispatched = []
+    outcome = verify.establish_green_baseline(
+        tmp_path / "checkout",
+        adapter=_adapter(),
+        workspace=_DanglingWorkspace(),
+        provisioner=_clean_provisioner(),
+        dispatch=lambda **k: dispatched.append(k),
+    )
+    assert outcome.paused is True, f"expected pause, got status {outcome.status!r}"
+    assert dispatched == [], "AI dispatched on a corrupt (dangling .git) committed baseline"
+    assert outcome.status is not BaselineStatus.GREEN
+
+
+# ===== #58 hardening (PR#60 second round — gap C: non-terminal SessionFinish) =====
+def test_non_terminal_sessionfinish_is_not_green(tmp_path):
+    """A report in which a ``SessionFinish`` record is PRESENT but not the LAST record (a TestReport
+    follows it) is not a cleanly-terminated report and must NOT classify GREEN. Recording only that
+    a SessionFinish appeared ANYWHERE lets a report whose session-end marker precedes later records
+    (a spliced/reordered/mid-flush log) be laundered into GREEN off the passing records. The
+    session-end marker must terminate the report.
+
+    technical (contract): a target with a single passing test_a runs under a REAL wrapper
+    interpreter (the injectable provisioner seam) that runs pytest verbatim then rewrites the real
+    --report-log so its ``SessionFinish`` record is moved to the FRONT (a TestReport is the last
+    record). run_baseline -> evidence.exit_code == 0 (the passing exit was genuinely seen) AND
+    evidence.status is NOT BaselineStatus.GREEN. Current impl: status GREEN — a SessionFinish
+    anywhere satisfies the check.
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    worktree = _make_target(tmp_path, "nonterminal_sf", "def test_a():\n    assert True\n")
+    ev = verify.run_baseline(
+        worktree,
+        BASELINE,
+        adapter=_adapter(),
+        provisioner=_sessionfinish_not_terminal_provisioner(),
+    )
+    assert ev.exit_code == 0
+    assert ev.status is not BaselineStatus.GREEN
+
+
+# ===== #58 hardening (PR#60 second round — gap E: valid explicit-id params over-rejected) =====
+def test_valid_bracketed_param_node_id_is_accepted_but_trailing_garbage_still_rejected(tmp_path):
+    """The malformed-collection guard must ACCEPT a VALID explicit pytest param id whose parameter
+    part contains brackets and spaces (e.g. ``tests/test_x.py::test_x[] space]``) — rejecting it
+    prevents a legitimately-green baseline. But it must STILL reject a genuine node-id line with
+    trailing garbage (``nodeid MALFORMED TRAILER``): the #5 gap must not regress.
+
+    technical (contract): via the injectable collect-only stdout polluter seam,
+      * a --collect-only whose extra line is the VALID explicit-id param
+        ``tests/test_x.py::test_x[] space]`` -> canonical_collect(...).ok is True (a valid param id
+        with a bracketed/spaced parameter is a real node id, not garbage). Current impl: ok is False
+        because the naive bracket-depth scan closes at the first ``]`` and then sees an unbracketed
+        space.
+      * a --collect-only whose extra line is ``tests/test_y.py::test_y MALFORMED TRAILER``
+        (a well-formed id followed by garbage, NO brackets) -> canonical_collect(...).ok is False
+        (the #5 regression guard: real trailing garbage still invalidates the collection).
+    """
+    from types import SimpleNamespace
+
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    adapter = PytestAdapter()
+
+    # Valid explicit-id param: brackets + spaces in the PARAMETER part are legal -> collection valid.
+    valid_wt = _make_target(tmp_path, "valid_param", "def test_a():\n    assert True\n")
+    valid_prov = _collect_only_stdout_polluter("tests/test_x.py::test_x[] space]")
+    valid_handle = adapter.provision_environment(valid_wt, None, provisioner=valid_prov)
+    valid_collection = adapter.canonical_collect(
+        SimpleNamespace(
+            worktree=valid_wt,
+            interpreter=valid_handle.interpreter,
+            command=list(BASELINE),
+            env=getattr(valid_handle, "env", None),
+        )
+    )
+    assert valid_collection.ok is True
+
+    # Regression guard: genuine trailing garbage after a node id still invalidates the collection.
+    garbage_wt = _make_target(tmp_path, "garbage_trailer", "def test_a():\n    assert True\n")
+    garbage_prov = _collect_only_stdout_polluter("tests/test_y.py::test_y MALFORMED TRAILER")
+    garbage_handle = adapter.provision_environment(garbage_wt, None, provisioner=garbage_prov)
+    garbage_collection = adapter.canonical_collect(
+        SimpleNamespace(
+            worktree=garbage_wt,
+            interpreter=garbage_handle.interpreter,
+            command=list(BASELINE),
+            env=getattr(garbage_handle, "env", None),
+        )
+    )
+    assert garbage_collection.ok is False
