@@ -863,3 +863,30 @@ def test_class6_match_case_seam_write_text_flagged_guard(tmp_path: Path) -> None
         "    seam.write_text(target, 'x')\n"
     )
     assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_match_capture_rebinds_seam_still_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A `case ... as seam` capture rebinds a trusted seam to a matched value — flagged."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, command):\n"
+        "    seam = WriteSeam()\n"
+        "    match command:\n"
+        "        case str() as seam:\n"
+        "            pass\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_class_body_seam_does_not_revoke_outer_local(tmp_path: Path) -> None:
+    """(#40 positive) A class body opens its own scope: a `seam = path` inside it must NOT flag the enclosing function's legitimate unconditional local WriteSeam."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, path):\n"
+        "    seam = WriteSeam()\n"
+        "    class C:\n"
+        "        seam = path\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert lint(tmp_path, code) == []

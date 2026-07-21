@@ -462,10 +462,31 @@ class _Linter(ast.NodeVisitor):
 
     def visit_Match(self, node: ast.Match) -> None:
         # Each `case` body is a conditional branch: a WriteSeam bound inside one is not provably
-        # the value at a later write, so raise control depth for the whole match (#40).
+        # the value at a later write, so raise control depth for the whole match (#40). A case
+        # capture pattern (`case ... as seam`, `case [*seam]`, `case {**seam}`) REBINDS the name to
+        # a matched value, so clear seam trust for every captured name.
+        for case in node.cases:
+            for name in self._match_capture_names(case.pattern):
+                self.seam_scopes[-1][name] = False
         self.control_depth[-1] += 1
         self.generic_visit(node)
         self.control_depth[-1] -= 1
+
+    @staticmethod
+    def _match_capture_names(pattern: ast.AST | None):
+        """Yield every name a match-case pattern captures (MatchAs/MatchStar names, MatchMapping rest)."""
+        if pattern is None:
+            return
+        for sub in ast.walk(pattern):
+            name = (
+                getattr(sub, "name", None)
+                if isinstance(sub, (ast.MatchAs, ast.MatchStar))
+                else None
+            )
+            if name is None and isinstance(sub, ast.MatchMapping):
+                name = sub.rest
+            if isinstance(name, str):
+                yield name
 
     def visit_Global(self, node: ast.Global) -> None:
         # A `global name` makes the name refer to the module global, not a function-local: never
@@ -514,6 +535,24 @@ class _Linter(ast.NodeVisitor):
         self.command_scopes.pop()
 
     visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        # A class body is its own scope (like a function/lambda/comprehension): open fresh binding
+        # stacks so a class-body binding never mutates — or leaks into — the enclosing function's
+        # seam trust. scope_is_function is False, so a write in the class body is never exempt (#40).
+        self.command_scopes.append({})
+        self.binding_scopes.append({})
+        self.seam_scopes.append({})
+        self.scope_is_function.append(False)
+        self.control_depth.append(0)
+        self.global_nonlocal_names.append(set())
+        self.generic_visit(node)
+        self.global_nonlocal_names.pop()
+        self.control_depth.pop()
+        self.scope_is_function.pop()
+        self.seam_scopes.pop()
+        self.binding_scopes.pop()
+        self.command_scopes.pop()
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         # A lambda opens its own scope: its parameters shadow any outer trusted seam, and the
