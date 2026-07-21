@@ -44,6 +44,22 @@ def _to_outcome(value: object) -> Outcome:
     return _OUTCOME_MAP.get(value, Outcome.BROKEN)
 
 
+def _is_valid_node_id(line: str) -> bool:
+    """A pytest node id carries no UNBRACKETED whitespace: ``path::test`` and ``path::test[a b]``
+    are valid, but ``path::test MALFORMED TRAILER`` (a well-formed node id followed by garbage) is
+    not. A collect-only line containing ``::`` but failing this grammar is broken evidence, not a
+    trustworthy node id, so it invalidates the whole collection (#58 hardening / gap #5)."""
+    depth = 0
+    for ch in line:
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth = max(0, depth - 1)
+        elif ch in " \t" and depth == 0:
+            return False
+    return True
+
+
 def _provision_default(worktree: object, frozen_deps: object) -> SimpleNamespace:
     """Build a SEPARATE authoritative interpreter under IssueForge's owned state root.
 
@@ -83,8 +99,17 @@ def _provision_default(worktree: object, frozen_deps: object) -> SimpleNamespace
     getattr(WriteSeam(), "write_text")(interpreter, f'#!/bin/sh\nexec "{venv_python}" "$@"\n')
     os.chmod(interpreter, 0o755)
     # A minimal allowlist env — never a copy of the candidate's os.environ — so a candidate's
-    # PYTEST_ADDOPTS / PYTHONPATH / sabotage vars never reach the authoritative run.
-    env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+    # PYTEST_ADDOPTS / PYTHONPATH / sabotage vars never reach the authoritative run. The
+    # authoritative env_root/bin is prepended to PATH so a bare-name baseline (["pytest"]) resolves
+    # to the AUTHORITATIVE pytest that was just installed, never a host pytest leaked from the
+    # ambient PATH (#58/#1) — otherwise the separately-provisioned env is decorative and the baseline
+    # can go green off host packages the authoritative env never installed.
+    bin_dir = env_root / "bin"
+    host_path = os.environ.get("PATH", "")
+    env = {
+        "PATH": f"{bin_dir}{os.pathsep}{host_path}" if host_path else str(bin_dir),
+        "HOME": os.environ.get("HOME", ""),
+    }
     return SimpleNamespace(
         interpreter=str(interpreter),
         env=env,
@@ -168,11 +193,17 @@ class PytestAdapter:
             "-q",
         ]
         result = process.run(argv, cwd=worktree, timeout=_COLLECT_TIMEOUT, env=env)
-        ids = sorted({line.strip() for line in result.stdout.splitlines() if "::" in line})
+        raw_ids = [line.strip() for line in result.stdout.splitlines() if "::" in line]
+        # A ``::`` line that is not a well-formed node id (trailing garbage after a real id) is broken
+        # collection evidence: the malformed lines are dropped from the id set AND invalidate the
+        # whole collection, so scraped ids can never be laundered into a green baseline (#58 gap #5).
+        malformed = any(not _is_valid_node_id(rid) for rid in raw_ids)
+        ids = sorted({rid for rid in raw_ids if _is_valid_node_id(rid)})
         selection = SimpleNamespace(command=tuple(command), argv=tuple(argv))
-        # Typed collection evidence (#58/#7): a nonzero exit or a timeout means the scraped ids came
-        # from a BROKEN collection and cannot seed a GREEN baseline. ``ok`` gates execution/green.
-        ok = result.returncode == 0 and not result.timed_out
+        # Typed collection evidence (#58/#7): a nonzero exit, a timeout, or malformed stdout means the
+        # scraped ids came from a BROKEN collection and cannot seed a GREEN baseline. ``ok`` gates
+        # execution/green.
+        ok = result.returncode == 0 and not result.timed_out and not malformed
         return SimpleNamespace(
             ids=tuple(ids),
             selection=selection,
@@ -267,11 +298,34 @@ class PytestAdapter:
             return BaselineStatus.ALL_SKIPPED
         # BEHAVIORAL_RED is reserved for a VALID report with a real call-phase failure of an
         # EXPECTED node at exit 1 (#58/#9). A signaled/aborted death (negative exit), a reportless
-        # non-timeout exit, an unknown exit code, or a setup/teardown-only infra failure has no such
-        # evidence and is BROKEN — never mislabeled a behavioral red baseline.
-        if exit_code == 1 and report_present and self._has_expected_call_failure(expected, by_node):
+        # non-timeout exit, an unknown exit code, an INCOMPLETE report (an expected node produced no
+        # record), or a setup/teardown infra failure has no such trustworthy evidence and is BROKEN —
+        # never mislabeled a behavioral red baseline.
+        if exit_code == 1 and report_present and self._is_behavioral_red(expected, by_node):
             return BaselineStatus.BEHAVIORAL_RED
         return BaselineStatus.BROKEN
+
+    def _is_behavioral_red(self, expected: set, by_node: dict) -> bool:
+        """A clean behavioral red needs a COMPLETE report (every expected node produced at least one
+        terminal record), NO setup/teardown infrastructure failure anywhere, and at least one
+        expected call-phase failure (#58 hardening / gap #8). An incomplete or infra-contaminated
+        report is BROKEN, never a trustworthy red baseline."""
+        if not expected:
+            return False
+        # Complete report: an expected node that produced NO record means the report was truncated —
+        # the run never ran to a terminal record for it, so it is not a trustworthy red.
+        if any(nodeid not in by_node for nodeid in expected):
+            return False
+        # Infra contamination: a setup/teardown FAILED/BROKEN anywhere means the baseline is corrupted
+        # by infrastructure breakage, not a clean behavioral failure.
+        for records in by_node.values():
+            for record in records:
+                if record.phase in ("setup", "teardown") and record.outcome in (
+                    Outcome.FAILED,
+                    Outcome.BROKEN,
+                ):
+                    return False
+        return self._has_expected_call_failure(expected, by_node)
 
     def _has_expected_call_failure(self, expected: set, by_node: dict) -> bool:
         """True when some EXPECTED node has a call-phase FAILED record — a genuine behavioral red.
@@ -303,6 +357,12 @@ class PytestAdapter:
         # unexpected one that never appeared in canonical_collect — forbids green, not just a
         # regression among the expected ids.
         if has_failure:
+            return False
+        # Collection/execution RECONCILIATION (#58 hardening / gap #7): GREEN requires the executed
+        # set to be exactly the expected set. A "ghost" node that ran and passed but was never
+        # collected (an id outside ``expected``) is a reconciliation failure — the run executed
+        # something outside the frozen expected set — so it forbids green even though it passed.
+        if any(nodeid not in expected for nodeid in by_node):
             return False
         return all(self._node_passed(nodeid, by_node) for nodeid in expected)
 

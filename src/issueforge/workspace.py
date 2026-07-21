@@ -66,6 +66,10 @@ _GIT_REDIRECT_VARS = (
     "GIT_CEILING_DIRECTORIES",
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
     "GIT_WORK_TREE_OVERRIDE",
+    # GIT_EXEC_PATH is where git resolves its helper programs; a LOCAL fetch still resolves
+    # ``git-upload-pack`` through it, so a directory on this var can make a fetch serve a DIFFERENT
+    # repository's refs/objects and fabricate a sha. Scrub it too so the real helpers run (#58/#9).
+    "GIT_EXEC_PATH",
 )
 
 
@@ -199,8 +203,12 @@ def _worktree_created(checkout: Path, worktree_path: Path, sha: str) -> bool:
     head = _git(["-C", str(worktree_path), "rev-parse", "HEAD"], cwd=worktree_path)
     if head.returncode != 0 or head.stdout.strip() != sha:
         return False
+    # Detachment is proven ONLY by exit 1 (``symbolic-ref -q HEAD`` = "HEAD is not a symbolic ref").
+    # Any OTHER nonzero code (git's exit 128 = a fatal metadata/permission error) means the check
+    # ERRORED, not that the worktree is detached — an unprovable detachment must be refused, never
+    # inferred from a failed command (#58 hardening / gap #10).
     detached = _git(["-C", str(worktree_path), "symbolic-ref", "-q", "HEAD"], cwd=worktree_path)
-    return detached.returncode != 0
+    return detached.returncode == 1
 
 
 def create_isolated_worktree(
@@ -335,6 +343,16 @@ def reset_worktree(worktree: Path, base_sha: str) -> None:
         raise RuntimeError(f"clean -fd failed: {cleaned.stderr.strip()}")
     head = _git(["-C", str(worktree), "rev-parse", "HEAD"], cwd=worktree)
     status = _git(["-C", str(worktree), "status", "--porcelain"], cwd=worktree)
+    # A cleanliness verdict requires SUCCESSFUL reads: a failed rev-parse/status (exit 128) leaves
+    # the real worktree state unknown, and an empty stdout from a failed status is NOT proof of a
+    # clean tree — inferring "clean" from it would let the next attempt inherit unseen contamination
+    # (#58 hardening / gap #11). Refuse to report success unless both reads actually succeeded.
+    if head.returncode != 0 or status.returncode != 0:
+        raise RuntimeError(
+            f"worktree {worktree} verification read failed after reset "
+            f"(rev-parse rc={head.returncode}, status rc={status.returncode}, "
+            f"status stderr={status.stderr.strip()!r})"
+        )
     if head.stdout.strip() != base_sha or status.stdout.strip() != "":
         raise RuntimeError(
             f"worktree {worktree} not clean at {base_sha} after reset "

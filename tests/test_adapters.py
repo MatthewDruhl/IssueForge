@@ -662,7 +662,6 @@ def test_default_provisioning_builds_target_dep_env_and_artifact_dir(tmp_path):
 
 
 # ===== #58 hardening (PR#60 Codex gap #7) =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_green_forbids_an_unexpected_ghost_node_that_passes():
     """GREEN means collection and execution RECONCILE: exactly the expected node-ids ran and
     passed, no strangers. A report that carries a passing record for a node nobody collected
@@ -689,7 +688,6 @@ def test_green_forbids_an_unexpected_ghost_node_that_passes():
 
 
 # ===== #58 hardening (PR#60 Codex gap #8) =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_behavioral_red_requires_a_complete_report_and_no_infra_failure():
     """BEHAVIORAL_RED is a whole-report property: a genuine behavioral red baseline needs a COMPLETE
     report (every expected node ran to a terminal record) whose only failure is an expected

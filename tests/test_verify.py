@@ -26,8 +26,6 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
-
 
 # The baseline command as it appears in .issueforge.toml, minus the interpreter — the runner
 # supplies the interpreter from the PROVISIONED environment (G14), never the candidate's.
@@ -1328,7 +1326,6 @@ def _truncating_no_sessionfinish_provisioner():
 
 
 # ===== #58 hardening (PR#60 Codex gap #1) =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_default_provisioner_resolves_baseline_executable_under_env_root_not_host_path(tmp_path):
     """The DEFAULT provisioning path must launch the committed bare-name baseline (["pytest"], the
     grammar the S1 config loader actually produces) from the AUTHORITATIVE environment it just
@@ -1377,7 +1374,6 @@ def test_default_provisioner_resolves_baseline_executable_under_env_root_not_hos
 
 
 # ===== #58 hardening (PR#60 Codex gap #2) =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_run_baseline_discovers_and_installs_the_target_frozen_manifest(tmp_path):
     """Through the REAL run_baseline path, a target that commits a frozen manifest naming a pinned
     dependency, and whose baseline imports that dependency, classifies GREEN — because run_baseline
@@ -1456,7 +1452,6 @@ def test_run_baseline_discovers_and_installs_the_target_frozen_manifest(tmp_path
 
 
 # ===== #58 hardening (PR#60 Codex gap #3) =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_corrupt_worktree_git_metadata_pauses_not_defaults(tmp_path):
     """An isolated worktree that really exists on disk but whose git metadata is corrupt or
     unreadable must PAUSE the run, never silently fall back to a default baseline and dispatch AI.
@@ -1525,7 +1520,6 @@ def test_corrupt_worktree_git_metadata_pauses_not_defaults(tmp_path):
 
 
 # ===== #58 hardening (PR#60 Codex gap #4) =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_committed_baseline_read_ignores_ambient_git_redirect(tmp_path, monkeypatch):
     """The MANDATORY committed baseline is read from the REAL isolated worktree, even when the
     ambient environment carries a decoy git redirect. A hostile or leftover GIT_DIR /
@@ -1599,7 +1593,6 @@ def test_committed_baseline_read_ignores_ambient_git_redirect(tmp_path, monkeypa
 
 
 # ===== #58 hardening (PR#60 Codex gap #5) =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_malformed_collect_only_output_invalidates_the_collection(tmp_path):
     """A --collect-only that exits 0 but prints a plausible node id followed by trailing garbage
     must make the collection INVALID: its scraped ids cannot be trusted to seed a green baseline.
@@ -1643,7 +1636,6 @@ def test_malformed_collect_only_output_invalidates_the_collection(tmp_path):
 
 
 # ===== #58 hardening (PR#60 Codex gap #6) =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_corrupt_truncated_report_without_terminal_sessionfinish_is_not_green(tmp_path):
     """A report that carries the expected passing records but then gets cut off — a corrupt,
     truncated final line and NO terminal SessionFinish record — must NOT classify GREEN. GREEN

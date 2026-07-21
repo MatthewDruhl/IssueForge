@@ -57,9 +57,18 @@ class BaselineOutcome:
     pause_reason: str | None
 
 
-def _parse_report_log(text: str) -> list[dict]:
-    """Extract per-phase TestReport records from a pytest report-log JSONL body."""
+def _parse_report_log(text: str) -> tuple[list[dict], bool]:
+    """Extract per-phase TestReport records from a pytest report-log JSONL body.
+
+    Returns ``(records, well_formed)``. A report is ``well_formed`` only when EVERY non-empty line
+    parses as JSON AND a terminal ``SessionFinish`` record is present (#58 hardening / gap #6): a
+    report cut off mid-flush (a dropped/garbage final line, or a missing session-end marker) is
+    untrustworthy evidence and must not be laundered into GREEN off the passing records that
+    survived. A malformed line is no longer silently swallowed — it flips ``well_formed`` False.
+    """
     records: list[dict] = []
+    well_formed = True
+    saw_session_finish = False
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -67,8 +76,12 @@ def _parse_report_log(text: str) -> list[dict]:
         try:
             data = json.loads(line)
         except json.JSONDecodeError:
+            well_formed = False
             continue
-        if data.get("$report_type") == "TestReport":
+        report_type = data.get("$report_type")
+        if report_type == "SessionFinish":
+            saw_session_finish = True
+        elif report_type == "TestReport":
             records.append(
                 {
                     "nodeid": data.get("nodeid"),
@@ -77,7 +90,38 @@ def _parse_report_log(text: str) -> list[dict]:
                     "longrepr": data.get("longrepr"),
                 }
             )
-    return records
+    return records, (well_formed and saw_session_finish)
+
+
+def _discover_frozen_manifest(worktree: Path) -> list[str] | None:
+    """Discover the target's committed frozen dependency manifest (#58 hardening / gap #2).
+
+    The authoritative environment must install the SAME pinned deps the target committed, so a
+    baseline that imports a pinned dep is importable in the separate run. Prefers a committed
+    ``requirements.txt`` (each non-comment line is a pinned spec), falling back to a committed
+    ``pyproject.toml``'s ``[project].dependencies`` list. Returns the discovered specs, or ``None``
+    when the target commits no manifest (the provisioner then installs only the reporter toolchain).
+    """
+    wt = Path(worktree)
+    requirements = wt / "requirements.txt"
+    if requirements.is_file():
+        specs = [
+            line.strip()
+            for line in requirements.read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        if specs:
+            return specs
+    pyproject = wt / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            data = tomllib.loads(pyproject.read_text())
+        except tomllib.TOMLDecodeError:
+            return None
+        deps = data.get("project", {}).get("dependencies")
+        if isinstance(deps, list) and deps and all(isinstance(spec, str) for spec in deps):
+            return [str(spec) for spec in deps]
+    return None
 
 
 def run_baseline(
@@ -90,10 +134,13 @@ def run_baseline(
 ) -> Evidence:
     """Provision, run the baseline with a fresh ``--report-log``, and classify the fused evidence."""
     worktree = Path(worktree)
+    # Discover the target's committed frozen manifest and hand it to the provisioner so the
+    # authoritative env installs the SAME pinned deps the baseline imports (#58 hardening / gap #2).
+    frozen_deps = _discover_frozen_manifest(worktree)
     # A provisioning failure (missing uv, a write failure, a provisioner exception) must PAUSE with
     # typed non-green evidence, never crash the engine before AI is gated (#58/#12).
     try:
-        handle = adapter.provision_environment(worktree, None, provisioner=provisioner)
+        handle = adapter.provision_environment(worktree, frozen_deps, provisioner=provisioner)
     except Exception:  # noqa: BLE001 — any provisioning failure becomes a paused, non-green record.
         return _non_green_evidence(BaselineStatus.LAUNCH_FAILED)
     interpreter = handle.interpreter
@@ -145,8 +192,11 @@ def run_baseline(
     report_present = False
     if not launch_failed and not timed_out and report_file.exists():
         text = report_file.read_text()
-        report_present = bool(text.strip())
-        records = _parse_report_log(text)
+        records, well_formed = _parse_report_log(text)
+        # A report only counts as PRESENT evidence when it is well-formed and cleanly terminated: a
+        # truncated/corrupt report with no terminal SessionFinish is not trustworthy behavioral
+        # evidence and must not seed GREEN (#58 hardening / gap #6).
+        report_present = bool(text.strip()) and well_formed
 
     classification = adapter.classify(
         records,
@@ -224,13 +274,29 @@ def _committed_baseline(worktree: Path) -> tuple[bool, list[str] | None]:
     committed object to enforce against; production always hands in a real isolated worktree.
     """
     wt = Path(worktree)
+    # Scrub the location-redirecting GIT_* family (GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE/…) so a
+    # hostile or leftover ambient redirect cannot swap in a DIFFERENT repo's committed baseline —
+    # exactly as the workspace snapshot/fetch git reads already do (#58 hardening / gap #4).
+    scrubbed = _workspace_mod._scrubbed_git_env()
     head = process.run(
-        ["git", "-C", str(wt), "rev-parse", "--verify", "HEAD"], cwd=wt, timeout=_GIT_TIMEOUT
+        ["git", "-C", str(wt), "rev-parse", "--verify", "HEAD"],
+        cwd=wt,
+        timeout=_GIT_TIMEOUT,
+        env=scrubbed,
     )
     if head.returncode != 0:
+        # A rev-parse failure on a path that carries a ``.git`` (a real, but corrupt/unreadable,
+        # committed worktree) must PAUSE — there is no readable committed baseline, and the run must
+        # never fall back to the forbidden default and dispatch AI (#58 hardening / gap #3). Only a
+        # path that is not a git tree at all (no ``.git``) is a seam/unit context that may default.
+        if (wt / ".git").exists():
+            return (True, None)
         return (False, None)  # not a committed git worktree — a seam context, not enforceable
     shown = process.run(
-        ["git", "-C", str(wt), "show", "HEAD:.issueforge.toml"], cwd=wt, timeout=_GIT_TIMEOUT
+        ["git", "-C", str(wt), "show", "HEAD:.issueforge.toml"],
+        cwd=wt,
+        timeout=_GIT_TIMEOUT,
+        env=scrubbed,
     )
     if shown.returncode != 0:
         return (True, None)  # committed tree, but no committed config object -> pause

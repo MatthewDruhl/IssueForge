@@ -803,7 +803,6 @@ def _install_symbolic_ref_128_shim(tmp_path: Path) -> Path:
 
 # ===== #58 hardening (PR#60 Codex gap #9) =====
 # ===== #58 defect #9 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_ambient_git_exec_path_cannot_redirect_fetch_to_a_decoy_repo(tmp_path):
     """A hostile ambient GIT_EXEC_PATH must not let a fetch be redirected to a decoy repository.
     GIT_EXEC_PATH is where git looks up its helper programs; ``fetch`` is a builtin, but a LOCAL
@@ -855,7 +854,6 @@ def test_ambient_git_exec_path_cannot_redirect_fetch_to_a_decoy_repo(tmp_path):
 
 
 # ===== #58 hardening (PR#60 Codex gap #10) =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_symbolic_ref_exit_128_is_not_misread_as_detached_worktree(tmp_path):
     """When the detached-HEAD check on a freshly created worktree fails with a transient/fatal
     error (git's exit 128 — a metadata or permission failure) instead of the exit 1 that genuinely
@@ -900,7 +898,6 @@ def test_symbolic_ref_exit_128_is_not_misread_as_detached_worktree(tmp_path):
 
 
 # ===== #58 hardening (PR#60 Codex gap #11) =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_reset_worktree_rejects_a_status_read_that_fails_128_with_empty_stdout(
     tmp_path, monkeypatch
 ):
