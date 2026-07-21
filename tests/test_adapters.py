@@ -173,14 +173,15 @@ def test_verification_adapter_protocol_declares_the_s6_signatures():
 # --------------------------------------------------------------- the closed run-level enum
 
 
-def test_baseline_status_is_a_closed_nine_member_enum_separate_from_outcome():
-    """classify's run-level verdict is a closed 9-member BaselineStatus enum, distinct from the
+def test_baseline_status_is_a_closed_ten_member_enum_separate_from_outcome():
+    """classify's run-level verdict is a closed 10-member BaselineStatus enum, distinct from the
     per-node Outcome, and GREEN is the sole success member.
 
     Contract: {m.name for m in BaselineStatus} == exactly {GREEN, BEHAVIORAL_RED,
     COLLECTION_ERROR, NO_TESTS_COLLECTED, ALL_SKIPPED, USAGE_ERROR, INTERNAL_ERROR, TIMEOUT,
-    LAUNCH_FAILED}; BaselineStatus is not Outcome; GREEN is not a member of Outcome.
+    LAUNCH_FAILED, BROKEN}; BaselineStatus is not Outcome; GREEN is not a member of Outcome.
     """
+    # amended 9->10 for #58: BROKEN run-level state (Matt-approved 2026-07-21)
     from issueforge.adapters.base import BaselineStatus, Outcome
 
     assert {m.name for m in BaselineStatus} == {
@@ -193,6 +194,7 @@ def test_baseline_status_is_a_closed_nine_member_enum_separate_from_outcome():
         "INTERNAL_ERROR",
         "TIMEOUT",
         "LAUNCH_FAILED",
+        "BROKEN",
     }
     assert BaselineStatus is not Outcome
     assert "GREEN" not in {m.name for m in Outcome}
@@ -605,7 +607,6 @@ def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
 
 
 # ===== #58 defect #11 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_default_provisioning_builds_target_dep_env_and_artifact_dir(tmp_path):
     """Default provisioning must build the target's dependency environment: install the frozen
     manifest so a pinned dep the baseline imports is importable in the authoritative interpreter,
@@ -652,3 +653,121 @@ def test_default_provisioning_builds_target_dep_env_and_artifact_dir(tmp_path):
     )
     assert proc.returncode == 0, f"frozen dep not importable in authoritative env: {proc.stderr}"
     assert proc.stdout.strip() == "4.10.0"
+
+
+# ======================================================================
+# PR #60 hardening — adversarial tests for the 11 GREEN-safety gaps Codex
+# found in the S6 hardening build. PENDING until the fix closes them.
+# ======================================================================
+
+
+# ===== #58 hardening (PR#60 Codex gap #7) =====
+def test_green_forbids_an_unexpected_ghost_node_that_passes():
+    """GREEN means collection and execution RECONCILE: exactly the expected node-ids ran and
+    passed, no strangers. A report that carries a passing record for a node nobody collected
+    (a "ghost") is a reconciliation failure — the run executed something outside the frozen
+    expected set — so it must not green even though every expected node itself passed.
+
+    technical (contract): classify with expected_ids={t::a} over records
+    [t::a:call:passed, t::ghost:call:passed] at exit 0, report_present=True, timed_out=False
+    -> status is NOT BaselineStatus.GREEN. The unexpected passing t::ghost (collected==2 but
+    expected=={t::a}) forbids green because GREEN checks the expected set is a passing SUBSET,
+    not that the executed set equals the expected set. Today this returns GREEN.
+    """
+    from issueforge.adapters.base import BaselineStatus
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    res = PytestAdapter().classify(
+        [_rec("t::a", "call", "passed"), _rec("t::ghost", "call", "passed")],
+        exit_code=0,
+        timed_out=False,
+        report_present=True,
+        expected_ids={"t::a"},
+    )
+    assert res.status is not BaselineStatus.GREEN
+
+
+# ===== #58 hardening (PR#60 Codex gap #8) =====
+def test_behavioral_red_requires_a_complete_report_and_no_infra_failure():
+    """BEHAVIORAL_RED is a whole-report property: a genuine behavioral red baseline needs a COMPLETE
+    report (every expected node ran to a terminal record) whose only failure is an expected
+    call-phase failure. A single expected call failure is NOT sufficient. If some expected node
+    never executed, the report is incomplete and the run is BROKEN, not a trustworthy red. If the
+    failing node ALSO has a setup/teardown (infrastructure) failure, the run is contaminated by
+    infra breakage and is BROKEN, not a clean behavioral red. Today classify latches onto the first
+    expected call:failed record and mislabels both truncated and infra-contaminated reports as
+    BEHAVIORAL_RED.
+
+    technical (contract):
+      adapter = PytestAdapter()
+      Case A (incomplete report): classify(records=[a:call:failed], exit_code=1, timed_out=False,
+        report_present=True, expected_ids={a, b}) -> status is BaselineStatus.BROKEN (b never
+        produced any terminal record; the report is incomplete), and is NOT BEHAVIORAL_RED.
+      Case B (mixed call + teardown failure): classify(records=[a:call:failed, a:teardown:failed,
+        b:call:passed], exit_code=1, timed_out=False, report_present=True, expected_ids={a, b})
+        -> status is BaselineStatus.BROKEN (a's teardown/setup-infrastructure failure contaminates
+        the baseline), and is NOT BEHAVIORAL_RED.
+      A complete report with an expected call failure and no infra failure remains BEHAVIORAL_RED
+      (see test_a_failed_call_at_exit_one_is_behavioral_red) — this test only forbids the two
+      unsafe reports from being mislabeled.
+    """
+    from issueforge.adapters.base import BaselineStatus
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    adapter = PytestAdapter()
+
+    # Case A: expected {a, b} but only a:call:failed — b never executed (a truncated/incomplete
+    # report). One expected call failure is not a complete, trustworthy red baseline.
+    incomplete = adapter.classify(
+        [_rec("t::a", "call", "failed")],
+        exit_code=1,
+        timed_out=False,
+        report_present=True,
+        expected_ids={"t::a", "t::b"},
+    )
+    assert incomplete.status is BaselineStatus.BROKEN
+    assert incomplete.status is not BaselineStatus.BEHAVIORAL_RED
+
+    # Case B: a fails in the call phase AND in teardown (infra breakage); b passes and the report is
+    # otherwise complete. The infra failure contaminates the baseline -> BROKEN, not a clean red.
+    mixed = adapter.classify(
+        [
+            _rec("t::a", "call", "failed"),
+            _rec("t::a", "teardown", "failed"),
+            _rec("t::b", "call", "passed"),
+        ],
+        exit_code=1,
+        timed_out=False,
+        report_present=True,
+        expected_ids={"t::a", "t::b"},
+    )
+    assert mixed.status is BaselineStatus.BROKEN
+    assert mixed.status is not BaselineStatus.BEHAVIORAL_RED
+
+
+# ===== #58 hardening (PR#60 second round — gap D: setup-only node counted complete) =====
+def test_behavioral_red_requires_every_expected_node_to_reach_a_call_phase():
+    """BEHAVIORAL_RED requires every expected node to have reached a call phase (or a terminal
+    lifecycle). A node that produced ONLY a non-call record — e.g. ``setup:passed`` with no
+    following call — never ran its test body, so the report is INCOMPLETE and the run is BROKEN, not
+    a trustworthy behavioral red. The current completeness check only asks whether each expected node
+    produced ANY record, so a setup-only node is wrongly counted as complete and the run latches onto
+    the other node's call failure as BEHAVIORAL_RED.
+
+    technical (contract): classify(records=[a:call:failed, b:setup:passed], exit_code=1,
+    timed_out=False, report_present=True, expected_ids={a, b}) -> status is BaselineStatus.BROKEN
+    (b never reached a call/terminal lifecycle), and is NOT BEHAVIORAL_RED. Current impl: b's
+    setup:passed record satisfies the "produced a record" check, so status is BEHAVIORAL_RED.
+    """
+    from issueforge.adapters.base import BaselineStatus
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    res = PytestAdapter().classify(
+        [_rec("t::a", "call", "failed"), _rec("t::b", "setup", "passed")],
+        exit_code=1,
+        timed_out=False,
+        report_present=True,
+        expected_ids={"t::a", "t::b"},
+    )
+    assert res.status is BaselineStatus.BROKEN
+    assert res.status is not BaselineStatus.BEHAVIORAL_RED

@@ -52,8 +52,43 @@ class WorktreeResult:
     reason: str | None
 
 
+# Ambient GIT_* vars redirect git's dir/work-tree/index/object store away from the requested
+# checkout, so a snapshot could inspect one tree while a mutation lands in a decoy (#58/#6). Every
+# workspace git subprocess runs with these scrubbed from its environment.
+_GIT_REDIRECT_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_WORK_TREE_OVERRIDE",
+    # GIT_EXEC_PATH is where git resolves its helper programs; a LOCAL fetch still resolves
+    # ``git-upload-pack`` through it, so a directory on this var can make a fetch serve a DIFFERENT
+    # repository's refs/objects and fabricate a sha. Scrub it too so the real helpers run (#58/#9).
+    "GIT_EXEC_PATH",
+)
+
+
+def _scrubbed_git_env() -> dict:
+    """A copy of the parent environment with the location-redirecting GIT_* family removed."""
+    return {k: v for k, v in os.environ.items() if k not in _GIT_REDIRECT_VARS}
+
+
 def _git(args: list[str], *, cwd: Path) -> process.CommandResult:
-    return process.run(["git", *args], cwd=Path(cwd), timeout=_GIT_TIMEOUT)
+    return process.run(["git", *args], cwd=Path(cwd), timeout=_GIT_TIMEOUT, env=_scrubbed_git_env())
+
+
+class _SnapshotError(RuntimeError):
+    """A required git-snapshot read failed, so isolation cannot be proven from it."""
+
+
+def _resolve_git_path(checkout: Path, value: str) -> Path:
+    path = Path(value)
+    return (path if path.is_absolute() else Path(checkout) / path).resolve()
 
 
 def _next_seq() -> int:
@@ -75,7 +110,9 @@ def _default_branch(checkout: Path) -> str | None:
         cwd=checkout,
     )
     if symbolic.returncode == 0 and symbolic.stdout.strip():
-        return symbolic.stdout.strip().rsplit("/", 1)[-1]
+        # Strip EXACTLY the refs/remotes/origin/ prefix so a slash-bearing branch (release/v1)
+        # resolves whole, not to its last segment (#58/#3).
+        return symbolic.stdout.strip().removeprefix("refs/remotes/origin/")
     abbrev = _git(["-C", str(checkout), "rev-parse", "--abbrev-ref", "origin/HEAD"], cwd=checkout)
     if abbrev.returncode == 0 and "/" in abbrev.stdout:
         return abbrev.stdout.strip().split("/", 1)[1]
@@ -103,12 +140,27 @@ def fetch_default_sha(checkout: Path) -> FetchResult:
 
 
 def _snapshot(checkout: Path) -> tuple[bytes, bytes, str]:
-    """The checkout's ``.git/HEAD`` bytes, ``.git/index`` bytes, and resolved HEAD sha."""
-    git_dir = Path(checkout) / ".git"
-    head = (git_dir / "HEAD").read_bytes() if (git_dir / "HEAD").exists() else b""
-    index = (git_dir / "index").read_bytes() if (git_dir / "index").exists() else b""
-    rev = _git(["-C", str(checkout), "rev-parse", "HEAD"], cwd=checkout).stdout.strip()
-    return head, index, rev
+    """The checkout's HEAD bytes, index bytes, and resolved HEAD sha.
+
+    The real HEAD/index paths are resolved via ``git rev-parse --git-path`` so the snapshot works
+    when ``.git`` is a gitFILE (a linked worktree), not just a directory (#58/#5). A blind
+    ``<checkout>/.git/index`` read is ``b""`` on a linked worktree and an index mutation would be
+    invisible. Every required read must succeed; a failure raises ``_SnapshotError`` so isolation is
+    never inferred from an unread byte string.
+    """
+    head_path_res = _git(["-C", str(checkout), "rev-parse", "--git-path", "HEAD"], cwd=checkout)
+    index_path_res = _git(["-C", str(checkout), "rev-parse", "--git-path", "index"], cwd=checkout)
+    rev_res = _git(["-C", str(checkout), "rev-parse", "HEAD"], cwd=checkout)
+    if head_path_res.returncode != 0 or index_path_res.returncode != 0 or rev_res.returncode != 0:
+        raise _SnapshotError(f"git could not resolve HEAD/index paths for {checkout}")
+    head_path = _resolve_git_path(checkout, head_path_res.stdout.strip())
+    index_path = _resolve_git_path(checkout, index_path_res.stdout.strip())
+    try:
+        head = head_path.read_bytes()
+        index = index_path.read_bytes()
+    except OSError as exc:
+        raise _SnapshotError(f"git snapshot read failed: {exc}") from exc
+    return head, index, rev_res.stdout.strip()
 
 
 def _worktree_name(stamp: str | None, pid: int | None) -> str:
@@ -126,6 +178,37 @@ def _default_add(checkout_dir: Path, worktree_path: Path, target_sha: str) -> No
         ["-C", str(checkout_dir), "worktree", "add", "--detach", str(worktree_path), target_sha],
         cwd=checkout_dir,
     )
+
+
+def _worktree_created(checkout: Path, worktree_path: Path, sha: str) -> bool:
+    """Prove a worktree was actually created: it exists on disk, is a registered linked worktree of
+    ``checkout``, is DETACHED (no symbolic HEAD to delete), and sits at exactly ``sha`` (#58/#4).
+
+    An unchanged checkout snapshot is necessary but not sufficient — a no-op/failed ``add`` leaves
+    the checkout untouched too, so existence must be proven independently, never inferred."""
+    worktree_path = Path(worktree_path)
+    if not worktree_path.exists():
+        return False
+    target = worktree_path.resolve()
+    listing = _git(["-C", str(checkout), "worktree", "list", "--porcelain"], cwd=checkout)
+    if listing.returncode != 0:
+        return False
+    registered = any(
+        line.startswith("worktree ")
+        and _resolve_git_path(checkout, line[len("worktree ") :]) == target
+        for line in listing.stdout.splitlines()
+    )
+    if not registered:
+        return False
+    head = _git(["-C", str(worktree_path), "rev-parse", "HEAD"], cwd=worktree_path)
+    if head.returncode != 0 or head.stdout.strip() != sha:
+        return False
+    # Detachment is proven ONLY by exit 1 (``symbolic-ref -q HEAD`` = "HEAD is not a symbolic ref").
+    # Any OTHER nonzero code (git's exit 128 = a fatal metadata/permission error) means the check
+    # ERRORED, not that the worktree is detached — an unprovable detachment must be refused, never
+    # inferred from a failed command (#58 hardening / gap #10).
+    detached = _git(["-C", str(worktree_path), "symbolic-ref", "-q", "HEAD"], cwd=worktree_path)
+    return detached.returncode == 1
 
 
 def create_isolated_worktree(
@@ -161,7 +244,15 @@ def create_isolated_worktree(
         )
 
     with _ADD_LOCK:
-        head_before, index_before, rev_before = _snapshot(checkout)
+        try:
+            head_before, index_before, rev_before = _snapshot(checkout)
+        except _SnapshotError as exc:
+            return WorktreeResult(
+                path=worktree_path,
+                ok=False,
+                isolated=False,
+                reason=f"pre-add snapshot failed: {exc}",
+            )
         try:
             add(checkout, worktree_path, sha)
         except Exception as exc:  # noqa: BLE001 — preserve, report, never destroy the checkout.
@@ -171,14 +262,28 @@ def create_isolated_worktree(
                 isolated=False,
                 reason=f"worktree creation raised: {exc!r}",
             )
-        head_after, index_after, rev_after = _snapshot(checkout)
+        try:
+            head_after, index_after, rev_after = _snapshot(checkout)
+        except _SnapshotError as exc:
+            return WorktreeResult(
+                path=worktree_path,
+                ok=False,
+                isolated=False,
+                reason=f"post-add snapshot failed: {exc}",
+            )
+        # Existence proof (#58/#4) runs under the same lock: the worktree must really exist, be a
+        # registered detached linked worktree at exactly sha — an unchanged snapshot alone is not
+        # sufficient, because a no-op add leaves the checkout untouched too.
+        created = _worktree_created(checkout, worktree_path, sha)
 
     path_outside = not _is_inside(worktree_path, checkout)
     head_same = head_after == head_before and rev_after == rev_before
     index_same = index_after == index_before
-    isolated = path_outside and head_same and index_same
+    isolated = created and path_outside and head_same and index_same
     if not isolated:
         reasons = []
+        if not created:
+            reasons.append("worktree was not created/registered/detached at sha")
         if not path_outside:
             reasons.append("path inside checkout")
         if not head_same:
@@ -213,4 +318,43 @@ def reset_worktree(worktree: Path, base_sha: str) -> None:
     kind = _git(["-C", str(worktree), "cat-file", "-t", base_sha], cwd=worktree)
     if kind.stdout.strip() != "commit":
         raise ValueError(f"reset base {base_sha!r} is a {kind.stdout.strip()!r}, not a commit")
-    _git(["-C", str(worktree), "reset", "--hard", base_sha], cwd=worktree)
+
+    # Isolation proof BEFORE any destructive command (#58/#13): a linked worktree has a git-dir
+    # distinct from its git-common-dir; a NORMAL checkout (or the main worktree) has them equal.
+    # Destroying tracked work is permitted only inside a proven-isolated linked worktree, so a dirty
+    # normal checkout handed in by mistake is refused here rather than reset --hard'd.
+    facts = _git(["-C", str(worktree), "rev-parse", "--git-dir", "--git-common-dir"], cwd=worktree)
+    lines = facts.stdout.splitlines()
+    if facts.returncode != 0 or len(lines) != 2:
+        raise ValueError(f"{worktree} is not a git worktree")
+    git_dir = _resolve_git_path(worktree, lines[0].strip())
+    common_dir = _resolve_git_path(worktree, lines[1].strip())
+    if git_dir == common_dir:
+        raise ValueError(f"refusing to reset {worktree}: not a proven-isolated linked worktree")
+
+    # Require a SUCCESSFUL reset --hard, THEN clean -fd (only past the isolation proof), THEN verify
+    # HEAD sits at base_sha with a clean status (#58/#14) — a silent reset failure or an untracked
+    # file left behind must not be reported as success and contaminate the next attempt.
+    reset = _git(["-C", str(worktree), "reset", "--hard", base_sha], cwd=worktree)
+    if reset.returncode != 0:
+        raise RuntimeError(f"reset --hard {base_sha} failed: {reset.stderr.strip()}")
+    cleaned = _git(["-C", str(worktree), "clean", "-fd"], cwd=worktree)
+    if cleaned.returncode != 0:
+        raise RuntimeError(f"clean -fd failed: {cleaned.stderr.strip()}")
+    head = _git(["-C", str(worktree), "rev-parse", "HEAD"], cwd=worktree)
+    status = _git(["-C", str(worktree), "status", "--porcelain"], cwd=worktree)
+    # A cleanliness verdict requires SUCCESSFUL reads: a failed rev-parse/status (exit 128) leaves
+    # the real worktree state unknown, and an empty stdout from a failed status is NOT proof of a
+    # clean tree — inferring "clean" from it would let the next attempt inherit unseen contamination
+    # (#58 hardening / gap #11). Refuse to report success unless both reads actually succeeded.
+    if head.returncode != 0 or status.returncode != 0:
+        raise RuntimeError(
+            f"worktree {worktree} verification read failed after reset "
+            f"(rev-parse rc={head.returncode}, status rc={status.returncode}, "
+            f"status stderr={status.stderr.strip()!r})"
+        )
+    if head.stdout.strip() != base_sha or status.stdout.strip() != "":
+        raise RuntimeError(
+            f"worktree {worktree} not clean at {base_sha} after reset "
+            f"(HEAD={head.stdout.strip()!r}, status={status.stdout.strip()!r})"
+        )

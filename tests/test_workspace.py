@@ -14,6 +14,8 @@ cloned from it, so ``git fetch origin`` retrieves genuine commits — never a mo
 from __future__ import annotations
 
 import os
+import shutil
+import stat
 import subprocess
 import threading
 from pathlib import Path
@@ -509,7 +511,6 @@ def test_reset_worktree_refuses_a_nonexistent_ref(tmp_path):
 
 
 # ===== #58 defect #3 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_default_branch_with_slash_resolved_fully_not_last_segment(tmp_path):
     """A default branch whose name contains a slash (e.g. 'release/v1') must resolve to the WHOLE
     branch name, not just the segment after the last slash, or the fetch targets a branch that does
@@ -543,7 +544,6 @@ def test_default_branch_with_slash_resolved_fully_not_last_segment(tmp_path):
 
 
 # ===== #58 defect #4 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_worktree_creation_fails_when_add_is_a_noop(tmp_path):
     """Creation must PROVE the worktree exists — an unchanged checkout snapshot is necessary but
     not sufficient. When the ``add`` seam is a no-op (git failed, or added nothing), no worktree was
@@ -585,7 +585,6 @@ def test_worktree_creation_fails_when_add_is_a_noop(tmp_path):
 
 
 # ===== #58 defect #5 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_byte_isolation_proof_holds_on_linked_worktree_checkout(tmp_path):
     """When the checkout handed to create_isolated_worktree is itself a linked worktree (its ``.git``
     is a FILE pointing at a gitdir, not a directory), an index mutation during creation must still be
@@ -634,7 +633,6 @@ def test_byte_isolation_proof_holds_on_linked_worktree_checkout(tmp_path):
 
 
 # ===== #58 defect #6 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_ambient_git_env_vars_cannot_redirect_operations(tmp_path):
     """Ambient GIT_* environment variables cannot redirect a workspace git operation away from the
     requested checkout. With GIT_WORK_TREE / GIT_INDEX_FILE (the GIT_DIR family) set in the
@@ -681,7 +679,6 @@ def test_ambient_git_env_vars_cannot_redirect_operations(tmp_path):
 
 
 # ===== #58 defect #13 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_reset_worktree_refuses_non_isolated_path(tmp_path):
     """reset_worktree may destroy tracked work only inside a PROVEN-isolated linked worktree.
     Pointed at a dirty NORMAL checkout it must refuse before any reset --hard, so the developer's
@@ -719,7 +716,6 @@ def test_reset_worktree_refuses_non_isolated_path(tmp_path):
 
 
 # ===== #58 defect #14 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_reset_worktree_requires_successful_reset_and_removes_untracked(tmp_path):
     """After reset_worktree, a worktree left contaminated by a prior attempt is fully clean: an
     untracked file that existed before is GONE (clean -fd ran), a dirty tracked edit is reverted,
@@ -749,3 +745,208 @@ def test_reset_worktree_requires_successful_reset_and_removes_untracked(tmp_path
     assert (worktree / "README.md").read_text() == "seed\n"
     assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == sha
     assert _git(worktree, "status", "--porcelain").stdout.strip() == ""
+
+
+# ======================================================================
+# PR #60 hardening — adversarial tests for the 11 GREEN-safety gaps Codex
+# found in the S6 hardening build. PENDING until the fix closes them.
+# ======================================================================
+
+
+# ---- helper for hardening #9 ----
+def _fake_git_exec_dir_redirecting_upload_pack(exec_dir: Path, decoy_repo: Path) -> Path:
+    """A GIT_EXEC_PATH directory whose ``git-upload-pack`` serves ``decoy_repo`` instead of the
+    repository the fetch actually requested.
+
+    git resolves the ``git-upload-pack`` helper for a LOCAL fetch through GIT_EXEC_PATH, so a dir on
+    that variable can fabricate/redirect what a fetch pulls. The shim execs the REAL upload-pack
+    (discovered via ``git --exec-path``) against the decoy, so the fetch succeeds but returns the
+    decoy's refs/objects — a genuine hijack, not a mock of any IssueForge code.
+    """
+    real_exec = subprocess.run(
+        ["git", "--exec-path"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    exec_dir.mkdir(parents=True, exist_ok=True)
+    shim = exec_dir / "git-upload-pack"
+    shim.write_text(
+        '#!/bin/sh\nexec "' + real_exec + '/git-upload-pack" "' + str(decoy_repo) + '"\n'
+    )
+    shim.chmod(0o755)
+    return exec_dir
+
+
+# ---- helper for hardening #10 ----
+def _install_symbolic_ref_128_shim(tmp_path: Path) -> Path:
+    """A PATH shim directory whose ``git`` returns exit 128 (a transient/fatal metadata or
+    permission error, NOT exit 1 = detached) for ``git symbolic-ref ...`` and forwards every other
+    subcommand to the real git. Prepend it to ``$PATH`` to make only the detach-proof's
+    ``symbolic-ref -q HEAD`` fail with 128 while ``worktree add`` / ``worktree list`` / ``rev-parse``
+    all run for real, so the worktree is genuinely created and detached — isolating the exit-code
+    misread that gap #10 pins."""
+    real_git = shutil.which("git") or "/usr/bin/git"
+    shim_dir = tmp_path / "gitshim"
+    shim_dir.mkdir()
+    shim = shim_dir / "git"
+    shim.write_text(
+        "#!/bin/bash\n"
+        'for a in "$@"; do\n'
+        '  if [ "$a" = "symbolic-ref" ]; then\n'
+        '    echo "fatal: transient metadata error" >&2\n'
+        "    exit 128\n"
+        "  fi\n"
+        "done\n"
+        f'exec "{real_git}" "$@"\n'
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return shim_dir
+
+
+# ===== #58 hardening (PR#60 Codex gap #9) =====
+# ===== #58 defect #9 =====
+def test_ambient_git_exec_path_cannot_redirect_fetch_to_a_decoy_repo(tmp_path):
+    """A hostile ambient GIT_EXEC_PATH must not let a fetch be redirected to a decoy repository.
+    GIT_EXEC_PATH is where git looks up its helper programs; ``fetch`` is a builtin, but a LOCAL
+    fetch still resolves the ``git-upload-pack`` helper through GIT_EXEC_PATH, so a directory placed
+    on that variable can make a fetch serve a completely different repository's refs and objects. The
+    build must never accept a fabricated sha: workspace fetches scrub the whole GIT_* family
+    (including GIT_EXEC_PATH), so the real ``git-upload-pack`` runs and the resolved sha is the true
+    ``origin/<default>`` tip, not the attacker's decoy. Today only a hand-picked subset is scrubbed;
+    GIT_EXEC_PATH survives, so the fetch returns the decoy's fabricated sha.
+
+    technical (contract): a REAL bare origin + checkout whose default-branch tip is REAL; a SEPARATE
+    decoy bare repo advanced to a distinct tip DECOY (DECOY != REAL). A fake GIT_EXEC_PATH directory
+    holds a ``git-upload-pack`` shim that ignores its requested repo and execs the real upload-pack
+    against the decoy, so a local fetch under this env serves the decoy's refs/objects. With ambient
+    GIT_EXEC_PATH pointing at that directory, fetch_default_sha(checkout) -> ok=True, sha == REAL, and
+    sha != DECOY. Today ``_scrubbed_git_env`` omits GIT_EXEC_PATH, so the hijacked upload-pack serves
+    the decoy, FETCH_HEAD resolves to DECOY, and fetch_default_sha returns sha == DECOY (the fabricated
+    tip). A correct impl adds GIT_EXEC_PATH to the scrubbed GIT_* family so the real upload-pack runs
+    against the real origin.
+    """
+    from issueforge import workspace
+
+    origin, checkout = _bare_origin_with_checkout(tmp_path)
+    real_tip = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+
+    # A SEPARATE decoy repo advanced to a distinct tip the attacker wants served in place of REAL.
+    decoy_origin, _decoy_checkout = _bare_origin_with_checkout(tmp_path / "decoy")
+    decoy_tip = _advance_origin(tmp_path / "decoy", decoy_origin)
+    assert decoy_tip != real_tip
+
+    # git resolves git-upload-pack for a local fetch through GIT_EXEC_PATH; this dir's shim redirects
+    # the fetch to serve the decoy's refs/objects rather than the checkout's true origin.
+    exec_dir = _fake_git_exec_dir_redirecting_upload_pack(tmp_path / "fakeexec", decoy_origin)
+
+    saved = os.environ.get("GIT_EXEC_PATH")
+    os.environ["GIT_EXEC_PATH"] = str(exec_dir)
+    try:
+        fetched = workspace.fetch_default_sha(checkout)
+    finally:
+        if saved is None:
+            os.environ.pop("GIT_EXEC_PATH", None)
+        else:
+            os.environ["GIT_EXEC_PATH"] = saved
+
+    # A scrubbing impl runs the REAL upload-pack against the REAL origin: the true tip, not the decoy.
+    assert fetched.ok is True
+    assert fetched.sha == real_tip
+    assert fetched.sha != decoy_tip
+
+
+# ===== #58 hardening (PR#60 Codex gap #10) =====
+def test_symbolic_ref_exit_128_is_not_misread_as_detached_worktree(tmp_path):
+    """When the detached-HEAD check on a freshly created worktree fails with a transient/fatal
+    error (git's exit 128 — a metadata or permission failure) instead of the exit 1 that genuinely
+    means "not a symbolic ref, i.e. detached", the creation must NOT be reported as a valid detached
+    worktree. A build that cannot actually confirm the worktree is detached must refuse, never treat
+    "the command errored out" as proof of detachment. Only a real exit 1 counts as detached.
+
+    technical (contract): a real bare origin + clone; create_isolated_worktree(checkout, sha) with a
+    PATH shim whose `git symbolic-ref ...` exits 128 (forwarding every other subcommand — worktree
+    add, worktree list, rev-parse — to real git, so the worktree IS genuinely created and detached).
+    The detach-proof `git symbolic-ref -q HEAD` therefore returns exit 128, not 1. Expected:
+    result.ok is False, result.isolated is False, result.reason is non-empty. Today _worktree_created
+    returns `symbolic-ref.returncode != 0`, so 128 is misread as detached and the call returns
+    ok=True / isolated=True / reason=None (the defect). A correct impl accepts only exit 1 (== 1) as
+    proof of detachment and refuses on any other nonzero code.
+    """
+    from issueforge import workspace
+
+    _origin, checkout = _bare_origin_with_checkout(tmp_path)
+    sha = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+
+    # A hostile/transient git: `symbolic-ref` fails with exit 128 (fatal, NOT exit 1 = detached);
+    # every other subcommand reaches real git, so the worktree is really created and truly detached.
+    shim_dir = _install_symbolic_ref_128_shim(tmp_path)
+    saved_path = os.environ.get("PATH")
+    os.environ["PATH"] = f"{shim_dir}{os.pathsep}{saved_path}"
+    try:
+        result = workspace.create_isolated_worktree(
+            checkout, sha, worktrees_root=tmp_path / "wtroot"
+        )
+    finally:
+        if saved_path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = saved_path
+
+    # The detach-proof errored (128) rather than confirming detachment (1): isolation is unprovable,
+    # so creation must be refused — never inferred valid from a failed check.
+    assert result.ok is False
+    assert result.isolated is False
+    assert result.reason
+
+
+# ===== #58 hardening (PR#60 Codex gap #11) =====
+def test_reset_worktree_rejects_a_status_read_that_fails_128_with_empty_stdout(
+    tmp_path, monkeypatch
+):
+    """After a reset, reset_worktree must PROVE the worktree is clean by a SUCCESSFUL status read,
+    never infer cleanliness from empty output. If the final `git status --porcelain` fails (exit
+    128) but prints nothing, an empty stdout is not proof of a clean tree — reset_worktree must
+    refuse to report success, because a failed status read leaves the actual worktree state unknown
+    and the next attempt would inherit whatever contamination the check could not see.
+
+    technical (contract): a proven-isolated worktree (README committed as 'seed\\n') carrying a dirty
+    tracked edit 'mid-attempt edit\\n'. The `workspace._git` subprocess seam is patched so that ONLY
+    the `git status --porcelain` invocation returns a CommandResult(returncode=128, stdout="",
+    stderr='fatal: simulated status failure', timed_out=False) — every other git call (reset --hard,
+    clean -fd, rev-parse HEAD, rev-parse --git-dir/--git-common-dir, cat-file, verify) runs for real,
+    so `rev-parse HEAD` genuinely equals base_sha after the real reset and the status seam is proven
+    to have been reached. reset_worktree(worktree, base_sha) must RAISE (a failed status read is not
+    a clean tree), not return None. Today the final check compares only `head.stdout.strip() !=
+    base_sha` and `status.stdout.strip() != ""`, ignores both return codes, reads the empty stdout as
+    clean, and reports success (workspace.py:336).
+    """
+    from issueforge import process, workspace
+
+    _origin, checkout = _bare_origin_with_checkout(tmp_path)
+    sha = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+    worktree = workspace.create_isolated_worktree(checkout, sha).path
+    (worktree / "README.md").write_text("mid-attempt edit\n")
+
+    # Inject the git seam: the FINAL `status --porcelain` fails with exit 128 and empty stdout, while
+    # every other git command (including the real reset --hard / clean -fd / rev-parse HEAD) runs for
+    # real. This drives the production verification path — it does not fake reset_worktree's logic.
+    real_git = workspace._git
+    seen = {"status": False}
+
+    def _status_fails_128(args, *, cwd):
+        if "status" in args and "--porcelain" in args:
+            seen["status"] = True
+            return process.CommandResult(
+                argv=["git", *args],
+                returncode=128,
+                stdout="",
+                stderr="fatal: simulated status failure",
+                duration_ms=0.0,
+                timed_out=False,
+            )
+        return real_git(args, cwd=cwd)
+
+    monkeypatch.setattr(workspace, "_git", _status_fails_128)
+
+    # A 128/empty-stdout status read must NOT be reported as a clean success; reset_worktree raises.
+    with pytest.raises(Exception):
+        workspace.reset_worktree(worktree, sha)
+    assert seen["status"] is True  # the failing status read really was on the production path

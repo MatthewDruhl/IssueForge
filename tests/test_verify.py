@@ -20,12 +20,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
-
-import pytest
 
 
 # The baseline command as it appears in .issueforge.toml, minus the interpreter — the runner
@@ -864,7 +863,6 @@ def _appending_provisioner(extra_line: str):
 
 
 # ===== #58 defect #1 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_baseline_argv_executable_resolved_in_env_not_prepended_to_interpreter(tmp_path):
     """The committed baseline command names its own executable; the runner resolves that
     executable inside the authoritative environment instead of blindly prepending the provisioned
@@ -917,7 +915,6 @@ def test_baseline_argv_executable_resolved_in_env_not_prepended_to_interpreter(t
 
 
 # ===== #58 defect #2 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_missing_or_malformed_committed_baseline_config_pauses_not_defaults(tmp_path):
     """An isolated worktree whose committed config is missing, malformed, carries an empty
     baseline, or a non-list baseline must PAUSE the run (no AI dispatch) instead of silently
@@ -967,7 +964,6 @@ def test_missing_or_malformed_committed_baseline_config_pauses_not_defaults(tmp_
 
 
 # ===== #58 defect #7 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_failed_or_timed_out_canonical_collect_refuses_green(tmp_path):
     """A --collect-only that exits NONZERO must not seed a GREEN baseline: the runner cannot
     trust node ids scraped from a broken collection, so run_baseline must refuse green.
@@ -1016,7 +1012,6 @@ def test_failed_or_timed_out_canonical_collect_refuses_green(tmp_path):
 
 
 # ===== #58 defect #8 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_incomplete_or_contradictory_report_log_is_not_green(tmp_path):
     """A contradictory report log is not GREEN: the one expected node passes, but an UNEXPECTED
     node carries a BROKEN record in the same report. GREEN must be a whole-report property (no
@@ -1053,7 +1048,6 @@ def test_incomplete_or_contradictory_report_log_is_not_green(tmp_path):
 
 
 # ===== #58 defect #9 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_broken_executions_classify_broken_not_behavioral_red(tmp_path):
     """A broken execution (the interpreter dies from a signal, not a clean call-phase failure) is
     BROKEN, never BEHAVIORAL_RED. BEHAVIORAL_RED is reserved for a complete report with a real
@@ -1089,7 +1083,6 @@ def test_broken_executions_classify_broken_not_behavioral_red(tmp_path):
 
 
 # ===== #58 defect #12 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_provisioning_or_runner_failure_pauses_never_crashes(tmp_path):
     """A provisioning/runner failure PAUSES the run with a typed non-green status and never
     dispatches AI, instead of letting the exception escape and crash the engine before any AI
@@ -1132,3 +1125,824 @@ def test_provisioning_or_runner_failure_pauses_never_crashes(tmp_path):
     assert isinstance(outcome.status, BaselineStatus)
     assert outcome.status is not BaselineStatus.GREEN
     assert dispatched == []
+
+
+# ======================================================================
+# PR #60 hardening — adversarial tests for the 11 GREEN-safety gaps Codex
+# found in the S6 hardening build. PENDING until the fix closes them.
+# ======================================================================
+
+
+# ---- helper for hardening #2 ----
+def _committed_manifest_target(
+    root: Path,
+    name: str,
+    body: str,
+    *,
+    requirements: str,
+    dependencies: list[str],
+) -> Path:
+    """A git-committed target carrying one test module plus a FROZEN dependency manifest: a pinned
+    requirements.txt and a pyproject.toml whose ``[project].dependencies`` pins the same specs.
+
+    Both forms are committed so run_baseline can discover the manifest from whichever committed
+    representation the fix reads; the target is a real repo (``git init`` + commit) so a
+    discovery that reads the committed git object, not just the worktree filesystem, still resolves.
+    """
+    repo = root / name
+    (repo / "tests").mkdir(parents=True)
+    (repo / "tests" / "test_target.py").write_text(textwrap.dedent(body))
+    (repo / "requirements.txt").write_text(requirements)
+    deps_array = "[" + ", ".join(f'"{spec}"' for spec in dependencies) + "]"
+    (repo / "pyproject.toml").write_text(
+        f'[project]\nname = "if-target"\nversion = "0"\ndependencies = {deps_array}\n'
+    )
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "seed")
+    return repo
+
+
+def _manifest_provisioner():
+    """A provisioner seam modelling _provision_default's manifest install: it makes EXACTLY the
+    frozen deps it is handed importable in the authoritative interpreter, by writing a stub module
+    per dep onto a controlled PYTHONPATH allowlist env.
+
+    A dep the manifest never named is never importable, and ``frozen_deps=None`` (today's
+    run_baseline call) installs nothing — so a baseline's ``import <dep>`` only succeeds when
+    run_baseline discovered the target's committed manifest and passed that dep through. The env is
+    a small explicit allowlist (never a copy of the candidate's os.environ), like _clean_provisioner.
+    """
+    import uuid
+    from types import SimpleNamespace
+
+    def _dep_names(frozen_deps: object) -> list[str]:
+        if not frozen_deps:
+            return []
+        items = frozen_deps.keys() if isinstance(frozen_deps, dict) else frozen_deps
+        names: list[str] = []
+        for spec in items:
+            name = ""
+            for char in str(spec):
+                if not (char.isalnum() or char in "-_."):
+                    break
+                name += char
+            if name:
+                names.append(name.replace("-", "_"))
+        return names
+
+    def _provision(worktree, frozen_deps=None):
+        site = Path(worktree).parent / f"if-manifest-site-{Path(worktree).name}-{uuid.uuid4().hex}"
+        site.mkdir(exist_ok=True)
+        for dep in _dep_names(frozen_deps):
+            (site / f"{dep}.py").write_text("__version__ = '1.0.0'\n")
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", ""),
+            "PYTHONPATH": str(site),
+        }
+        return SimpleNamespace(
+            interpreter=sys.executable, env=env, artifact_dir=site, network=False
+        )
+
+    return _provision
+
+
+# ---- helper for hardening #3 ----
+def _corrupt_git_worktree(root: Path, files: dict[str, str]) -> tuple[Path, str]:
+    """A REAL isolated worktree whose git metadata is unreadable/corrupt while its working files
+    remain on disk.
+
+    Builds a committed git repo (default branch 'trunk') carrying ``files``, adds a linked worktree
+    at ``<root>/wt`` checked out to HEAD, then deletes the worktree's backing admin dir
+    (``main/.git/worktrees``) so the worktree's ``.git`` file points at nothing. A real
+    ``git -C <wt> rev-parse --verify HEAD`` / ``git show HEAD:.issueforge.toml`` in that worktree
+    then exits 128, exactly the "isolated worktree exists but its git metadata is unreadable/corrupt"
+    condition — but the checked-out tests/test_target.py stays on disk, so a runner that falls back
+    to a default baseline can still run (and wrongly green) the target. Returns ``(worktree, sha)``.
+    """
+    main = root / "main"
+    main.mkdir(parents=True)
+    for rel, content in files.items():
+        p = main / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    subprocess.run(["git", "init", "-q", "-b", "trunk", str(main)], check=True)
+    _git(main, "add", "-A")
+    _git(main, "commit", "-qm", "seed")
+    sha = _git(main, "rev-parse", "HEAD").stdout.strip()
+    wt = root / "wt"
+    _git(main, "worktree", "add", "-q", str(wt), "HEAD")
+    # Corrupt: remove the worktree's backing admin dir so its git metadata is unreadable (exit 128).
+    shutil.rmtree(main / ".git" / "worktrees")
+    return wt, sha
+
+
+# ---- helper for hardening #5 ----
+def _collect_only_stdout_polluter(extra_line: str):
+    """A provisioner seam whose 'interpreter' is a REAL wrapper script: it runs the provisioned
+    pytest verbatim, then -- ONLY when the invocation carries --collect-only -- prints one extra
+    line (``extra_line``) to stdout after pytest's own collection output, before exiting with
+    pytest's own code.
+
+    Only the injectable ``provisioner`` seam (a production API param) is used -- no issueforge
+    internal is patched. The extra line is a plausible node id followed by trailing garbage, so it
+    drives canonical_collect's real --collect-only stdout parser (which today scrapes any line
+    containing '::') with malformed collection output that still exits 0. Execution (non-collect)
+    runs carry no --collect-only, so the wrapper leaves the real run untouched.
+    """
+    from types import SimpleNamespace
+
+    def _provision(worktree, frozen_deps=None):
+        wdir = Path(worktree).parent / f"if-collectwrap-{Path(worktree).name}"
+        wdir.mkdir(exist_ok=True)
+        wrapper = wdir / "wrap-python"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            f'"{sys.executable}" "$@"\n'
+            "code=$?\n"
+            "co=0\n"
+            'for a in "$@"; do case "$a" in --collect-only) co=1;; esac; done\n'
+            f"if [ \"$co\" = \"1\" ]; then printf '%s\\n' '{extra_line}'; fi\n"
+            "exit $code\n"
+        )
+        os.chmod(wrapper, 0o755)
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+        return SimpleNamespace(interpreter=str(wrapper), env=env, artifact_dir=wdir, network=False)
+
+    return _provision
+
+
+# ---- helper for hardening #6 ----
+def _truncating_no_sessionfinish_provisioner():
+    """A provisioner seam whose 'interpreter' is a REAL wrapper script: it runs the provisioned
+    pytest verbatim, then rewrites the real --report-log so the terminal SessionFinish record is
+    REMOVED and a truncated/corrupt JSON line is appended, before exiting with pytest's own code.
+
+    Only the injectable ``provisioner`` seam (a production API param) is used — no issueforge
+    internal is patched. collect-only runs carry no --report-log, so the wrapper leaves them
+    untouched and canonical_collect's expected-id set is unaffected. The passing TestReport records
+    survive verbatim; only the clean session-end marker is dropped and a malformed line appended —
+    exactly the corrupt/truncated, no-terminal-SessionFinish report the contract forbids from
+    being classified GREEN.
+    """
+    from types import SimpleNamespace
+
+    def _provision(worktree, frozen_deps=None):
+        wdir = Path(worktree).parent / f"if-corrupt-{Path(worktree).name}"
+        wdir.mkdir(exist_ok=True)
+        corruptor = wdir / "corrupt_report.py"
+        corruptor.write_text(
+            textwrap.dedent(
+                """
+                import sys
+                p = sys.argv[1]
+                lines = [l for l in open(p).read().splitlines() if l.strip()]
+                kept = [l for l in lines if '"SessionFinish"' not in l]
+                with open(p, "w") as f:
+                    f.write("\\n".join(kept))
+                    f.write("\\n")
+                    f.write('{"$report_type": "TestRep')
+                """
+            )
+        )
+        wrapper = wdir / "wrap-python"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            f'"{sys.executable}" "$@"\n'
+            "code=$?\n"
+            'rl=""\n'
+            'for a in "$@"; do\n'
+            '  case "$a" in --report-log=*) rl="${a#--report-log=}";; esac\n'
+            "done\n"
+            f'if [ -n "$rl" ] && [ -f "$rl" ]; then "{sys.executable}" "{corruptor}" "$rl"; fi\n'
+            "exit $code\n"
+        )
+        os.chmod(wrapper, 0o755)
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+        return SimpleNamespace(interpreter=str(wrapper), env=env, artifact_dir=wdir, network=False)
+
+    return _provision
+
+
+# ===== #58 hardening (PR#60 Codex gap #1) =====
+def test_default_provisioner_resolves_baseline_executable_under_env_root_not_host_path(tmp_path):
+    """The DEFAULT provisioning path must launch the committed bare-name baseline (["pytest"], the
+    grammar the S1 config loader actually produces) from the AUTHORITATIVE environment it just
+    built, never a pytest that happens to sit on the host PATH. The whole point of provisioning a
+    separate env is that the baseline runs against the authoritative interpreter's own installed
+    packages; if the runner resolves ["pytest"] against the host PATH, the authoritative env is
+    decorative and the baseline can go green off host-leaked packages the authoritative env never
+    installed. So the executable actually launched for the baseline must live UNDER the
+    authoritative env_root, not on the host.
+
+    Today _provision_default hands build_launch_argv an env whose PATH is the raw host PATH
+    (pytest_adapter.py:87), so shutil.which("pytest", ...) resolves the HOST pytest and the
+    provisioned env_root/bin/pytest is never used (process.py build_launch_argv). The persisted
+    launch records show argv[0] == the host .venv/bin/pytest, outside env_root.
+
+    technical (contract): run_baseline(worktree, ["pytest"], adapter=PytestAdapter()) with the
+    DEFAULT provisioner (no provisioner= injected) over a target whose one test passes. From the
+    persisted subprocess-boundary evidence, EVERY launch record carrying a "--report-log" option
+    (the baseline execution) must have argv[0] resolving to a path UNDER
+    Path(evidence.env_root).resolve() (e.g. <env_root>/bin/pytest). Current impl: argv[0] resolves
+    to the host interpreter's pytest (e.g. <repo>/.venv/bin/pytest), which is NOT under env_root, so
+    the assertion fails — the host pytest was launched, not the authoritative one.
+    """
+    from issueforge import verify
+
+    # DEFAULT provisioning path: a real, separate venv under state_root() (no injected seam), so the
+    # only way ["pytest"] can be launched authoritatively is by resolving it against env_root/bin.
+    worktree = _make_target(tmp_path, "hostleak", "def test_ok():\n    assert True\n")
+    ev = verify.run_baseline(worktree, ["pytest"], adapter=_adapter())
+
+    env_root = Path(ev.env_root).resolve()
+    launches = [
+        r
+        for r in _invocation_records()
+        if isinstance(r["argv"], list)
+        and r["argv"]
+        and any(str(a).startswith("--report-log") for a in r["argv"])
+    ]
+    assert launches, "no baseline pytest launch was recorded"
+    for r in launches:
+        exe = Path(str(r["argv"][0])).resolve()
+        assert env_root in exe.parents, (
+            f"baseline launched {exe}, not a pytest under the authoritative env_root {env_root} "
+            "(host PATH leaked into executable resolution)"
+        )
+
+
+# ===== #58 hardening (PR#60 Codex gap #2) =====
+def test_run_baseline_discovers_and_installs_the_target_frozen_manifest(tmp_path):
+    """Through the REAL run_baseline path, a target that commits a frozen manifest naming a pinned
+    dependency, and whose baseline imports that dependency, classifies GREEN — because run_baseline
+    DISCOVERS the target's committed manifest and hands it to the authoritative-environment
+    provisioner, so the pinned dep is importable in the separate run. A baseline that imports a dep
+    the manifest does NOT name is never GREEN.
+
+    Today run_baseline always calls provision_environment(worktree, None, ...) (verify.py:96): the
+    real baseline path never supplies the target's frozen manifest — only the direct
+    provision_environment unit test does. So the pinned dep is absent from the authoritative env,
+    the baseline's `import <dep>` fails at collection, and the run is a COLLECTION_ERROR instead of
+    GREEN. A correct fix discovers the committed manifest (a pinned requirements.txt /
+    pyproject.toml dependency list) and passes it as the frozen_deps the provisioner installs.
+
+    The provisioner seam here is faithful to the real _provision_default: it makes exactly the deps
+    it is handed importable in the authoritative interpreter (a stub module per dep on a controlled
+    PYTHONPATH) — never a dep the manifest did not name, and nothing at all when it is handed None.
+    So GREEN can only come from run_baseline having discovered and passed the target's own manifest.
+
+    technical (contract):
+      * a git-committed target whose tests/test_target.py does `import if_pinned_dep` (asserting its
+        __version__ == "1.0.0"), a committed requirements.txt pinning `if_pinned_dep==1.0.0`, and a
+        committed pyproject.toml with dependencies == ["if_pinned_dep==1.0.0"]. run_baseline(target,
+        ["-m","pytest"], adapter=PytestAdapter(), provisioner=_manifest_provisioner()) ->
+        evidence.status is BaselineStatus.GREEN, evidence.executed == 1, evidence.exit_code == 0.
+        (Current impl: run_baseline passes frozen_deps=None, the seam installs nothing, the import
+        fails during --collect-only, status is BaselineStatus.COLLECTION_ERROR at exit_code 2.)
+      * a control target committing requirements.txt/pyproject deps that pin a DIFFERENT dep
+        (`if_other_dep==2.0.0`) while its baseline does `import if_absent_dep` (not in the manifest)
+        -> evidence.status is NOT BaselineStatus.GREEN — a manifest that does not name the imported
+        dep cannot green, so a fix cannot pass by installing everything unconditionally.
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    baseline = ["-m", "pytest"]
+
+    green = _committed_manifest_target(
+        tmp_path,
+        "manifest_green",
+        """
+        import if_pinned_dep
+
+        def test_uses_pinned_dep():
+            assert if_pinned_dep.__version__ == "1.0.0"
+        """,
+        requirements="if_pinned_dep==1.0.0\n",
+        dependencies=["if_pinned_dep==1.0.0"],
+    )
+    ev = verify.run_baseline(
+        green, baseline, adapter=_adapter(), provisioner=_manifest_provisioner()
+    )
+    assert ev.status is BaselineStatus.GREEN
+    assert ev.executed == 1
+    assert ev.exit_code == 0
+
+    # Control: the manifest names a different dep than the one the baseline imports, so even a
+    # correct fix leaves the imported dep absent -> not GREEN. Guards against an "install
+    # everything" fix that would trivially satisfy the primary case.
+    control = _committed_manifest_target(
+        tmp_path,
+        "manifest_control",
+        """
+        import if_absent_dep
+
+        def test_needs_unlisted_dep():
+            assert if_absent_dep.__version__ == "1.0.0"
+        """,
+        requirements="if_other_dep==2.0.0\n",
+        dependencies=["if_other_dep==2.0.0"],
+    )
+    ev_control = verify.run_baseline(
+        control, baseline, adapter=_adapter(), provisioner=_manifest_provisioner()
+    )
+    assert ev_control.status is not BaselineStatus.GREEN
+
+
+# ===== #58 hardening (PR#60 Codex gap #3) =====
+def test_corrupt_worktree_git_metadata_pauses_not_defaults(tmp_path):
+    """An isolated worktree that really exists on disk but whose git metadata is corrupt or
+    unreadable must PAUSE the run, never silently fall back to a default baseline and dispatch AI.
+
+    The runner reads the MANDATORY baseline from the worktree's committed HEAD object. If
+    ``git rev-parse HEAD`` / ``git show HEAD:.issueforge.toml`` fail because the worktree's git
+    metadata is broken, there is no readable committed baseline at all. The run must stop before any
+    AI touches a file. It must NOT treat a broken git worktree as if it were a unit-seam context and
+    substitute the forbidden ``["-m", "pytest"]`` default, which would green a passing target and
+    dispatch on a baseline nobody committed.
+
+    Here a real committed git repo (default branch 'trunk') carrying a passing test and a committed
+    pytest baseline gets a linked worktree, then the worktree's backing admin dir is deleted so
+    ``git rev-parse``/``git show`` in the worktree really exit 128 while the checked-out working
+    files remain on disk. A workspace seam fetches and isolates cleanly and hands this corrupt
+    worktree to the runner.
+
+    technical (contract): with a real corrupt-metadata worktree (git rev-parse --verify HEAD exits
+    128) injected via the workspace seam, establish_green_baseline(checkout, adapter,
+    workspace=corrupt, provisioner=clean, dispatch=spy) -> outcome.paused is True, the dispatch spy
+    NEVER fired (dispatched == []), and outcome.status is not BaselineStatus.GREEN. Current impl:
+    _committed_baseline sees rev-parse returncode != 0, returns (False, None), the caller
+    substitutes _SEAM_DEFAULT_BASELINE ["-m", "pytest"], runs the passing target, classifies GREEN,
+    and dispatches -- outcome.status is BaselineStatus.GREEN and paused is False.
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    wt, sha = _corrupt_git_worktree(
+        tmp_path,
+        {
+            "tests/test_target.py": "def test_ok():\n    assert True\n",
+            ".issueforge.toml": 'baseline = ["-m", "pytest"]\nframework = "pytest"\n',
+        },
+    )
+    # Precondition: the worktree exists but its git metadata is genuinely unreadable (real exit 128).
+    probe = subprocess.run(
+        ["git", "-C", str(wt), "rev-parse", "--verify", "HEAD"], capture_output=True, text=True
+    )
+    assert probe.returncode != 0, "precondition: worktree git metadata must be unreadable"
+
+    class _CorruptWorktreeWorkspace:
+        """Fetches + isolates cleanly, then hands back the corrupt-metadata worktree as isolated."""
+
+        def fetch_default_sha(self, checkout):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(sha=sha, ok=True, reason=None)
+
+        def create_isolated_worktree(self, checkout, sha, **k):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(path=wt, ok=True, isolated=True, reason=None)
+
+    dispatched = []
+    outcome = verify.establish_green_baseline(
+        tmp_path / "checkout",
+        adapter=_adapter(),
+        workspace=_CorruptWorktreeWorkspace(),
+        provisioner=_clean_provisioner(),
+        dispatch=lambda **k: dispatched.append(k),
+    )
+    assert outcome.paused is True, f"expected pause, got status {outcome.status!r}"
+    assert dispatched == [], "AI dispatched on an unreadable committed baseline"
+    assert outcome.status is not BaselineStatus.GREEN
+
+
+# ===== #58 hardening (PR#60 Codex gap #4) =====
+def test_committed_baseline_read_ignores_ambient_git_redirect(tmp_path, monkeypatch):
+    """The MANDATORY committed baseline is read from the REAL isolated worktree, even when the
+    ambient environment carries a decoy git redirect. A hostile or leftover GIT_DIR /
+    GIT_WORK_TREE / GIT_INDEX_FILE pointing at ANOTHER repository must not be able to swap in a
+    different committed baseline command: the config read is scoped to the worktree with those
+    location-redirecting GIT_* variables scrubbed, exactly as the workspace snapshot/fetch git
+    reads already are.
+
+    Set up a real offline origin/checkout whose committed .issueforge.toml selects only the
+    passing test, plus a separate DECOY repo whose committed .issueforge.toml selects the FAILING
+    test. Point ambient GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE at the decoy, then establish the
+    baseline. The run must GREEN off the real worktree's own committed command and dispatch once.
+    Today verify._committed_baseline runs `git rev-parse HEAD` / `git show HEAD:.issueforge.toml`
+    with no env= (verify.py:227), inheriting the ambient GIT_DIR, so it reads the DECOY's
+    `-k test_broken`, runs it in the real worktree, and pauses BEHAVIORAL_RED — no dispatch.
+
+    technical (contract): a bare origin on default branch 'trunk' carrying a passing test_ok, a
+    FAILING test_broken, and a committed .issueforge.toml baseline = ["-m","pytest","-k","test_ok"];
+    a separate decoy git repo whose committed .issueforge.toml baseline = ["-m","pytest","-k",
+    "test_broken"]. With GIT_DIR=<decoy>/.git, GIT_WORK_TREE=<decoy>, GIT_INDEX_FILE=<decoy>/.git/
+    index set in the ambient env, establish_green_baseline(checkout, adapter=PytestAdapter(),
+    provisioner=clean, dispatch=spy) -> outcome.paused is False, outcome.status is
+    BaselineStatus.GREEN, and the dispatch spy fired exactly once (len(dispatched) == 1). Current
+    impl: the decoy baseline is read (-k test_broken), the real worktree's failing test runs, and
+    outcome.status is BaselineStatus.BEHAVIORAL_RED with paused True and dispatched == [].
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    # Real origin/checkout: the committed baseline selects ONLY the passing test.
+    _origin, checkout = _origin_with_checkout(
+        tmp_path / "real",
+        branch="trunk",
+        files={
+            "tests/test_target.py": (
+                "def test_ok():\n    assert True\n\n\ndef test_broken():\n    assert False\n"
+            ),
+            ".issueforge.toml": (
+                'baseline = ["-m", "pytest", "-k", "test_ok"]\nframework = "pytest"\n'
+            ),
+        },
+    )
+
+    # Decoy repo whose COMMITTED config selects the FAILING test; an ambient GIT_DIR pointing here
+    # would substitute this command for the real worktree's mandatory committed baseline.
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(decoy)], check=True)
+    (decoy / ".issueforge.toml").write_text(
+        'baseline = ["-m", "pytest", "-k", "test_broken"]\nframework = "pytest"\n'
+    )
+    _git(decoy, "add", "-A")
+    _git(decoy, "commit", "-qm", "decoy")
+
+    # Redirect ambient git location AFTER all repos are built (so their construction is unaffected).
+    decoy_git = decoy / ".git"
+    monkeypatch.setenv("GIT_DIR", str(decoy_git))
+    monkeypatch.setenv("GIT_WORK_TREE", str(decoy))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(decoy_git / "index"))
+
+    dispatched = []
+    outcome = verify.establish_green_baseline(
+        checkout,
+        adapter=_adapter(),
+        provisioner=_clean_provisioner(),
+        dispatch=lambda **k: dispatched.append(k),
+    )
+    assert outcome.paused is False
+    assert outcome.status is BaselineStatus.GREEN
+    assert len(dispatched) == 1
+
+
+# ===== #58 hardening (PR#60 Codex gap #5) =====
+def test_malformed_collect_only_output_invalidates_the_collection(tmp_path):
+    """A --collect-only that exits 0 but prints a plausible node id followed by trailing garbage
+    must make the collection INVALID: its scraped ids cannot be trusted to seed a green baseline.
+    Collection validity is not just "exit 0 and no timeout" -- stdout that does not parse as clean
+    node ids is broken evidence, and a broken collection can never be laundered into a trusted
+    expected-id set. Trusting a source that emits garbage risks silently missing real tests, so the
+    whole collection is treated as invalid, not partially scraped.
+
+    technical (contract): a target with one genuinely passing tests/test_target.py::test_a, plus a
+    provisioner seam whose REAL wrapper interpreter runs pytest verbatim and, ONLY on the
+    --collect-only step (which still exits 0), appends one malformed line
+    'tests/test_target.py::test_a MALFORMED TRAILER' (a well-formed node id followed by garbage) to
+    stdout after pytest's own collection output. canonical_collect(invocation) over that invocation
+    -> the returned collection's ``ok`` is False -- the malformed stdout is untrusted collection
+    evidence. ``ok`` is exactly the field verify.run_baseline reads at its "not collection.ok ->
+    empty the expected set" trust gate (verify.py:129), so ok=False is what forces the run to refuse
+    green off a malformed collection. Current impl: collection.ok is True, because validity is only
+    ``returncode == 0 and not timed_out`` and the "::" line is scraped as an id with no grammar
+    check (pytest_adapter.py:170); collection.ids is
+    ('tests/test_target.py::test_a', 'tests/test_target.py::test_a MALFORMED TRAILER') -- the
+    garbage trailer is silently accepted as a node id.
+    """
+    from types import SimpleNamespace
+
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    adapter = PytestAdapter()
+    worktree = _make_target(tmp_path, "malformed_collect", "def test_a():\n    assert True\n")
+    provisioner = _collect_only_stdout_polluter("tests/test_target.py::test_a MALFORMED TRAILER")
+    handle = adapter.provision_environment(worktree, None, provisioner=provisioner)
+    invocation = SimpleNamespace(
+        worktree=worktree,
+        interpreter=handle.interpreter,
+        command=list(BASELINE),
+        env=getattr(handle, "env", None),
+    )
+    collection = adapter.canonical_collect(invocation)
+    # The malformed collect-only stdout (exit 0) must invalidate the collection -- exactly the
+    # ``ok`` gate verify.run_baseline consults before trusting the scraped ids as the expected set.
+    assert collection.ok is False
+
+
+# ===== #58 hardening (PR#60 Codex gap #6) =====
+def test_corrupt_truncated_report_without_terminal_sessionfinish_is_not_green(tmp_path):
+    """A report that carries the expected passing records but then gets cut off — a corrupt,
+    truncated final line and NO terminal SessionFinish record — must NOT classify GREEN. GREEN
+    requires a well-formed, cleanly-terminated report, not just "the expected nodes passed
+    somewhere in the bytes we could parse". A run whose report ends abruptly (the process was
+    killed mid-flush, the log was cut, a garbage line was appended) is untrustworthy evidence, so
+    a malformed line silently dropped and a missing session-end marker must both forbid green.
+
+    Today _parse_report_log swallows any un-parseable line (json.JSONDecodeError -> continue) and
+    the classifier never requires a terminal SessionFinish record, so the surviving passing
+    TestReport records alone win GREEN — the exact false-green this pins.
+
+    technical (contract): a target with a single passing test_a runs under a REAL wrapper
+    interpreter (the injectable provisioner seam) that runs pytest verbatim, then rewrites the real
+    --report-log so its terminal ``$report_type == "SessionFinish"`` record is REMOVED and a
+    truncated/corrupt JSON line ('{"$report_type": "TestRep') is appended, before exiting with
+    pytest's own code. The collect-only run carries no --report-log and is left untouched, so
+    canonical_collect still expects exactly {test_a}. run_baseline -> evidence.exit_code == 0 (the
+    passing exit was genuinely seen) AND evidence.status is NOT BaselineStatus.GREEN (the report is
+    corrupt/truncated with no terminal SessionFinish). Current impl: status GREEN, exit_code 0,
+    report_present True, executed 1 — the defect.
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    worktree = _make_target(tmp_path, "corrupt", "def test_a():\n    assert True\n")
+    ev = verify.run_baseline(
+        worktree,
+        BASELINE,
+        adapter=_adapter(),
+        provisioner=_truncating_no_sessionfinish_provisioner(),
+    )
+    assert ev.exit_code == 0
+    assert ev.status is not BaselineStatus.GREEN
+
+
+# ======================================================================
+# PR #60 SECOND Codex round — 5 remaining GREEN-safety edge-case gaps.
+# PENDING until the final hardening pass closes them (#58).
+# ======================================================================
+
+
+# ---- helper for hardening gap A ----
+def _committed_requirements_target(root: Path, name: str, body: str, *, requirements: str) -> Path:
+    """A git-committed target carrying one test module plus ONLY a committed requirements.txt.
+
+    No pyproject.toml is written, so the manifest can ONLY be discovered from requirements.txt —
+    a fix that silently falls back to a pyproject dependency list cannot mask a requirements
+    parser that drops the pinned spec. The target is a real committed repo so a discovery that
+    reads the committed git object (``git show HEAD:requirements.txt``) resolves.
+    """
+    repo = root / name
+    (repo / "tests").mkdir(parents=True)
+    (repo / "tests" / "test_target.py").write_text(textwrap.dedent(body))
+    (repo / "requirements.txt").write_text(requirements)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "seed")
+    return repo
+
+
+# ---- helper for hardening gap B ----
+def _dangling_git_symlink_worktree(root: Path, files: dict[str, str]) -> Path:
+    """A REAL isolated worktree whose working files are on disk but whose ``.git`` entry is a
+    PRESENT-but-dangling symlink (it points at a path that does not exist).
+
+    ``Path.exists()`` FOLLOWS the symlink and reports False (the target is missing), yet the
+    ``.git`` entry is genuinely PRESENT — exactly the condition where a real
+    ``git -C <wt> rev-parse HEAD`` fails while the checked-out working files remain, so a runner
+    that keys "is this a committed git tree?" off ``.exists()`` wrongly treats it as a
+    non-git seam context and substitutes the forbidden default baseline.
+    """
+    wt = root / "wt"
+    wt.mkdir(parents=True)
+    for rel, content in files.items():
+        p = wt / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+    (wt / ".git").symlink_to(root / "nonexistent-git-admin-dir")
+    return wt
+
+
+# ---- helper for hardening gap C ----
+def _sessionfinish_not_terminal_provisioner():
+    """A provisioner seam whose 'interpreter' is a REAL wrapper script: it runs the provisioned
+    pytest verbatim, then rewrites the real --report-log so the terminal ``SessionFinish`` record
+    is MOVED to the FRONT (a TestReport becomes the last record), before exiting with pytest's own
+    code.
+
+    Only the injectable ``provisioner`` seam is used — no issueforge internal is patched.
+    collect-only runs carry no --report-log and are left untouched, so canonical_collect's
+    expected-id set is unaffected. Every TestReport survives verbatim and a SessionFinish is still
+    PRESENT — only its position changes: it no longer terminates the report. This reproduces the
+    literal "SessionFinish precedes a later TestReport" ordering the contract forbids from GREEN.
+    """
+    from types import SimpleNamespace
+
+    def _provision(worktree, frozen_deps=None):
+        wdir = Path(worktree).parent / f"if-reorder-{Path(worktree).name}"
+        wdir.mkdir(exist_ok=True)
+        reorder = wdir / "reorder_report.py"
+        reorder.write_text(
+            textwrap.dedent(
+                """
+                import sys
+                p = sys.argv[1]
+                lines = [l for l in open(p).read().splitlines() if l.strip()]
+                sf = [l for l in lines if '"SessionFinish"' in l]
+                rest = [l for l in lines if '"SessionFinish"' not in l]
+                with open(p, "w") as f:
+                    f.write("\\n".join(sf + rest))
+                    f.write("\\n")
+                """
+            )
+        )
+        wrapper = wdir / "wrap-python"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            f'"{sys.executable}" "$@"\n'
+            "code=$?\n"
+            'rl=""\n'
+            'for a in "$@"; do\n'
+            '  case "$a" in --report-log=*) rl="${a#--report-log=}";; esac\n'
+            "done\n"
+            f'if [ -n "$rl" ] && [ -f "$rl" ]; then "{sys.executable}" "{reorder}" "$rl"; fi\n'
+            "exit $code\n"
+        )
+        os.chmod(wrapper, 0o755)
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+        return SimpleNamespace(interpreter=str(wrapper), env=env, artifact_dir=wdir, network=False)
+
+    return _provision
+
+
+# ===== #58 hardening (PR#60 second round — gap A: robust committed requirements parsing) =====
+def test_hashed_committed_requirements_are_parsed_and_installed_not_broken_apart(tmp_path):
+    """A standard pip-freeze-style requirements.txt — a pinned spec with a line-continuation and a
+    ``--hash=`` option line — must be parsed into the SINGLE pinned spec and installed in the
+    authoritative env, so a legitimately-green target does NOT pause. The current parser splits
+    every physical non-comment line into its own package arg, so ``platformdirs==4.10.0 \\`` and a
+    standalone ``--hash=sha256:...`` are handed to ``uv pip install`` as two bogus package specs; uv
+    rejects them, provisioning raises, and run_baseline PAUSES (LAUNCH_FAILED) a repo whose baseline
+    simply imports platformdirs.
+
+    technical (contract): a git-committed target whose committed requirements.txt is
+    ``platformdirs==4.10.0 \\\\\\n    --hash=sha256:<64 hex>\\n`` and whose baseline does
+    ``import platformdirs``. run_baseline(target, ["-m","pytest"], adapter=PytestAdapter()) on the
+    DEFAULT provisioning path -> evidence.status is BaselineStatus.GREEN, executed == 1,
+    exit_code == 0. Current impl -> not GREEN (the backslash-bearing spec + the ``--hash`` arg break
+    the install, so provisioning fails and the run pauses non-green).
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    fake_hash = "sha256:" + "0" * 64
+    target = _committed_requirements_target(
+        tmp_path,
+        "hashed_reqs",
+        """
+        import platformdirs
+
+        def test_imports_pinned_dep():
+            assert platformdirs is not None
+        """,
+        requirements=f"platformdirs==4.10.0 \\\n    --hash={fake_hash}\n",
+    )
+    ev = verify.run_baseline(target, ["-m", "pytest"], adapter=_adapter())
+    assert ev.status is BaselineStatus.GREEN, f"expected GREEN, got {ev.status!r}"
+    assert ev.executed == 1
+    assert ev.exit_code == 0
+
+
+# ===== #58 hardening (PR#60 second round — gap B: dangling .git symlink) =====
+def test_dangling_git_symlink_worktree_pauses_not_defaults(tmp_path):
+    """An isolated worktree whose ``.git`` is a PRESENT-but-dangling symlink must PAUSE the run, not
+    default. ``Path.exists()`` follows the symlink and reports False, so a check keyed off
+    ``.exists()`` mistakes a corrupt-but-present ``.git`` for a non-git seam context and substitutes
+    the forbidden default baseline — greening and dispatching on a target whose committed baseline is
+    unreadable. A present ``.git`` entry (even dangling) with a failing rev-parse must PAUSE.
+
+    technical (contract): a real worktree with a passing tests/test_target.py and a
+    ``.git`` dangling symlink injected via the workspace seam. establish_green_baseline(checkout,
+    adapter, workspace=dangling, provisioner=clean, dispatch=spy) -> outcome.paused is True, the
+    dispatch spy NEVER fired (dispatched == []), and outcome.status is not BaselineStatus.GREEN.
+    Current impl: _committed_baseline sees rev-parse fail and ``(wt/".git").exists()`` False (the
+    symlink dangles), returns (False, None), the caller substitutes ``["-m","pytest"]``, runs the
+    passing target, classifies GREEN, and dispatches.
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    wt = _dangling_git_symlink_worktree(
+        tmp_path,
+        {
+            "tests/test_target.py": "def test_ok():\n    assert True\n",
+            ".issueforge.toml": 'baseline = ["-m", "pytest"]\nframework = "pytest"\n',
+        },
+    )
+    # Precondition: the .git entry is PRESENT (lexists) but dangling (exists follows the link -> False),
+    # and a real rev-parse in the worktree genuinely fails.
+    assert os.path.lexists(wt / ".git"), "precondition: .git symlink must be present"
+    assert not (wt / ".git").exists(), "precondition: .git symlink must dangle"
+    probe = subprocess.run(
+        ["git", "-C", str(wt), "rev-parse", "--verify", "HEAD"], capture_output=True, text=True
+    )
+    assert probe.returncode != 0, "precondition: rev-parse must fail on the dangling worktree"
+
+    class _DanglingWorkspace:
+        def fetch_default_sha(self, checkout):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(sha="0" * 40, ok=True, reason=None)
+
+        def create_isolated_worktree(self, checkout, sha, **k):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(path=wt, ok=True, isolated=True, reason=None)
+
+    dispatched = []
+    outcome = verify.establish_green_baseline(
+        tmp_path / "checkout",
+        adapter=_adapter(),
+        workspace=_DanglingWorkspace(),
+        provisioner=_clean_provisioner(),
+        dispatch=lambda **k: dispatched.append(k),
+    )
+    assert outcome.paused is True, f"expected pause, got status {outcome.status!r}"
+    assert dispatched == [], "AI dispatched on a corrupt (dangling .git) committed baseline"
+    assert outcome.status is not BaselineStatus.GREEN
+
+
+# ===== #58 hardening (PR#60 second round — gap C: non-terminal SessionFinish) =====
+def test_non_terminal_sessionfinish_is_not_green(tmp_path):
+    """A report in which a ``SessionFinish`` record is PRESENT but not the LAST record (a TestReport
+    follows it) is not a cleanly-terminated report and must NOT classify GREEN. Recording only that
+    a SessionFinish appeared ANYWHERE lets a report whose session-end marker precedes later records
+    (a spliced/reordered/mid-flush log) be laundered into GREEN off the passing records. The
+    session-end marker must terminate the report.
+
+    technical (contract): a target with a single passing test_a runs under a REAL wrapper
+    interpreter (the injectable provisioner seam) that runs pytest verbatim then rewrites the real
+    --report-log so its ``SessionFinish`` record is moved to the FRONT (a TestReport is the last
+    record). run_baseline -> evidence.exit_code == 0 (the passing exit was genuinely seen) AND
+    evidence.status is NOT BaselineStatus.GREEN. Current impl: status GREEN — a SessionFinish
+    anywhere satisfies the check.
+    """
+    from issueforge import verify
+    from issueforge.adapters.base import BaselineStatus
+
+    worktree = _make_target(tmp_path, "nonterminal_sf", "def test_a():\n    assert True\n")
+    ev = verify.run_baseline(
+        worktree,
+        BASELINE,
+        adapter=_adapter(),
+        provisioner=_sessionfinish_not_terminal_provisioner(),
+    )
+    assert ev.exit_code == 0
+    assert ev.status is not BaselineStatus.GREEN
+
+
+# ===== #58 hardening (PR#60 second round — gap E: valid explicit-id params over-rejected) =====
+def test_valid_bracketed_param_node_id_is_accepted_but_trailing_garbage_still_rejected(tmp_path):
+    """The malformed-collection guard must ACCEPT a VALID explicit pytest param id whose parameter
+    part contains brackets and spaces (e.g. ``tests/test_x.py::test_x[] space]``) — rejecting it
+    prevents a legitimately-green baseline. But it must STILL reject a genuine node-id line with
+    trailing garbage (``nodeid MALFORMED TRAILER``): the #5 gap must not regress.
+
+    technical (contract): via the injectable collect-only stdout polluter seam,
+      * a --collect-only whose extra line is the VALID explicit-id param
+        ``tests/test_x.py::test_x[] space]`` -> canonical_collect(...).ok is True (a valid param id
+        with a bracketed/spaced parameter is a real node id, not garbage). Current impl: ok is False
+        because the naive bracket-depth scan closes at the first ``]`` and then sees an unbracketed
+        space.
+      * a --collect-only whose extra line is ``tests/test_y.py::test_y MALFORMED TRAILER``
+        (a well-formed id followed by garbage, NO brackets) -> canonical_collect(...).ok is False
+        (the #5 regression guard: real trailing garbage still invalidates the collection).
+    """
+    from types import SimpleNamespace
+
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    adapter = PytestAdapter()
+
+    # Valid explicit-id param: brackets + spaces in the PARAMETER part are legal -> collection valid.
+    valid_wt = _make_target(tmp_path, "valid_param", "def test_a():\n    assert True\n")
+    valid_prov = _collect_only_stdout_polluter("tests/test_x.py::test_x[] space]")
+    valid_handle = adapter.provision_environment(valid_wt, None, provisioner=valid_prov)
+    valid_collection = adapter.canonical_collect(
+        SimpleNamespace(
+            worktree=valid_wt,
+            interpreter=valid_handle.interpreter,
+            command=list(BASELINE),
+            env=getattr(valid_handle, "env", None),
+        )
+    )
+    assert valid_collection.ok is True
+
+    # Regression guard: genuine trailing garbage after a node id still invalidates the collection.
+    garbage_wt = _make_target(tmp_path, "garbage_trailer", "def test_a():\n    assert True\n")
+    garbage_prov = _collect_only_stdout_polluter("tests/test_y.py::test_y MALFORMED TRAILER")
+    garbage_handle = adapter.provision_environment(garbage_wt, None, provisioner=garbage_prov)
+    garbage_collection = adapter.canonical_collect(
+        SimpleNamespace(
+            worktree=garbage_wt,
+            interpreter=garbage_handle.interpreter,
+            command=list(BASELINE),
+            env=getattr(garbage_handle, "env", None),
+        )
+    )
+    assert garbage_collection.ok is False

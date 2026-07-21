@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -22,6 +23,31 @@ from pathlib import Path
 from issueforge.boundary import Command
 from issueforge.io import WriteSeam
 from issueforge.paths import state_root
+
+
+def build_launch_argv(
+    interpreter: object, command: list[str], *, env: dict | None = None
+) -> list[str]:
+    """Resolve the launch argv for a configured baseline ``command`` in the authoritative env.
+
+    The committed baseline names its OWN executable — ``["pytest"]`` or ``["uv", "run", "pytest"]``
+    — so its ``argv[0]`` must be resolved as an executable in the authoritative environment, never
+    blindly prefixed with the provisioned interpreter (that turns ``pytest`` into a bogus script
+    path). The one exception is a leading Python flag (``-m``, ``-c``, ``-X``…): a token starting
+    with ``-`` is an argument TO the interpreter, so the interpreter is the executable and the whole
+    command is handed to it verbatim. Resolution uses the authoritative env's ``PATH`` (``shutil``'s
+    ``which`` is a read, not a write), falling back to the literal name when it is not on PATH so the
+    caller's chosen executable — not the interpreter — is still what launches.
+    """
+    command = list(command)
+    if not command:
+        return [str(interpreter)]
+    first = str(command[0])
+    if first.startswith("-"):
+        return [str(interpreter), *command]
+    path = (env or {}).get("PATH") or os.environ.get("PATH", "")
+    resolved = shutil.which(first, path=path) or first
+    return [resolved, *command[1:]]
 
 
 @dataclass(frozen=True)

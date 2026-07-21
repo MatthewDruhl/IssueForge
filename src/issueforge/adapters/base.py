@@ -54,6 +54,11 @@ class BaselineStatus(Enum):
     INTERNAL_ERROR = "internal_error"
     TIMEOUT = "timeout"
     LAUNCH_FAILED = "launch_failed"
+    # A run-level broken verdict, mirroring the per-node Outcome.BROKEN: the run produced no
+    # trustworthy behavioral evidence (signaled/aborted death, a reportless non-timeout exit, an
+    # unknown exit code, or a setup/teardown infra failure). BEHAVIORAL_RED is reserved for a valid
+    # complete report with an expected call-phase failure at exit 1; everything broken lands here.
+    BROKEN = "broken"
 
 
 @dataclass(frozen=True)
