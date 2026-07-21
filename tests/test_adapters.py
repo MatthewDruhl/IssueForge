@@ -489,7 +489,6 @@ def test_provision_environment_delegates_to_the_provisioner_seam(tmp_path):
 
 
 # ===== #58 defect #10 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
     """The authoritative baseline RUN executes with OS-level network denial (a container with
     ``--network none``), enforced by the executor — not merely recorded on the handle, NOT fakeable
