@@ -864,7 +864,9 @@ def test_filesystem_receiver_resolution_path_method_vs_arbitrary_receiver(
     assert any(e.marker == "pathlib.Path.write_text" for e in bound.evidence)
 
     arbitrary_fp = _write(tmp_path, "client.py", "def f(client):\n    client.open()\n")
-    assert observability.classify_prospective("", [arbitrary_fp], tmp_path).categories == frozenset()
+    assert (
+        observability.classify_prospective("", [arbitrary_fp], tmp_path).categories == frozenset()
+    )
 
     constructed_fp = _write(
         tmp_path,
@@ -1031,7 +1033,9 @@ def test_classify_diff_function_local_import_does_not_seed_another_function(isol
 # --- (3) name shadowing / reassignment -------------------------------------
 
 
-def test_classify_prospective_suppresses_shadowed_and_reassigned_names(tmp_path, isolated_state_home):
+def test_classify_prospective_suppresses_shadowed_and_reassigned_names(
+    tmp_path, isolated_state_home
+):
     """A name that shadows a module import — a parameter, a reassignment to a non-import value, or a local def over a builtin — must NOT be flagged, while the genuinely-aliased, unshadowed form still is.
 
     technical (contract): `def f(subprocess): subprocess.run(['x'])` -> frozenset() (param shadows
