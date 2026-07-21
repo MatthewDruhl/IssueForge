@@ -800,3 +800,380 @@ def test_collect_log_evidence_flags_a_sensitive_field_or_canary_leaked_on_the_fa
         canaries={"CANARY-FAIL"},
     )
     assert evidence.leaked == frozenset({"111-22-3333", "CANARY-FAIL"})
+
+
+# ---------------------------------------------------------------------------
+# S8 adversarial hardening (#55): promote the unit-locked adversarial classifier
+# and detector cases into the ACCEPTANCE contract so a future refactor cannot
+# regress the analysis with this suite still green. These pin the same behaviors
+# as tests/test_observability_unit.py, re-expressed against the PUBLIC surface.
+# ---------------------------------------------------------------------------
+
+
+def _events_for_message(message: str, required: set[str]) -> frozenset:
+    """Emit ``message`` on a real logger through collect_log_evidence and return events_emitted."""
+    import logging
+
+    from issueforge import observability
+
+    def success():
+        logging.getLogger("target.event_identity").info(message)
+
+    def failure():
+        return None
+
+    return observability.collect_log_evidence(
+        success,
+        failure,
+        required_events=required,
+        sensitive_fields=set(),
+        canaries=set(),
+    ).events_emitted
+
+
+# --- (1) filesystem receiver resolution ------------------------------------
+
+
+def test_filesystem_receiver_resolution_path_method_vs_arbitrary_receiver(
+    tmp_path, isolated_state_home
+):
+    """A pathlib.Path method call is a filesystem crossing bound to the Path marker — whether the Path is constructed inline or bound to a name first — but the same method name on an arbitrary (non-Path) receiver is NOT: receiver identity, not the bare method name, decides the match.
+
+    technical (contract): footprint `from pathlib import Path; Path('x').write_text('y')` yields
+    FILESYSTEM in categories AND a BoundaryEvidence with marker == "pathlib.Path.write_text";
+    footprint `from pathlib import Path; p = Path('x'); p.write_text('y')` (bound variable) likewise
+    yields FILESYSTEM in categories AND marker == "pathlib.Path.write_text" (receiver tracked across
+    the assignment); footprint `def f(client): client.open()` yields categories == frozenset()
+    (arbitrary-receiver `.open` is not filesystem); footprint defining `class Archive` with an `open`
+    method and calling `Archive().open()` yields FILESYSTEM NOT in categories (constructed non-Path).
+    """
+    from issueforge import observability
+
+    cat = observability.BoundaryCategory
+
+    inline_fp = _write(tmp_path, "fs.py", "from pathlib import Path\nPath('x').write_text('y')\n")
+    inline = observability.classify_prospective("", [inline_fp], tmp_path)
+    assert cat.FILESYSTEM in inline.categories
+    assert any(e.marker == "pathlib.Path.write_text" for e in inline.evidence)
+
+    bound_fp = _write(
+        tmp_path, "fs_bound.py", "from pathlib import Path\np = Path('x')\np.write_text('y')\n"
+    )
+    bound = observability.classify_prospective("", [bound_fp], tmp_path)
+    assert cat.FILESYSTEM in bound.categories
+    assert any(e.marker == "pathlib.Path.write_text" for e in bound.evidence)
+
+    arbitrary_fp = _write(tmp_path, "client.py", "def f(client):\n    client.open()\n")
+    assert observability.classify_prospective("", [arbitrary_fp], tmp_path).categories == frozenset()
+
+    constructed_fp = _write(
+        tmp_path,
+        "archive.py",
+        "class Archive:\n    def open(self):\n        return 1\nArchive().open()\n",
+    )
+    assert (
+        cat.FILESYSTEM
+        not in observability.classify_prospective("", [constructed_fp], tmp_path).categories
+    )
+
+
+# --- (2) classify_diff context resolution ----------------------------------
+
+
+def test_classify_diff_resolves_alias_defined_only_in_unchanged_context(isolated_state_home):
+    """An import alias that appears only on an UNCHANGED context line of the diff still resolves an added call that uses it — the classifier keeps context for alias resolution rather than parsing added lines in isolation.
+
+    technical (contract): a unified diff whose only added line is `sp.run(["x"])`, with
+    `import subprocess as sp` present as an unchanged context line, yields categories ==
+    frozenset({SUBPROCESS}); the same holds for a full `git diff` carrying `diff --git`/`index`/
+    `---`/`+++` metadata headers (metadata never corrupts reconstruction).
+    """
+    from issueforge import observability
+
+    cat = observability.BoundaryCategory
+
+    minimal = (
+        "--- a/mod.py\n+++ b/mod.py\n@@ -1,2 +1,3 @@\n"
+        " import subprocess as sp\n"
+        " def f():\n"
+        '+    sp.run(["x"])\n'
+    )
+    assert observability.classify_diff(minimal).categories == frozenset({cat.SUBPROCESS})
+
+    full_git = (
+        "diff --git a/mod.py b/mod.py\n"
+        "index abc1234..def5678 100644\n"
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " import subprocess as sp\n"
+        " def f():\n"
+        '+    sp.run(["x"])\n'
+    )
+    assert observability.classify_diff(full_git).categories == frozenset({cat.SUBPROCESS})
+
+
+def test_classify_diff_resolves_context_alias_in_an_indented_body_hunk(isolated_state_home):
+    """A hunk that is an INDENTED body fragment (it cannot parse as a standalone module) still resolves a context-defined alias for an added call — the classifier repairs the fragment without dropping its context.
+
+    technical (contract): a diff hunk `@@ -5,3 +5,4 @@ def outer():` whose context lines are an
+    indented `import sqlite3` and `x = 1` and whose only added line is `sqlite3.connect("d")` yields
+    categories == frozenset({DATABASE}).
+    """
+    from issueforge import observability
+
+    cat = observability.BoundaryCategory
+
+    diff = (
+        "diff --git a/mod.py b/mod.py\n"
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -5,3 +5,4 @@ def outer():\n"
+        "     import sqlite3\n"
+        "     x = 1\n"
+        '+    sqlite3.connect("d")\n'
+    )
+    assert observability.classify_diff(diff).categories == frozenset({cat.DATABASE})
+
+
+def test_classify_diff_ignores_a_boundary_call_present_only_in_context(isolated_state_home):
+    """A boundary call that appears only on an unchanged context line (not on an added line) is not a new crossing — only ADDED code counts, even while context is retained for alias resolution.
+
+    technical (contract): a diff whose only added line is `y = 1`, with `subprocess.run(['x'])`
+    present solely as an unchanged context line, yields categories == frozenset() (the context call
+    is not attributed as an added crossing).
+    """
+    from issueforge import observability
+
+    diff = (
+        "--- a/mod.py\n+++ b/mod.py\n@@ -1,3 +1,4 @@\n"
+        " import subprocess\n"
+        " def f():\n"
+        "     subprocess.run(['x'])\n"
+        "+    y = 1\n"
+    )
+    assert observability.classify_diff(diff).categories == frozenset()
+
+
+def test_classify_diff_resolves_alias_imported_in_a_different_hunk_of_the_same_file(
+    isolated_state_home,
+):
+    """An import added in one hunk resolves a call added in another hunk of the SAME file — alias state carries across the file's hunks — while the alias never bleeds into a different file.
+
+    technical (contract): a diff for mod.py adding `import subprocess as sp` in one hunk and
+    `sp.run(["x"])` in a later hunk yields categories == frozenset({SUBPROCESS}); a diff where
+    `import subprocess as sp` is added in a.py and `sp.run(["x"])` is added in b.py (which never
+    imports sp) yields categories == frozenset() (no cross-file bleed).
+    """
+    from issueforge import observability
+
+    cat = observability.BoundaryCategory
+
+    same_file = (
+        "diff --git a/mod.py b/mod.py\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " HEADER = 1\n"
+        "+import subprocess as sp\n"
+        "@@ -40,2 +41,3 @@\n"
+        " def worker():\n"
+        "     prepare()\n"
+        '+    sp.run(["x"])\n'
+    )
+    assert observability.classify_diff(same_file).categories == frozenset({cat.SUBPROCESS})
+
+    cross_file = (
+        "diff --git a/a.py b/a.py\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " HEADER = 1\n"
+        "+import subprocess as sp\n"
+        "diff --git a/b.py b/b.py\n"
+        "--- a/b.py\n"
+        "+++ b/b.py\n"
+        "@@ -10,2 +10,3 @@\n"
+        " def worker():\n"
+        "     prepare()\n"
+        '+    sp.run(["x"])\n'
+    )
+    assert observability.classify_diff(cross_file).categories == frozenset()
+
+
+def test_classify_diff_function_local_import_does_not_seed_another_function(isolated_state_home):
+    """A FUNCTION-LOCAL (indented) import added in one function must NOT resolve an added call in a DIFFERENT function of the same file — only module-level imports seed the file, so a local alias stays scoped to its own body.
+
+    technical (contract): a diff where `first()` adds only an indented `import subprocess as sp`
+    (no boundary call) and `second()` adds `sp.run(["x"])` yields categories == frozenset() — the
+    function-local alias never seeds the unrelated function (a bug that stripped indentation and seeded
+    it would return {SUBPROCESS}).
+    """
+    from issueforge import observability
+
+    diff = (
+        "diff --git a/mod.py b/mod.py\n"
+        "--- a/mod.py\n"
+        "+++ b/mod.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " def first():\n"
+        "     helper()\n"
+        "+    import subprocess as sp\n"
+        "@@ -20,2 +21,3 @@\n"
+        " def second():\n"
+        "     prepare()\n"
+        '+    sp.run(["x"])\n'
+    )
+    assert observability.classify_diff(diff).categories == frozenset()
+
+
+# --- (3) name shadowing / reassignment -------------------------------------
+
+
+def test_classify_prospective_suppresses_shadowed_and_reassigned_names(tmp_path, isolated_state_home):
+    """A name that shadows a module import — a parameter, a reassignment to a non-import value, or a local def over a builtin — must NOT be flagged, while the genuinely-aliased, unshadowed form still is.
+
+    technical (contract): `def f(subprocess): subprocess.run(['x'])` -> frozenset() (param shadows
+    the module); `import subprocess as sp; sp = object(); sp.run()` -> frozenset() (alias reassigned);
+    `def open(path): return path; open('x')` -> frozenset() (local def shadows builtin open); but
+    `import subprocess as sp; sp.run(['x'])` -> frozenset({SUBPROCESS}) (unshadowed alias still flags).
+    """
+    from issueforge import observability
+
+    cat = observability.BoundaryCategory
+
+    def cats(source: str) -> frozenset:
+        fp = _write(tmp_path, "mod.py", source)
+        return observability.classify_prospective("", [fp], tmp_path).categories
+
+    assert cats("def f(subprocess):\n    subprocess.run(['x'])\n") == frozenset()
+    assert cats("import subprocess as sp\nsp = object()\nsp.run()\n") == frozenset()
+    assert cats("def open(path):\n    return path\nopen('x')\n") == frozenset()
+    assert cats("import subprocess as sp\nsp.run(['x'])\n") == frozenset({cat.SUBPROCESS})
+
+
+# --- (4) logger-convention detector robustness -----------------------------
+
+
+def test_detect_logger_convention_level_requires_a_traced_logger_receiver(
+    tmp_path, isolated_state_home
+):
+    """A level-named method (`.info`) counts as a logging level only when its receiver traces to the logger factory — a `.info` on an unrelated object is not a level, while a `.info` on a real getLogger-bound logger is.
+
+    technical (contract): a target whose only `.info` call is `metrics = object(); metrics.info(...)`
+    yields "info" NOT in convention.levels; a target with `logger = logging.getLogger(__name__);
+    logger.info(...)` yields "info" in convention.levels and factory == "logging.getLogger".
+    """
+    from issueforge import observability
+
+    _write(tmp_path, "app.py", "metrics = object()\nmetrics.info('cache hit')\n")
+    assert "info" not in observability.detect_logger_convention(tmp_path).levels
+
+    _write(
+        tmp_path,
+        "app.py",
+        "import logging\nlogger = logging.getLogger(__name__)\nlogger.info('x')\n",
+    )
+    convention = observability.detect_logger_convention(tmp_path)
+    assert "info" in convention.levels
+    assert convention.factory == "logging.getLogger"
+
+
+def test_detect_logger_convention_reads_format_from_fmt_kwarg_and_module_constant(
+    tmp_path, isolated_state_home
+):
+    """The format is detected whether it is passed as the `fmt=` keyword or as a reference to a module-level string constant, not only as a bare first positional literal.
+
+    technical (contract): `logging.Formatter(fmt='%(message)s')` yields format == "%(message)s";
+    `FMT = '%(message)s'; logging.Formatter(FMT)` yields format == "%(message)s".
+    """
+    from issueforge import observability
+
+    _write(tmp_path, "app.py", "import logging\nlogging.Formatter(fmt='%(message)s')\n")
+    assert observability.detect_logger_convention(tmp_path).format == "%(message)s"
+
+    _write(tmp_path, "app.py", "import logging\nFMT = '%(message)s'\nlogging.Formatter(FMT)\n")
+    assert observability.detect_logger_convention(tmp_path).format == "%(message)s"
+
+
+def test_detect_logger_convention_excludes_standard_logrecord_fields_from_correlation(
+    tmp_path, isolated_state_home
+):
+    """A format built only from standard LogRecord fields has no correlation key — only a non-standard field is treated as the correlation key.
+
+    technical (contract): a format of `%(asctime)s %(pathname)s %(filename)s %(module)s
+    %(funcName)s %(message)s` (all standard fields) yields correlation_key is None; a format with a
+    non-standard `%(correlation_id)s` yields correlation_key == "correlation_id".
+    """
+    from issueforge import observability
+
+    standard = "%(asctime)s %(pathname)s %(filename)s %(module)s %(funcName)s %(message)s"
+    _write(tmp_path, "app.py", f"import logging\nlogging.Formatter('{standard}')\n")
+    assert observability.detect_logger_convention(tmp_path).correlation_key is None
+
+    nonstandard = "%(asctime)s %(correlation_id)s %(message)s"
+    _write(tmp_path, "app.py", f"import logging\nlogging.Formatter('{nonstandard}')\n")
+    assert observability.detect_logger_convention(tmp_path).correlation_key == "correlation_id"
+
+
+# --- (5) exact event identity ----------------------------------------------
+
+
+def test_required_event_matches_a_whole_token_not_a_substring(isolated_state_home):
+    """A required event is satisfied only when it appears as a whole token in an emitted message — a longer identifier that merely CONTAINS the event does not satisfy it, while an exact match and a trailing-token match do.
+
+    technical (contract): with required_events == {"request.failed"}, a message "request.failed_extra"
+    yields "request.failed" NOT in events_emitted (sub-identifier); "request.failed order=5" yields it
+    IN events_emitted (trailing whole token); "request.failed" yields it IN events_emitted (exact).
+    """
+    required = {"request.failed"}
+    assert "request.failed" not in _events_for_message("request.failed_extra", required)
+    assert "request.failed" in _events_for_message("request.failed order=5", required)
+    assert "request.failed" in _events_for_message("request.failed", required)
+
+
+# --- (6) G3 root-handler mutation spellings --------------------------------
+
+
+@pytest.mark.parametrize(
+    "source, flagged",
+    [
+        ("import logging\nlogging.getLogger().addHandler(h)\n", True),
+        ("import logging\nroot = logging.root\nroot.handlers.append(h)\n", True),
+        (
+            "import logging\nroot: logging.Logger = logging.getLogger()\nroot.addHandler(h)\n",
+            True,
+        ),
+        ("import logging\nroot = logging.getLogger()\nroot.handlers.extend([h])\n", True),
+        ("import logging\nlogging.root.handlers.clear()\n", True),
+        ("import logging\nlog = logging.getLogger(__name__)\nlog.addHandler(h)\n", False),
+    ],
+    ids=[
+        "chained-getLogger-addHandler",
+        "bound-root-handlers-append",
+        "annotated-root-addHandler",
+        "root-handlers-extend",
+        "root-handlers-clear",
+        "named-logger-addHandler-ok",
+    ],
+)
+def test_g3_flags_every_root_handler_mutation_spelling(
+    source, flagged, tmp_path, isolated_state_home
+):
+    """G3 flags every spelling that mutates the root logger's handlers — chained `getLogger().addHandler`, a bound `root = logging.root; root.handlers.append`, an annotated-assign root, `.handlers.extend`/`.clear` — each with a file-and-line location, while a NAMED logger's own addHandler stays clean.
+
+    technical (contract): check_global_logging over a file with <source> returns a non-empty list of
+    GlobalLoggingViolation iff flagged; each flagged violation's location contains the file name and a
+    line number; the named-logger case returns an empty list.
+    """
+    from issueforge import observability
+
+    path = _write(tmp_path, "lib.py", source)
+    violations = observability.check_global_logging([path])
+    assert bool(violations) is flagged
+    if flagged:
+        assert all(isinstance(v, observability.GlobalLoggingViolation) for v in violations)
+        assert all(
+            "lib.py" in v.location and any(ch.isdigit() for ch in v.location) for v in violations
+        )
