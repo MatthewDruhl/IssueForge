@@ -172,7 +172,9 @@ def test_reconcile_is_a_noop_on_a_consistent_store_and_is_idempotent(isolated_st
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#48)")
-def test_admission_after_a_crash_reconciles_and_admits_a_new_run(make_git_repo, isolated_state_home):
+def test_admission_after_a_crash_reconciles_and_admits_a_new_run(
+    make_git_repo, isolated_state_home
+):
     """After a crash leaves an orphan active slot, the next admission reconciles first, so a brand-new run is admitted to the freed slot and runs to completion instead of enqueueing forever behind a phantom.
 
     technical (contract): with queue.json seeded {"active":"run-ghost","queue":[]} and no manifest
