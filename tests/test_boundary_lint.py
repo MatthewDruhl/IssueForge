@@ -890,3 +890,59 @@ def test_class6_class_body_seam_does_not_revoke_outer_local(tmp_path: Path) -> N
         "    seam.write_text(target, 'x')\n"
     )
     assert lint(tmp_path, code) == []
+
+
+# --- issue #40 (round 4): whitelist pre-pass guards from the Codex round-3 confirmation --------
+# The robust rewrite counts EVERY binding of a name in a scope and trusts only the single-clean
+# shape. These pin the binders the incremental clear-list still missed: import-as, an enclosing-
+# scope walrus inside a comprehension, and a walrus in a nested def's default/decorator.
+
+
+def test_class6_import_as_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard, round 4) `import X as seam` binds seam — a disqualifying binding, write stays flagged."""
+    code = "def emit(target):\n    import pathlib as seam\n    seam.write_text(target, 'x')\n"
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_comprehension_enclosing_walrus_seam_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard, round 4) A walrus `seam := ...` inside a comprehension binds the ENCLOSING scope — disqualifying."""
+    code = (
+        "def emit(target, paths):\n"
+        "    [(seam := path) for path in paths]\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_nested_def_default_walrus_rebinds_seam_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard, round 4) A walrus in a nested def's default rebinds the outer seam in THIS scope — disqualifying.
+
+    The nested def BODY is a separate scope (not scanned), but its argument defaults evaluate in the
+    enclosing scope (PEP 572), so the `seam :=` there is a second binding of seam and revokes trust.
+    """
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, other):\n"
+        "    seam = WriteSeam()\n"
+        "    def helper(value=(seam := other)):\n"
+        "        return value\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_clean_seam_amid_unrelated_code_is_exempt(tmp_path: Path) -> None:
+    """(#40 positive) A single unconditional `seam = WriteSeam()` stays exempt amid unrelated bindings and control flow."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "from pathlib import Path\n"
+        "def emit(target, payload, items):\n"
+        "    seam = WriteSeam()\n"
+        "    total = 0\n"
+        "    for item in items:\n"
+        "        total += 1\n"
+        "    if total:\n"
+        "        note = Path('note')\n"
+        "    seam.write_text(target, payload)\n"
+    )
+    assert lint(tmp_path, code) == []

@@ -132,20 +132,16 @@ class _Linter(ast.NodeVisitor):
         self.binding_scopes: list[dict[str, str | None]] = [{}]
         self.path_names = {"Path"}
         self.command_scopes: list[dict[str, bool]] = [{}]
-        # class 6 (#40): names provably bound to WriteSeam()/io.WriteSeam() in each scope.
-        self.seam_scopes: list[dict[str, bool]] = [{}]
-        # Parallel marker: True only for a real function / async-function body, where a
-        # local `seam = WriteSeam()` may confer exemption. False for the module scope (so a
-        # module-level seam never exempts) and for lambda / comprehension scopes (so a seam
-        # shadowed by a lambda param or comprehension target is never exempt inside it) (#40).
+        # class 6 (#40): the set of TRUSTED SEAM names for the current scope, computed once by a
+        # per-function pre-pass (`_collect_trusted_seams`). A name is trusted IFF its SOLE binding
+        # anywhere in the scope is exactly one unconditional `N = WriteSeam()` — a whitelist, so any
+        # other binding of the name (import-as, param, walrus, tuple target, ...) disqualifies it.
+        self.trusted_seams: list[frozenset[str]] = [frozenset()]
+        # Parallel marker: True only for a real function / async-function body, where a trusted
+        # seam may confer exemption. False for the module scope (so a module-level seam never
+        # exempts) and for lambda / comprehension / class scopes (so a seam shadowed there is
+        # never exempt inside them) (#40). Pushed/popped in lockstep with ``trusted_seams``.
         self.scope_is_function: list[bool] = [False]
-        # Control-flow nesting depth within the current scope: 0 only at a scope's top level.
-        # A `seam = WriteSeam()` under an `if`/`try`/`for`/`while`/`with` body is CONDITIONAL —
-        # not provably the value at the write site — so trust is granted only at depth 0 (#40).
-        self.control_depth: list[int] = [0]
-        # Names declared `global`/`nonlocal` in the current scope: such a name is not a provable
-        # function-LOCAL binding, so it can never be a trusted seam (#40).
-        self.global_nonlocal_names: list[set[str]] = [set()]
 
     def _add(self, node: ast.AST, rule: str, detail: str) -> None:
         self.violations.append(f"{self.filename}:{node.lineno}: {rule}: {detail}")
@@ -324,7 +320,6 @@ class _Linter(ast.NodeVisitor):
         self._check_default(node, node.value)
         for target in node.targets:
             self._record_assignment(target, node.value)
-            self._apply_seam_binding(target, node.value)
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
@@ -335,33 +330,142 @@ class _Linter(ast.NodeVisitor):
             )
             self._record_rebinding(node.target.id, node.value)
             self.command_scopes[-1][node.target.id] = is_command
-            self._apply_seam_binding(node.target, node.value)
         self.generic_visit(node)
 
-    # --- class 6 (#40): seam-trust granting (one place) vs clearing (every other binder) ---
-    def _apply_seam_binding(self, target: ast.AST, value: ast.AST | None) -> None:
-        """Grant seam trust ONLY for a simple ``name = WriteSeam()``; clear it for anything else.
+    # --- class 6 (#40): trusted-seam pre-pass (whitelist, sound by construction) -----------
+    def _collect_trusted_seams(self, body: list[ast.stmt], params: set[str]) -> frozenset[str]:
+        """Return the names that are TRUSTED SEAMS for a function scope with the given ``body``.
 
-        A destructuring/tuple/list target, or any binder whose value is not a provable
-        WriteSeam()/io.WriteSeam() construction, CLEARS trust for every name it binds — the lint
-        fails toward flagging, so a name bound by anything but a proven construction is untrusted.
-        Trust is granted ONLY for an UNCONDITIONAL binding (``control_depth == 0`` — not nested in
-        an ``if``/``try``/``for``/``while``/``with`` body, where the WriteSeam value is not
-        guaranteed at the write site) whose name is not declared ``global``/``nonlocal`` (#40).
+        A name is trusted IFF its SOLE binding anywhere in the scope is exactly one UNCONDITIONAL
+        ``N = WriteSeam()`` / ``N: T = WriteSeam()`` (control-depth 0, value a WriteSeam()/
+        io.WriteSeam() construction). This is a whitelist: every binding occurrence of a name is
+        recorded (True only for that one clean shape, False for anything else — a second/nested/
+        conditional assignment, a tuple target, import-as, parameter, for/with/except/match capture,
+        walrus, augassign, del, global/nonlocal, or a nested def/class that binds the name). A name
+        is trusted only when its full record is exactly ``[True]``. Parameters are pre-seeded as
+        (disqualifying) bindings so a param the body later reassigns to WriteSeam() is still untrusted.
         """
-        if isinstance(target, ast.Name):
-            provable = (
-                self._is_writeseam_construction(value)
-                and self.control_depth[-1] == 0
-                and target.id not in self.global_nonlocal_names[-1]
-            )
-            self.seam_scopes[-1][target.id] = provable
-        else:
-            self._clear_seam(target)
+        records: dict[str, list[bool]] = {name: [False] for name in params}
+        for statement in body:
+            self._scan_stmt(statement, 0, records)
+        return frozenset(name for name, flags in records.items() if flags == [True])
 
-    def _clear_seam(self, target: ast.AST | None) -> None:
-        for name in self._bound_names(target):
-            self.seam_scopes[-1][name] = False
+    def _scan_stmt(self, stmt: ast.stmt, depth: int, records: dict[str, list[bool]]) -> None:
+        """Record every name ``stmt`` binds in this scope, then recurse (depth>0 = conditional)."""
+
+        def record(name: str, clean: bool) -> None:
+            records.setdefault(name, []).append(clean)
+
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if isinstance(target, ast.Name):
+                    record(target.id, depth == 0 and self._is_writeseam_construction(stmt.value))
+                else:
+                    for name in self._bound_names(target):
+                        record(name, False)
+            self._scan_expr(stmt.value, records)
+        elif isinstance(stmt, ast.AnnAssign):
+            if stmt.value is not None:
+                if isinstance(stmt.target, ast.Name):
+                    record(
+                        stmt.target.id, depth == 0 and self._is_writeseam_construction(stmt.value)
+                    )
+                self._scan_expr(stmt.value, records)
+        elif isinstance(stmt, ast.AugAssign):
+            if isinstance(stmt.target, ast.Name):
+                record(stmt.target.id, False)
+            self._scan_expr(stmt.value, records)
+        elif isinstance(stmt, (ast.For, ast.AsyncFor)):
+            for name in self._bound_names(stmt.target):
+                record(name, False)
+            self._scan_expr(stmt.iter, records)
+            self._scan_body(stmt.body, depth + 1, records)
+            self._scan_body(stmt.orelse, depth + 1, records)
+        elif isinstance(stmt, (ast.While, ast.If)):
+            self._scan_expr(stmt.test, records)
+            self._scan_body(stmt.body, depth + 1, records)
+            self._scan_body(stmt.orelse, depth + 1, records)
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            for item in stmt.items:
+                self._scan_expr(item.context_expr, records)
+                if item.optional_vars is not None:
+                    for name in self._bound_names(item.optional_vars):
+                        record(name, False)
+            self._scan_body(stmt.body, depth + 1, records)
+        elif isinstance(stmt, (ast.Try, ast.TryStar)):
+            self._scan_body(stmt.body, depth + 1, records)
+            for handler in stmt.handlers:
+                if handler.name:
+                    record(handler.name, False)
+                if handler.type is not None:
+                    self._scan_expr(handler.type, records)
+                self._scan_body(handler.body, depth + 1, records)
+            self._scan_body(stmt.orelse, depth + 1, records)
+            self._scan_body(stmt.finalbody, depth + 1, records)
+        elif isinstance(stmt, ast.Match):
+            self._scan_expr(stmt.subject, records)
+            for case in stmt.cases:
+                for name in self._match_capture_names(case.pattern):
+                    record(name, False)
+                if case.guard is not None:
+                    self._scan_expr(case.guard, records)
+                self._scan_body(case.body, depth + 1, records)
+        elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            for alias in stmt.names:
+                record(alias.asname or alias.name.split(".")[0], False)
+        elif isinstance(stmt, (ast.Global, ast.Nonlocal)):
+            for name in stmt.names:
+                record(name, False)
+        elif isinstance(stmt, ast.Delete):
+            for target in stmt.targets:
+                for name in self._bound_names(target):
+                    record(name, False)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            # The def/class NAME binds in THIS scope; its body is a SEPARATE scope (do not descend).
+            # Decorators and (for functions) argument defaults DO evaluate here (PEP 572 walruses).
+            record(stmt.name, False)
+            for decorator in stmt.decorator_list:
+                self._scan_expr(decorator, records)
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for default in (*stmt.args.defaults, *stmt.args.kw_defaults):
+                    if default is not None:
+                        self._scan_expr(default, records)
+        else:
+            # Return / Expr / Raise / Assert / ...: no binding, but scan for walruses.
+            for child in ast.iter_child_nodes(stmt):
+                if isinstance(child, ast.expr):
+                    self._scan_expr(child, records)
+
+    def _scan_body(self, body: list[ast.stmt], depth: int, records: dict[str, list[bool]]) -> None:
+        for statement in body:
+            self._scan_stmt(statement, depth, records)
+
+    def _scan_expr(self, node: ast.expr, records: dict[str, list[bool]]) -> None:
+        """Record every walrus binding reachable in THIS scope's evaluation of ``node``.
+
+        A walrus (``:=``) binds the enclosing scope even inside a comprehension, so scan a
+        comprehension's element/key/value/ifs/iters but NOT its ``for`` targets. A nested lambda
+        BODY is a separate scope, so only its argument defaults are scanned here.
+        """
+        if isinstance(node, ast.NamedExpr):
+            if isinstance(node.target, ast.Name):
+                records.setdefault(node.target.id, []).append(False)
+            self._scan_expr(node.value, records)
+        elif isinstance(node, ast.Lambda):
+            for default in (*node.args.defaults, *node.args.kw_defaults):
+                if default is not None:
+                    self._scan_expr(default, records)
+        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+            parts = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+            for generator in node.generators:
+                parts.append(generator.iter)
+                parts.extend(generator.ifs)
+            for part in parts:
+                self._scan_expr(part, records)
+        else:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.expr):
+                    self._scan_expr(child, records)
 
     def _bound_names(self, target: ast.AST | None):
         """Yield every name a binder target binds (Name, Starred, and nested Tuple/List)."""
@@ -408,25 +512,16 @@ class _Linter(ast.NodeVisitor):
         self.binding_scopes[-1][target] = value
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        # An aug-assign (`seam += ...`) clobbers the binding: trust is cleared, never granted.
         self._record_assignment(node.target, None)
-        self._clear_seam(node.target)
         self.generic_visit(node)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
-        # A walrus binding is treated as non-simple: it always clears seam trust for its name.
         self._record_assignment(node.target, node.value)
-        self._clear_seam(node.target)
         self.generic_visit(node)
 
     def visit_For(self, node: ast.For) -> None:
         self._record_assignment(node.target, None)
-        self._clear_seam(node.target)
-        # The loop body is conditional (may run zero times): a WriteSeam bound inside it is not
-        # provably the value afterward, so raise control depth for the whole node (#40).
-        self.control_depth[-1] += 1
         self.generic_visit(node)
-        self.control_depth[-1] -= 1
 
     visit_AsyncFor = visit_For
 
@@ -434,43 +529,9 @@ class _Linter(ast.NodeVisitor):
         for item in node.items:
             if item.optional_vars is not None:
                 self._record_assignment(item.optional_vars, None)
-                self._clear_seam(item.optional_vars)
-        self.control_depth[-1] += 1
         self.generic_visit(node)
-        self.control_depth[-1] -= 1
 
     visit_AsyncWith = visit_With
-
-    def visit_If(self, node: ast.If) -> None:
-        # A binding inside either branch is conditional: raise control depth so a WriteSeam bound
-        # under `if`/`else` is not trusted at the write site (#40).
-        self.control_depth[-1] += 1
-        self.generic_visit(node)
-        self.control_depth[-1] -= 1
-
-    def visit_Try(self, node: ast.Try) -> None:
-        self.control_depth[-1] += 1
-        self.generic_visit(node)
-        self.control_depth[-1] -= 1
-
-    visit_TryStar = visit_Try
-
-    def visit_While(self, node: ast.While) -> None:
-        self.control_depth[-1] += 1
-        self.generic_visit(node)
-        self.control_depth[-1] -= 1
-
-    def visit_Match(self, node: ast.Match) -> None:
-        # Each `case` body is a conditional branch: a WriteSeam bound inside one is not provably
-        # the value at a later write, so raise control depth for the whole match (#40). A case
-        # capture pattern (`case ... as seam`, `case [*seam]`, `case {**seam}`) REBINDS the name to
-        # a matched value, so clear seam trust for every captured name.
-        for case in node.cases:
-            for name in self._match_capture_names(case.pattern):
-                self.seam_scopes[-1][name] = False
-        self.control_depth[-1] += 1
-        self.generic_visit(node)
-        self.control_depth[-1] -= 1
 
     @staticmethod
     def _match_capture_names(pattern: ast.AST | None):
@@ -488,26 +549,10 @@ class _Linter(ast.NodeVisitor):
             if isinstance(name, str):
                 yield name
 
-    def visit_Global(self, node: ast.Global) -> None:
-        # A `global name` makes the name refer to the module global, not a function-local: never
-        # trustable as a local seam. Record it and clear any trust (#40).
-        for name in node.names:
-            self.global_nonlocal_names[-1].add(name)
-            self.seam_scopes[-1][name] = False
-        self.generic_visit(node)
-
-    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
-        for name in node.names:
-            self.global_nonlocal_names[-1].add(name)
-            self.seam_scopes[-1][name] = False
-        self.generic_visit(node)
-
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
         if node.name:
             self._record_rebinding(node.name, None)
             self.command_scopes[-1][node.name] = False
-            # `except ... as seam` binds an exception, not a WriteSeam: clear trust.
-            self.seam_scopes[-1][node.name] = False
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -522,78 +567,52 @@ class _Linter(ast.NodeVisitor):
             parameter_names.add(node.args.kwarg.arg)
         self.command_scopes.append(dict.fromkeys(parameter_names, False))
         self.binding_scopes.append(dict.fromkeys(parameter_names))
-        self.seam_scopes.append(dict.fromkeys(parameter_names, False))
-        self.scope_is_function.append(True)
-        self.control_depth.append(0)
-        self.global_nonlocal_names.append(set())
+        # #40: compute the trusted-seam whitelist for this scope up front (sound by construction).
+        self._push_seam_scope(True, self._collect_trusted_seams(node.body, parameter_names))
         self.generic_visit(node)
-        self.global_nonlocal_names.pop()
-        self.control_depth.pop()
-        self.scope_is_function.pop()
-        self.seam_scopes.pop()
+        self._pop_seam_scope()
         self.binding_scopes.pop()
         self.command_scopes.pop()
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        # A class body is its own scope (like a function/lambda/comprehension): open fresh binding
-        # stacks so a class-body binding never mutates — or leaks into — the enclosing function's
-        # seam trust. scope_is_function is False, so a write in the class body is never exempt (#40).
+        # A class body is its own scope: open fresh command/binding stacks so a class-body binding
+        # never leaks into the enclosing function, and never exempt a write here (#40).
         self.command_scopes.append({})
         self.binding_scopes.append({})
-        self.seam_scopes.append({})
-        self.scope_is_function.append(False)
-        self.control_depth.append(0)
-        self.global_nonlocal_names.append(set())
+        self._push_seam_scope(False, frozenset())
         self.generic_visit(node)
-        self.global_nonlocal_names.pop()
-        self.control_depth.pop()
-        self.scope_is_function.pop()
-        self.seam_scopes.pop()
+        self._pop_seam_scope()
         self.binding_scopes.pop()
         self.command_scopes.pop()
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
-        # A lambda opens its own scope: its parameters shadow any outer trusted seam, and the
-        # scope is marked non-function so no write inside the lambda body is ever exempt (#40).
-        parameter_names = {
-            arg.arg for arg in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
-        }
-        if node.args.vararg:
-            parameter_names.add(node.args.vararg.arg)
-        if node.args.kwarg:
-            parameter_names.add(node.args.kwarg.arg)
-        self.seam_scopes.append(dict.fromkeys(parameter_names, False))
-        self.scope_is_function.append(False)
-        self.control_depth.append(0)
-        self.global_nonlocal_names.append(set())
+        # A lambda body is its own scope with no trusted seams, so a seam shadowed by a lambda
+        # parameter (or any name used there) is never exempt inside the lambda (#40).
+        self._push_seam_scope(False, frozenset())
         self.generic_visit(node)
-        self.global_nonlocal_names.pop()
-        self.control_depth.pop()
-        self.scope_is_function.pop()
-        self.seam_scopes.pop()
+        self._pop_seam_scope()
 
     def _visit_comprehension(self, node: ast.AST) -> None:
-        # A comprehension opens its own scope: its ``for`` targets shadow any outer trusted seam,
-        # and the scope is non-function so a shadowed seam is never exempt in the body (#40).
-        targets: set[str] = set()
-        for generator in node.generators:
-            targets.update(self._bound_names(generator.target))
-        self.seam_scopes.append(dict.fromkeys(targets, False))
-        self.scope_is_function.append(False)
-        self.control_depth.append(0)
-        self.global_nonlocal_names.append(set())
+        # A comprehension body is its own scope with no trusted seams, so a seam shadowed by a
+        # comprehension target (or any name used there) is never exempt inside it (#40).
+        self._push_seam_scope(False, frozenset())
         self.generic_visit(node)
-        self.global_nonlocal_names.pop()
-        self.control_depth.pop()
-        self.scope_is_function.pop()
-        self.seam_scopes.pop()
+        self._pop_seam_scope()
 
     visit_ListComp = _visit_comprehension
     visit_SetComp = _visit_comprehension
     visit_DictComp = _visit_comprehension
     visit_GeneratorExp = _visit_comprehension
+
+    def _push_seam_scope(self, is_function: bool, trusted: frozenset[str]) -> None:
+        self.scope_is_function.append(is_function)
+        self.trusted_seams.append(trusted)
+
+    def _pop_seam_scope(self) -> None:
+        self.trusted_seams.pop()
+        self.scope_is_function.pop()
 
     def _is_command_annotation(self, node: ast.AST | None) -> bool:
         return (
@@ -689,14 +708,14 @@ class _Linter(ast.NodeVisitor):
         )
 
     def _is_trusted_seam(self, node: ast.AST) -> bool:
-        """True when ``node`` is a function-local name provably bound to a WriteSeam here.
+        """True when ``node`` is a name the current function scope's pre-pass proved a trusted seam.
 
-        Exemption is granted only inside a real function body (``scope_is_function``) and only
-        for a name trusted in the CURRENT scope — never a module-global, and never a name a
-        lambda/comprehension has shadowed.
+        Exemption is granted only inside a real function body (``scope_is_function``) and only for a
+        name in that scope's whitelist — never a module-global, and never a name a lambda/
+        comprehension/class scope has shadowed (those scopes carry an empty whitelist).
         """
         return (
             isinstance(node, ast.Name)
             and self.scope_is_function[-1]
-            and self.seam_scopes[-1].get(node.id, False)
+            and node.id in self.trusted_seams[-1]
         )
