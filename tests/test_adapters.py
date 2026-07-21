@@ -173,14 +173,15 @@ def test_verification_adapter_protocol_declares_the_s6_signatures():
 # --------------------------------------------------------------- the closed run-level enum
 
 
-def test_baseline_status_is_a_closed_nine_member_enum_separate_from_outcome():
-    """classify's run-level verdict is a closed 9-member BaselineStatus enum, distinct from the
+def test_baseline_status_is_a_closed_ten_member_enum_separate_from_outcome():
+    """classify's run-level verdict is a closed 10-member BaselineStatus enum, distinct from the
     per-node Outcome, and GREEN is the sole success member.
 
     Contract: {m.name for m in BaselineStatus} == exactly {GREEN, BEHAVIORAL_RED,
     COLLECTION_ERROR, NO_TESTS_COLLECTED, ALL_SKIPPED, USAGE_ERROR, INTERNAL_ERROR, TIMEOUT,
-    LAUNCH_FAILED}; BaselineStatus is not Outcome; GREEN is not a member of Outcome.
+    LAUNCH_FAILED, BROKEN}; BaselineStatus is not Outcome; GREEN is not a member of Outcome.
     """
+    # amended 9->10 for #58: BROKEN run-level state (Matt-approved 2026-07-21)
     from issueforge.adapters.base import BaselineStatus, Outcome
 
     assert {m.name for m in BaselineStatus} == {
@@ -193,6 +194,7 @@ def test_baseline_status_is_a_closed_nine_member_enum_separate_from_outcome():
         "INTERNAL_ERROR",
         "TIMEOUT",
         "LAUNCH_FAILED",
+        "BROKEN",
     }
     assert BaselineStatus is not Outcome
     assert "GREEN" not in {m.name for m in Outcome}
@@ -605,7 +607,6 @@ def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
 
 
 # ===== #58 defect #11 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_default_provisioning_builds_target_dep_env_and_artifact_dir(tmp_path):
     """Default provisioning must build the target's dependency environment: install the frozen
     manifest so a pinned dep the baseline imports is importable in the authoritative interpreter,

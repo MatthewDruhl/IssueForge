@@ -90,7 +90,12 @@ def run_baseline(
 ) -> Evidence:
     """Provision, run the baseline with a fresh ``--report-log``, and classify the fused evidence."""
     worktree = Path(worktree)
-    handle = adapter.provision_environment(worktree, None, provisioner=provisioner)
+    # A provisioning failure (missing uv, a write failure, a provisioner exception) must PAUSE with
+    # typed non-green evidence, never crash the engine before AI is gated (#58/#12).
+    try:
+        handle = adapter.provision_environment(worktree, None, provisioner=provisioner)
+    except Exception:  # noqa: BLE001 — any provisioning failure becomes a paused, non-green record.
+        return _non_green_evidence(BaselineStatus.LAUNCH_FAILED)
     interpreter = handle.interpreter
     env = getattr(handle, "env", None)
 
@@ -113,16 +118,27 @@ def run_baseline(
         expected_ids = set(getattr(collection, "ids", ()) or ())
     except _LAUNCH_ERRORS:
         launch_failed = True
+    except Exception:  # noqa: BLE001 — a collection/runner exception pauses, never crashes (#58/#12).
+        return _non_green_evidence(BaselineStatus.COLLECTION_ERROR, handle=handle)
+
+    # A collection that exited nonzero or timed out cannot be trusted to seed the expected-id set,
+    # so it can NEVER establish GREEN (#58/#7). The baseline still runs so its OWN exit code drives
+    # the classification (a bad flag is USAGE_ERROR, an empty suite is NO_TESTS_COLLECTED, ...); an
+    # untrusted (emptied) expected set forces a non-green verdict for any exit-0 run — a broken
+    # collection can never be laundered into green via ids scraped from its stdout.
+    if not launch_failed and not getattr(collection, "ok", True):
+        expected_ids = set()
 
     exit_code: int | None = None
     timed_out = False
     if not launch_failed:
-        argv = [str(interpreter), *base_command, f"--report-log={report_file}"]
         try:
-            result = process.run(argv, cwd=worktree, timeout=timeout, env=env)
+            result = _execute_baseline(handle, base_command, worktree, report_file, timeout, env)
             exit_code = result.returncode
             timed_out = result.timed_out
         except _LAUNCH_ERRORS:
+            launch_failed = True
+        except Exception:  # noqa: BLE001 — a denied-network executor failure pauses, never crashes.
             launch_failed = True
 
     records: list[dict] = []
@@ -155,19 +171,77 @@ def run_baseline(
     )
 
 
-def _read_baseline_command(worktree: Path) -> list[str]:
-    """Read the committed baseline command from the worktree's ``.issueforge.toml``."""
-    config = Path(worktree) / ".issueforge.toml"
-    if not config.exists():
-        return ["-m", "pytest"]
+def _non_green_evidence(
+    status: BaselineStatus, *, handle: object = None, exit_code: int | None = None
+) -> Evidence:
+    """A typed non-green Evidence for a paused run — a provisioning/collection/runner failure that
+    produced no trustworthy behavioral report."""
+    return Evidence(
+        status=status,
+        collected=0,
+        executed=0,
+        nodes=(),
+        report_present=False,
+        report_dir=None,
+        exit_code=exit_code,
+        interpreter=getattr(handle, "interpreter", None),
+        env_root=getattr(handle, "env_root", None),
+        network=getattr(handle, "network", None),
+    )
+
+
+def _execute_baseline(
+    handle: object,
+    base_command: list[str],
+    worktree: Path,
+    report_file: Path,
+    timeout: float,
+    env: dict | None,
+) -> process.CommandResult:
+    """Run the baseline, resolving the committed command's OWN executable in the authoritative env
+    (#58/#1) instead of blindly prepending the provisioned interpreter."""
+    argv = [
+        *process.build_launch_argv(handle.interpreter, base_command, env=env),
+        f"--report-log={report_file}",
+    ]
+    return process.run(argv, cwd=worktree, timeout=timeout, env=env)
+
+
+_GIT_TIMEOUT = 120.0
+_SEAM_DEFAULT_BASELINE = ["-m", "pytest"]
+
+
+def _committed_baseline(worktree: Path) -> tuple[bool, list[str] | None]:
+    """Read the MANDATORY baseline command from the committed HEAD object of ``worktree``.
+
+    Returns ``(enforced, command)``. The baseline is read from the git object at HEAD
+    (``git show HEAD:.issueforge.toml``), NEVER the worktree filesystem — a symlinked or
+    post-checkout-mutated config must not be able to substitute a command (#58/#2). A real committed
+    worktree is ``enforced``: a missing/malformed/empty/non-list committed baseline yields
+    ``(True, None)`` so the caller PAUSES with no default and no dispatch. A path that is not a
+    committed git tree at all (an injected-seam unit context, where the real workspace was replaced)
+    is ``(False, None)`` — the caller may fall back to the legacy default, since there is no
+    committed object to enforce against; production always hands in a real isolated worktree.
+    """
+    wt = Path(worktree)
+    head = process.run(
+        ["git", "-C", str(wt), "rev-parse", "--verify", "HEAD"], cwd=wt, timeout=_GIT_TIMEOUT
+    )
+    if head.returncode != 0:
+        return (False, None)  # not a committed git worktree — a seam context, not enforceable
+    shown = process.run(
+        ["git", "-C", str(wt), "show", "HEAD:.issueforge.toml"], cwd=wt, timeout=_GIT_TIMEOUT
+    )
+    if shown.returncode != 0:
+        return (True, None)  # committed tree, but no committed config object -> pause
     try:
-        data = tomllib.loads(config.read_text())
-    except (tomllib.TOMLDecodeError, OSError):
-        return ["-m", "pytest"]
+        data = tomllib.loads(shown.stdout)
+    except tomllib.TOMLDecodeError:
+        return (True, None)
     baseline = data.get("baseline")
-    if isinstance(baseline, list) and baseline:
-        return [str(item) for item in baseline]
-    return ["-m", "pytest"]
+    if isinstance(baseline, list) and baseline and all(isinstance(item, str) for item in baseline):
+        return (True, [str(item) for item in baseline])
+    return (True, None)  # empty list, non-list, or wrong element type -> pause
 
 
 _DEFAULT_RUN_BASELINE = run_baseline
@@ -213,8 +287,30 @@ def establish_green_baseline(
         )
 
     worktree = worktree_result.path
-    command = _read_baseline_command(worktree)
-    evidence = runner(worktree, command, adapter=adapter, provisioner=provisioner)
+    # The baseline is MANDATORY and comes from the ISOLATED worktree's committed HEAD object. A
+    # missing/malformed/empty/non-list committed baseline PAUSES with no dispatch (#58/#2).
+    enforced, command = _committed_baseline(worktree)
+    if command is None:
+        if enforced:
+            return BaselineOutcome(
+                paused=True,
+                status=None,
+                worktree=worktree,
+                evidence=None,
+                pause_reason="missing or invalid committed baseline in .issueforge.toml",
+            )
+        command = list(_SEAM_DEFAULT_BASELINE)
+
+    try:
+        evidence = runner(worktree, command, adapter=adapter, provisioner=provisioner)
+    except Exception:  # noqa: BLE001 — a runner explosion pauses, never crashes the engine (#58/#12).
+        return BaselineOutcome(
+            paused=True,
+            status=BaselineStatus.LAUNCH_FAILED,
+            worktree=worktree,
+            evidence=None,
+            pause_reason="baseline runner failed to produce evidence",
+        )
 
     if evidence.status is BaselineStatus.GREEN:
         if dispatch is not None:

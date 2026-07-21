@@ -509,7 +509,6 @@ def test_reset_worktree_refuses_a_nonexistent_ref(tmp_path):
 
 
 # ===== #58 defect #3 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_default_branch_with_slash_resolved_fully_not_last_segment(tmp_path):
     """A default branch whose name contains a slash (e.g. 'release/v1') must resolve to the WHOLE
     branch name, not just the segment after the last slash, or the fetch targets a branch that does
@@ -543,7 +542,6 @@ def test_default_branch_with_slash_resolved_fully_not_last_segment(tmp_path):
 
 
 # ===== #58 defect #4 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_worktree_creation_fails_when_add_is_a_noop(tmp_path):
     """Creation must PROVE the worktree exists — an unchanged checkout snapshot is necessary but
     not sufficient. When the ``add`` seam is a no-op (git failed, or added nothing), no worktree was
@@ -585,7 +583,6 @@ def test_worktree_creation_fails_when_add_is_a_noop(tmp_path):
 
 
 # ===== #58 defect #5 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_byte_isolation_proof_holds_on_linked_worktree_checkout(tmp_path):
     """When the checkout handed to create_isolated_worktree is itself a linked worktree (its ``.git``
     is a FILE pointing at a gitdir, not a directory), an index mutation during creation must still be
@@ -634,7 +631,6 @@ def test_byte_isolation_proof_holds_on_linked_worktree_checkout(tmp_path):
 
 
 # ===== #58 defect #6 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_ambient_git_env_vars_cannot_redirect_operations(tmp_path):
     """Ambient GIT_* environment variables cannot redirect a workspace git operation away from the
     requested checkout. With GIT_WORK_TREE / GIT_INDEX_FILE (the GIT_DIR family) set in the
@@ -681,7 +677,6 @@ def test_ambient_git_env_vars_cannot_redirect_operations(tmp_path):
 
 
 # ===== #58 defect #13 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_reset_worktree_refuses_non_isolated_path(tmp_path):
     """reset_worktree may destroy tracked work only inside a PROVEN-isolated linked worktree.
     Pointed at a dirty NORMAL checkout it must refuse before any reset --hard, so the developer's
@@ -719,7 +714,6 @@ def test_reset_worktree_refuses_non_isolated_path(tmp_path):
 
 
 # ===== #58 defect #14 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_reset_worktree_requires_successful_reset_and_removes_untracked(tmp_path):
     """After reset_worktree, a worktree left contaminated by a prior attempt is fully clean: an
     untracked file that existed before is GONE (clean -fd ran), a dirty tracked edit is reverted,

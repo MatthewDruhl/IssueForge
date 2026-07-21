@@ -25,8 +25,6 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
-
 
 # The baseline command as it appears in .issueforge.toml, minus the interpreter — the runner
 # supplies the interpreter from the PROVISIONED environment (G14), never the candidate's.
@@ -864,7 +862,6 @@ def _appending_provisioner(extra_line: str):
 
 
 # ===== #58 defect #1 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_baseline_argv_executable_resolved_in_env_not_prepended_to_interpreter(tmp_path):
     """The committed baseline command names its own executable; the runner resolves that
     executable inside the authoritative environment instead of blindly prepending the provisioned
@@ -917,7 +914,6 @@ def test_baseline_argv_executable_resolved_in_env_not_prepended_to_interpreter(t
 
 
 # ===== #58 defect #2 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_missing_or_malformed_committed_baseline_config_pauses_not_defaults(tmp_path):
     """An isolated worktree whose committed config is missing, malformed, carries an empty
     baseline, or a non-list baseline must PAUSE the run (no AI dispatch) instead of silently
@@ -967,7 +963,6 @@ def test_missing_or_malformed_committed_baseline_config_pauses_not_defaults(tmp_
 
 
 # ===== #58 defect #7 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_failed_or_timed_out_canonical_collect_refuses_green(tmp_path):
     """A --collect-only that exits NONZERO must not seed a GREEN baseline: the runner cannot
     trust node ids scraped from a broken collection, so run_baseline must refuse green.
@@ -1016,7 +1011,6 @@ def test_failed_or_timed_out_canonical_collect_refuses_green(tmp_path):
 
 
 # ===== #58 defect #8 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_incomplete_or_contradictory_report_log_is_not_green(tmp_path):
     """A contradictory report log is not GREEN: the one expected node passes, but an UNEXPECTED
     node carries a BROKEN record in the same report. GREEN must be a whole-report property (no
@@ -1053,7 +1047,6 @@ def test_incomplete_or_contradictory_report_log_is_not_green(tmp_path):
 
 
 # ===== #58 defect #9 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_broken_executions_classify_broken_not_behavioral_red(tmp_path):
     """A broken execution (the interpreter dies from a signal, not a clean call-phase failure) is
     BROKEN, never BEHAVIORAL_RED. BEHAVIORAL_RED is reserved for a complete report with a real
@@ -1089,7 +1082,6 @@ def test_broken_executions_classify_broken_not_behavioral_red(tmp_path):
 
 
 # ===== #58 defect #12 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_provisioning_or_runner_failure_pauses_never_crashes(tmp_path):
     """A provisioning/runner failure PAUSES the run with a typed non-green status and never
     dispatches AI, instead of letting the exception escape and crash the engine before any AI

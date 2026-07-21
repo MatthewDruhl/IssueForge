@@ -55,14 +55,26 @@ def _provision_default(worktree: object, frozen_deps: object) -> SimpleNamespace
     env_root = Path(state_root()) / "envs" / unique
     artifact_dir = Path(state_root()) / "artifacts" / unique
     worktree_path = Path(worktree)
-    process.run(["uv", "venv", str(env_root)], cwd=worktree_path, timeout=_VENV_TIMEOUT)
+    venv = process.run(["uv", "venv", str(env_root)], cwd=worktree_path, timeout=_VENV_TIMEOUT)
+    if venv.returncode != 0 or venv.timed_out:
+        raise RuntimeError(f"authoritative venv creation failed: {venv.stderr.strip()!r}")
     venv_python = env_root / "bin" / "python"
+    # Install the EXACT reporter plus the target's frozen manifest (#58/#11); an install
+    # failure/timeout raises so run_baseline pauses with a typed non-green record rather than
+    # silently running a baseline whose dependency environment was never built.
     packages = ["pytest", "pytest-reportlog", *_frozen_specs(frozen_deps)]
-    process.run(
+    install = process.run(
         ["uv", "pip", "install", "--python", str(venv_python), *packages],
         cwd=worktree_path,
         timeout=_INSTALL_TIMEOUT,
     )
+    if install.returncode != 0 or install.timed_out:
+        raise RuntimeError(f"authoritative dependency install failed: {install.stderr.strip()!r}")
+    # Create AND verify the artifact directory the handle advertises (#58/#11): a computed-but-never
+    # made path is a phantom. The write seam creates it under IssueForge's owned state root.
+    getattr(WriteSeam(), "write_text")(artifact_dir / ".if-keep", "")
+    if not artifact_dir.is_dir():
+        raise RuntimeError(f"authoritative artifact_dir was not created: {artifact_dir}")
     # The venv's own bin/python is a SYMLINK to the shared base interpreter, so resolving it would
     # collapse back onto the host. A thin wrapper (a real file UNDER the owned root, never a
     # symlink) execs the working venv interpreter, so the authoritative interpreter path stays
@@ -148,11 +160,26 @@ class PytestAdapter:
         worktree = Path(invocation.worktree)
         command = list(invocation.command)
         env = getattr(invocation, "env", None)
-        argv = [str(invocation.interpreter), *command, "--collect-only", "-q"]
+        # Resolve the committed command's own executable in the authoritative env (#58/#1); a bare
+        # interpreter-prefix turns ["pytest"] into a bogus script path.
+        argv = [
+            *process.build_launch_argv(invocation.interpreter, command, env=env),
+            "--collect-only",
+            "-q",
+        ]
         result = process.run(argv, cwd=worktree, timeout=_COLLECT_TIMEOUT, env=env)
         ids = sorted({line.strip() for line in result.stdout.splitlines() if "::" in line})
         selection = SimpleNamespace(command=tuple(command), argv=tuple(argv))
-        return SimpleNamespace(ids=tuple(ids), selection=selection)
+        # Typed collection evidence (#58/#7): a nonzero exit or a timeout means the scraped ids came
+        # from a BROKEN collection and cannot seed a GREEN baseline. ``ok`` gates execution/green.
+        ok = result.returncode == 0 and not result.timed_out
+        return SimpleNamespace(
+            ids=tuple(ids),
+            selection=selection,
+            returncode=result.returncode,
+            timed_out=result.timed_out,
+            ok=ok,
+        )
 
     def classify(
         self,
@@ -232,11 +259,31 @@ class PytestAdapter:
             return BaselineStatus.INTERNAL_ERROR
         if exit_code == 4:
             return BaselineStatus.USAGE_ERROR
-        if self._is_green(exit_code, report_present, collected, executed, expected, by_node):
+        if self._is_green(
+            exit_code, report_present, collected, executed, expected, by_node, has_failure
+        ):
             return BaselineStatus.GREEN
         if exit_code == 0 and executed == 0 and collected > 0 and not has_failure:
             return BaselineStatus.ALL_SKIPPED
-        return BaselineStatus.BEHAVIORAL_RED
+        # BEHAVIORAL_RED is reserved for a VALID report with a real call-phase failure of an
+        # EXPECTED node at exit 1 (#58/#9). A signaled/aborted death (negative exit), a reportless
+        # non-timeout exit, an unknown exit code, or a setup/teardown-only infra failure has no such
+        # evidence and is BROKEN — never mislabeled a behavioral red baseline.
+        if exit_code == 1 and report_present and self._has_expected_call_failure(expected, by_node):
+            return BaselineStatus.BEHAVIORAL_RED
+        return BaselineStatus.BROKEN
+
+    def _has_expected_call_failure(self, expected: set, by_node: dict) -> bool:
+        """True when some EXPECTED node has a call-phase FAILED record — a genuine behavioral red.
+
+        A call-phase BROKEN (errored) or a setup/teardown failure is infra breakage, not a clean
+        behavioral failure, so only Outcome.FAILED in the call phase of an expected node qualifies.
+        """
+        for nodeid in expected:
+            for record in by_node.get(nodeid, ()):
+                if record.phase == "call" and record.outcome is Outcome.FAILED:
+                    return True
+        return False
 
     def _is_green(
         self,
@@ -246,10 +293,16 @@ class PytestAdapter:
         executed: int,
         expected: set,
         by_node: dict,
+        has_failure: bool,
     ) -> bool:
         if exit_code != 0 or not report_present:
             return False
         if collected <= 0 or executed <= 0 or not expected:
+            return False
+        # GREEN is a WHOLE-REPORT property (#58/#8): a failed/BROKEN record for ANY node — even an
+        # unexpected one that never appeared in canonical_collect — forbids green, not just a
+        # regression among the expected ids.
+        if has_failure:
             return False
         return all(self._node_passed(nodeid, by_node) for nodeid in expected)
 
