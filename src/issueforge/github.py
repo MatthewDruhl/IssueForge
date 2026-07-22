@@ -42,3 +42,141 @@ def pr_facts(run_id: str) -> dict:
     their own. Offline it reports no facts, so reconciliation finds nothing to diverge on.
     """
     return {}
+
+
+# =================================================================================================
+# S20 (#14) — the GitHub WRITE side: apply a mutation plan through an injectable write gateway.
+#
+# A plan is a list of plain-dict ops; each op names its ``op`` (update_body/create_issue/add_comment/
+# link_child), a stable ``id``, and a REPO-QUALIFIED target — issue refs are ``(owner, repo, number)``
+# and repo refs are ``(owner, repo)`` — so a mutation can never land in the wrong repository. ``apply``
+# validates the WHOLE plan before the first write, then dispatches each op on ``op["op"]`` to the
+# matching gateway method, skipping any op whose ``id`` is already in ``ledger`` and adding an op's
+# ``id`` to ``ledger`` only AFTER its gateway call returns (so a mid-plan failure resumes without
+# re-dispatching a completed op). The engine backs ``ledger`` with the RunStore for restart survival.
+# =================================================================================================
+
+
+def _is_issue_ref(ref: Any) -> bool:
+    """True iff ``ref`` is a repo-qualified issue reference ``(owner: str, repo: str, number: int)``."""
+    return (
+        isinstance(ref, tuple)
+        and len(ref) == 3
+        and isinstance(ref[0], str)
+        and isinstance(ref[1], str)
+        and isinstance(ref[2], int)
+        and not isinstance(ref[2], bool)
+    )
+
+
+def _is_repo_ref(ref: Any) -> bool:
+    """True iff ``ref`` is a repo reference ``(owner: str, repo: str)``."""
+    return (
+        isinstance(ref, tuple)
+        and len(ref) == 2
+        and isinstance(ref[0], str)
+        and isinstance(ref[1], str)
+    )
+
+
+def _validate_op(op: dict) -> None:
+    """Reject any op whose target is not repo-qualified (or whose ``op`` is unknown), before a write."""
+    kind = op.get("op")
+    if kind in ("update_body", "add_comment"):
+        if not _is_issue_ref(op.get("issue")):
+            raise ValueError(f"{kind} op needs a repo-qualified issue ref, got {op.get('issue')!r}")
+    elif kind == "create_issue":
+        if not _is_repo_ref(op.get("repo")):
+            raise ValueError(f"create_issue op needs a repo ref, got {op.get('repo')!r}")
+    elif kind == "link_child":
+        if not _is_issue_ref(op.get("parent")):
+            raise ValueError(
+                f"link_child parent must be a repo-qualified issue ref, got {op.get('parent')!r}"
+            )
+        if not _is_issue_ref(op.get("child")):
+            raise ValueError(
+                f"link_child child must be a repo-qualified issue ref, got {op.get('child')!r}"
+            )
+    else:
+        raise ValueError(f"unknown mutation op {kind!r}")
+
+
+def _dispatch(op: dict, gateway: Any) -> None:
+    """Drive one op's matching gateway method with its repo-qualified target and payload."""
+    kind = op["op"]
+    if kind == "update_body":
+        gateway.update_body(issue=op["issue"], body=op["body"])
+    elif kind == "create_issue":
+        gateway.create_issue(repo=op["repo"], title=op["title"], body=op["body"])
+    elif kind == "add_comment":
+        gateway.add_comment(issue=op["issue"], body=op["body"])
+    elif kind == "link_child":
+        gateway.link_child(parent=op["parent"], child=op["child"])
+
+
+def apply(plan: list[dict], gateway: Any, *, ledger: set) -> None:
+    """Apply a mutation ``plan`` through ``gateway``, idempotent on the completed-op-ID ``ledger``.
+
+    The WHOLE plan is validated (every op repo-qualified) BEFORE the first write, so one malformed op
+    late in the plan never leaves earlier ops half-applied. Each op is then dispatched in order to the
+    gateway method named by ``op["op"]``, EXCEPT ops whose ``id`` is already in ``ledger`` (skipped as
+    already done). An op's ``id`` is added to ``ledger`` only AFTER its gateway call returns; a raising
+    gateway propagates with the ledger recording exactly the ops that completed.
+    """
+    for op in plan:
+        _validate_op(op)
+    for op in plan:
+        if op["id"] in ledger:
+            continue
+        _dispatch(op, gateway)
+        ledger.add(op["id"])
+
+
+class GhWriteGateway:
+    """The real GitHub write gateway: each method shells one ``gh`` write command as an argv array.
+
+    Never ``shell=True``; the ``run`` seam is injectable so :func:`apply` can be driven offline in
+    tests. A non-zero exit RAISES (never a silent partial write). ``create_issue`` parses the new
+    issue number from ``gh issue create``'s URL and returns the repo-qualified ref.
+    """
+
+    def __init__(self, *, run: Any = subprocess.run) -> None:
+        self._run = run
+
+    @staticmethod
+    def _slug(ref: tuple) -> str:
+        return f"{ref[0]}/{ref[1]}"
+
+    def _gh(self, args: list[str]) -> str:
+        result = self._run(["gh", *args], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"gh {' '.join(args)} failed (exit {result.returncode}): {result.stderr}"
+            )
+        return result.stdout
+
+    def update_body(self, *, issue, body):
+        self._gh(["issue", "edit", str(issue[2]), "--repo", self._slug(issue), "--body", body])
+
+    def create_issue(self, *, repo, title, body):
+        out = self._gh(
+            ["issue", "create", "--repo", self._slug(repo), "--title", title, "--body", body]
+        )
+        number = int(out.strip().rstrip("/").rsplit("/", 1)[-1])
+        return (repo[0], repo[1], number)
+
+    def add_comment(self, *, issue, body):
+        self._gh(["issue", "comment", str(issue[2]), "--repo", self._slug(issue), "--body", body])
+
+    def link_child(self, *, parent, child):
+        self._gh(
+            [
+                "issue",
+                "comment",
+                str(parent[2]),
+                "--repo",
+                self._slug(parent),
+                "--body",
+                f"Sub-issue: {self._slug(child)}#{child[2]}",
+            ]
+        )

@@ -16,6 +16,7 @@ paused/parked/failed its run is not overwritten to completed).
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
@@ -457,6 +458,69 @@ def _diff_paths(diff_text: str) -> list[str]:
                     seen.add(path)
                     paths.append(path)
     return paths
+
+
+# ---------------------------------------------------------------------------
+# S20 (#14): apply the in-place revision behind a human gate (the FIRST GitHub mutation)
+# ---------------------------------------------------------------------------
+
+
+def _op_fingerprint(op: dict) -> str:
+    """A stable content fingerprint for a mutation op, binding a recorded op-ID to its exact content.
+
+    Option A idempotency: a recorded op-ID must resume ONLY the identical op; a changed target/op/body
+    under the same id is refused, never silently skipped. Tuple targets serialize deterministically.
+    """
+    return json.dumps(op, sort_keys=True)
+
+
+def apply_revision(
+    run_id: str, plan: list, gateway: Any, *, approver: Callable[[Any], bool]
+) -> dict:
+    """Apply an approved in-place revision — the FIRST GitHub mutation — behind the human gate (US-3.1).
+
+    The human ``approver`` is consulted BEFORE any write: on rejection the gateway is touched for ZERO
+    ops and no ``revision`` event is recorded. On approval the plan is applied via :func:`github.apply`
+    against a completed-op-ID ledger PERSISTED in the RunStore (``record["revision_ledger"]`` maps each
+    completed op-ID to its content fingerprint), so a resumed apply never re-dispatches a completed op
+    (Option A idempotency) and a changed op under a recorded id raises ``ValueError``. On success a
+    ``revision`` event records the completed op-IDs. The completed ledger is persisted even on a
+    mid-plan gateway failure, so the RuntimeError propagates with the landed op recorded.
+    """
+    s = store.RunStore()
+    record = s.read(run_id)
+
+    # Resume integrity (Option A): a recorded op-ID binds to the EXACT op that completed. A changed op
+    # under a recorded id is refused; a matching one is treated as already done (seeded into the set).
+    persisted: dict = record.get("revision_ledger") or {}
+    completed: set = set()
+    for op in plan:
+        op_id = op["id"]
+        if op_id in persisted:
+            if persisted[op_id] != _op_fingerprint(op):
+                raise ValueError(
+                    f"op id {op_id!r} was recorded for different content; refusing to resume"
+                )
+            completed.add(op_id)
+
+    # Human gate: record approval BEFORE any write; a rejection touches nothing.
+    if not approver(plan):
+        return s.read(run_id)
+    s.append_event(run_id, {"transition": "approval", "revision": True, "approved": True})
+
+    fingerprints = dict(persisted)
+    try:
+        github.apply(plan, gateway, ledger=completed)
+    finally:
+        # Persist every completed op-ID bound to its content, even after a mid-plan gateway failure.
+        for op in plan:
+            if op["id"] in completed:
+                fingerprints[op["id"]] = _op_fingerprint(op)
+        s.apply(run_id, lambda _r: {"revision_ledger": fingerprints})
+
+    ordered = [op["id"] for op in plan if op["id"] in completed]
+    s.append_event(run_id, {"transition": "revision", "completed": ordered})
+    return s.read(run_id)
 
 
 def _reconcile(record: dict, github_facts: Callable[[str], dict]) -> None:

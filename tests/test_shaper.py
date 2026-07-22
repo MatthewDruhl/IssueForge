@@ -1288,7 +1288,6 @@ def _multi_op_plan():
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 def test_buildable_run_receives_a_proposed_in_place_revision(isolated_state_home):
     """A buildable run receives a proposed in-place revision: an AI-authored new body carried by a repo-qualified update_body op in the mutation plan (US-3.1).
 
@@ -1307,7 +1306,6 @@ def test_buildable_run_receives_a_proposed_in_place_revision(isolated_state_home
     assert update_ops[0]["body"] == "REVISED BODY"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 def test_reviser_receives_the_exact_persisted_buildable_shape(isolated_state_home):
     """The revision is authored against the run's PERSISTED buildable shape — the reviser is handed exactly the shape recorded at approval, not an empty or reconstructed stand-in, so the revision reflects the real classification and scope.
 
@@ -1327,7 +1325,6 @@ def test_reviser_receives_the_exact_persisted_buildable_shape(isolated_state_hom
     assert seen["shape"] == _shape("run-1")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 @pytest.mark.parametrize(
     "setup",
     [
@@ -1378,7 +1375,6 @@ def test_only_a_buildable_run_gets_the_revision_path(isolated_state_home, setup)
         shaper.propose_revision("run-1", _ISSUE, reviser=lambda issue, shape: "REVISED")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 def test_propose_revision_performs_no_gh_write(isolated_state_home, monkeypatch):
     """Proposing the revision performs NO GitHub call of any kind — it only plans; the write boundary is never touched until apply time.
 
@@ -1399,7 +1395,6 @@ def test_propose_revision_performs_no_gh_write(isolated_state_home, monkeypatch)
     assert [op for op in result["plan"] if op["op"] == "update_body"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 def test_no_op_of_the_plan_writes_before_approval(isolated_state_home):
     """No op of the mutation plan — not update_body, create_issue, add_comment, or link_child — writes before the human approves; a rejected revision touches the gateway for zero ops and records no revision evidence.
 
@@ -1442,7 +1437,6 @@ def test_no_op_of_the_plan_writes_before_approval(isolated_state_home):
     assert _events("run-1", "revision") == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 def test_approved_revision_writes_the_exact_body_after_approval_and_binds_evidence(
     isolated_state_home,
 ):
@@ -1480,7 +1474,6 @@ def test_approved_revision_writes_the_exact_body_after_approval_and_binds_eviden
     assert revision_events[-1]["completed"] == ["op-1"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 def test_apply_revision_resumes_from_persisted_op_ids_without_reissuing(isolated_state_home):
     """A revision apply that fails mid-plan resumes from the RunStore-persisted operation IDs: a completed op is never re-dispatched after the process is reconstructed, so a resumed mutation never duplicates a landed one (Option A idempotency).
 
@@ -1504,7 +1497,6 @@ def test_apply_revision_resumes_from_persisted_op_ids_without_reissuing(isolated
     assert "update_body" not in [c[0] for c in resumed.calls]  # completed op-1 never re-dispatched
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 def test_resume_with_a_changed_op_under_a_recorded_id_is_rejected(isolated_state_home):
     """A persisted op-ID binds to the EXACT op that completed: resuming with the same id but a changed target/op/body is rejected, so a mutated plan can never reuse a recorded id to skip — and thereby falsely mark "complete" — a genuinely different mutation.
 
