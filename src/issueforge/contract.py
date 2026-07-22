@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +64,18 @@ class RedProof:
     base_sha: str
     added_ids: tuple[str, ...]
     head_sha: str = ""
+
+
+def red_evidence_from_proof(proof: RedProof) -> str:
+    """Render a re-verified proof's records to the confirmation red-evidence text (#82 item 1).
+
+    Each record renders as ``<nodeid> <exception_type>: <message>``, newline-joined (no trailing
+    newline). This is the ONLY sanctioned source of the between-rounds ``red_evidence`` — the gate
+    consumes it instead of a bare reprove string, so fabricated evidence cannot reach a confirmation.
+    """
+    return "\n".join(
+        f"{record.nodeid} {record.exception_type}: {record.message}" for record in proof.records
+    )
 
 
 # --------------------------------------------------------------------------- redaction (S4 writer)
@@ -724,37 +738,6 @@ def _resolve_head(worktree: Path) -> str:
     return sha
 
 
-# --------------------------------------------------------------------------- input materialization
-
-
-def _materialize_review_inputs(
-    dest: Path, review_inputs: dict, proof_command: str, head_sha: str
-) -> dict[str, Path]:
-    """Write every review input to ``dest`` with EXACT BYTES before the review runs (S7 posture).
-
-    ``dest`` is caller-supplied transient scratch (the reviewer's working material), deliberately
-    OUTSIDE the run store, so it is registered on the guarded write seam as an ephemeral scratch
-    root; every field is written UTF-8 byte-for-byte (no strip, no re-quote, no CRLF drift).
-    """
-    dest = Path(dest)
-    seam = WriteSeam()
-    seam.allow_scratch(dest)
-    fields = {
-        "diff": review_inputs["diff"],
-        "contract": review_inputs["contract"],
-        "manifest": review_inputs["manifest"],
-        "red_evidence": review_inputs["red_evidence"],
-        "proof_command": proof_command,
-        "head_sha": head_sha,
-    }
-    out: dict[str, Path] = {}
-    for name, value in fields.items():
-        target = dest / f"{name}.txt"
-        seam.write_text(target, value)
-        out[name] = target
-    return out
-
-
 # --------------------------------------------------------------------------- audit packet
 
 
@@ -999,210 +982,279 @@ def review_red_contract(
     round_no = 0
     prev_head = current_head
 
-    while True:
-        round_no += 1
-        _bump_rounds(st, run_id)
+    # Register the caller-owned scratch root ONCE (#82 item 2). Each round materializes into a fresh
+    # run-owned subdir of it; every subdir is removed in the ``finally`` on EVERY exit path (clean
+    # done, fail-loud blocking return, or an exception propagating out), so no secret-bearing input
+    # lingers on disk. Registering once (not per round) keeps ``allow_scratch``'s flat-dir precondition
+    # satisfied while multiple round subdirs coexist during a multi-round review.
+    seam = WriteSeam()
+    seam.allow_scratch(Path(materialize_dest))
+    materialized_subdirs: list[Path] = []
 
-        head_before = _resolve_head(worktree)  # verified committed HEAD
-        inputs = _materialize_review_inputs(
-            materialize_dest, review_inputs, proof_command, head_before
-        )
-        packet = {
-            "worktree": worktree,
-            "proof_command": proof_command,
-            "head_sha": head_before,
-            "provisioner": handle,
-            "inputs": inputs,
-            "instruction": (
-                _EXHAUSTIVE_INSTRUCTION if round_no == 1 else _CONFIRMATION_INSTRUCTION
-            ),
-            "prior_findings": sorted(seen_findings),
-        }
-        outcome = reviewer(packet)
-        result = outcome.result
+    try:
+        while True:
+            round_no += 1
+            _bump_rounds(st, run_id)
 
-        # Session independence + role (US-9.5, fix 6): the reviewer must run a fresh, independent
-        # ``review`` session — never the authoring session, never a reused earlier-round session, and
-        # never a non-review role. Each failure persists a blocking failed review + pauses BEFORE
-        # raising (so no prior ``done`` stays current), then raises.
-        if result.role != "review":
-            _fail_and_pause(
-                st,
+            head_before = _resolve_head(worktree)  # verified committed HEAD
+            # Materialize every review input BYTE-EXACT (no strip/re-quote/CRLF drift) into a FRESH
+            # run-owned subdir of the scratch root (#82 item 2) — a distinct ``review-<uuid>`` dir per
+            # round, removed on every exit path in the ``finally``. The writes go through the trusted
+            # local ``seam`` (``write_text`` auto-creates the subdir), so no bytes land outside the seam.
+            subdir = Path(materialize_dest) / f"review-{uuid.uuid4().hex}"
+            materialized_subdirs.append(subdir)
+            fields = {
+                "diff": review_inputs["diff"],
+                "contract": review_inputs["contract"],
+                "manifest": review_inputs["manifest"],
+                "red_evidence": review_inputs["red_evidence"],
+                "proof_command": proof_command,
+                "head_sha": head_before,
+            }
+            inputs: dict[str, Path] = {}
+            for name, value in fields.items():
+                inputs[name] = seam.write_text(subdir / f"{name}.txt", value)
+            packet = {
+                "worktree": worktree,
+                "proof_command": proof_command,
+                "head_sha": head_before,
+                "provisioner": handle,
+                "inputs": inputs,
+                "instruction": (
+                    _EXHAUSTIVE_INSTRUCTION if round_no == 1 else _CONFIRMATION_INSTRUCTION
+                ),
+                "prior_findings": sorted(seen_findings),
+            }
+            outcome = reviewer(packet)
+            result = outcome.result
+
+            # Session independence + role (US-9.5, fix 6): the reviewer must run a fresh, independent
+            # ``review`` session — never the authoring session, never a reused earlier-round session,
+            # and never a non-review role. Each failure persists a blocking failed review + pauses
+            # BEFORE raising (so no prior ``done`` stays current), then raises.
+            if result.role != "review":
+                _fail_and_pause(
+                    st,
+                    run_id,
+                    round_no=round_no,
+                    result=result,
+                    head_sha=head_before,
+                    proof_command=proof_command,
+                    inputs=inputs,
+                    secrets=secrets,
+                    authoring_session_id=authoring_session_id,
+                    cause="role_mismatch",
+                )
+                raise ValueError(f"reviewer AIResult role must be 'review', got {result.role!r}")
+            if result.session_id == authoring_session_id:
+                _fail_and_pause(
+                    st,
+                    run_id,
+                    round_no=round_no,
+                    result=result,
+                    head_sha=head_before,
+                    proof_command=proof_command,
+                    inputs=inputs,
+                    secrets=secrets,
+                    authoring_session_id=authoring_session_id,
+                    cause="shared_session",
+                    record_authoring=True,
+                )
+                providers.validate_review_independence(result, authoring_ref)  # raises
+            if result.session_id in prior_sessions:
+                _fail_and_pause(
+                    st,
+                    run_id,
+                    round_no=round_no,
+                    result=result,
+                    head_sha=head_before,
+                    proof_command=proof_command,
+                    inputs=inputs,
+                    secrets=secrets,
+                    authoring_session_id=authoring_session_id,
+                    cause="reused_session",
+                )
+                raise providers.SharedSessionError(
+                    f"reviewer session {result.session_id!r} reused across review rounds"
+                )
+            prior_sessions.add(result.session_id)
+
+            # Fail-loud (from S7): empty output / non-zero exit / timeout = FAILED, never a pass.
+            if result.status is not providers.InvocationStatus.OK:
+                packet_path = _fail_and_pause(
+                    st,
+                    run_id,
+                    round_no=round_no,
+                    result=result,
+                    head_sha=head_before,
+                    proof_command=proof_command,
+                    inputs=inputs,
+                    secrets=secrets,
+                    authoring_session_id=authoring_session_id,
+                    cause=_fail_cause(result),
+                )
+                return ContractReview(
+                    verdict="blocking:1",
+                    accepted=False,
+                    head_sha=head_before,
+                    reviewer_session_id=result.session_id,
+                    rounds=round_no,
+                    findings=(),
+                    packet_path=packet_path,
+                )
+
+            # TOCTOU guard (fix 3): the HEAD must not have moved WHILE the reviewer ran, else the
+            # reviewer saw content that no longer matches the sha the verdict would bind to — fail
+            # closed.
+            head_after = _resolve_head(worktree)
+            if head_after != head_before:
+                packet_path = _fail_and_pause(
+                    st,
+                    run_id,
+                    round_no=round_no,
+                    result=result,
+                    head_sha=head_before,
+                    proof_command=proof_command,
+                    inputs=inputs,
+                    secrets=secrets,
+                    authoring_session_id=authoring_session_id,
+                    cause="head_moved_during_review",
+                )
+                return ContractReview(
+                    verdict="blocking:1",
+                    accepted=False,
+                    head_sha=head_before,
+                    reviewer_session_id=result.session_id,
+                    rounds=round_no,
+                    findings=(),
+                    packet_path=packet_path,
+                )
+
+            # Healthy invocation: compose the semantic verdict, bound to the verified head.
+            verdict, findings, done = _compose_verdict(outcome)
+            packet_path = _write_packet(
                 run_id,
                 round_no=round_no,
-                result=result,
                 head_sha=head_before,
                 proof_command=proof_command,
-                inputs=inputs,
-                secrets=secrets,
-                authoring_session_id=authoring_session_id,
-                cause="role_mismatch",
-            )
-            raise ValueError(f"reviewer AIResult role must be 'review', got {result.role!r}")
-        if result.session_id == authoring_session_id:
-            _fail_and_pause(
-                st,
-                run_id,
-                round_no=round_no,
                 result=result,
-                head_sha=head_before,
-                proof_command=proof_command,
-                inputs=inputs,
-                secrets=secrets,
-                authoring_session_id=authoring_session_id,
-                cause="shared_session",
-                record_authoring=True,
-            )
-            providers.validate_review_independence(result, authoring_ref)  # raises
-        if result.session_id in prior_sessions:
-            _fail_and_pause(
-                st,
-                run_id,
-                round_no=round_no,
-                result=result,
-                head_sha=head_before,
-                proof_command=proof_command,
-                inputs=inputs,
-                secrets=secrets,
-                authoring_session_id=authoring_session_id,
-                cause="reused_session",
-            )
-            raise providers.SharedSessionError(
-                f"reviewer session {result.session_id!r} reused across review rounds"
-            )
-        prior_sessions.add(result.session_id)
-
-        # Fail-loud (from S7): empty output / non-zero exit / timeout = FAILED, never a pass.
-        if result.status is not providers.InvocationStatus.OK:
-            packet_path = _fail_and_pause(
-                st,
-                run_id,
-                round_no=round_no,
-                result=result,
-                head_sha=head_before,
-                proof_command=proof_command,
-                inputs=inputs,
-                secrets=secrets,
-                authoring_session_id=authoring_session_id,
-                cause=_fail_cause(result),
-            )
-            return ContractReview(
-                verdict="blocking:1",
-                accepted=False,
-                head_sha=head_before,
-                reviewer_session_id=result.session_id,
-                rounds=round_no,
-                findings=(),
-                packet_path=packet_path,
-            )
-
-        # TOCTOU guard (fix 3): the HEAD must not have moved WHILE the reviewer ran, else the reviewer
-        # saw content that no longer matches the sha the verdict would bind to — fail closed.
-        head_after = _resolve_head(worktree)
-        if head_after != head_before:
-            packet_path = _fail_and_pause(
-                st,
-                run_id,
-                round_no=round_no,
-                result=result,
-                head_sha=head_before,
-                proof_command=proof_command,
-                inputs=inputs,
-                secrets=secrets,
-                authoring_session_id=authoring_session_id,
-                cause="head_moved_during_review",
-            )
-            return ContractReview(
-                verdict="blocking:1",
-                accepted=False,
-                head_sha=head_before,
-                reviewer_session_id=result.session_id,
-                rounds=round_no,
-                findings=(),
-                packet_path=packet_path,
-            )
-
-        # Healthy invocation: compose the semantic verdict, bound to the verified head.
-        verdict, findings, done = _compose_verdict(outcome)
-        packet_path = _write_packet(
-            run_id,
-            round_no=round_no,
-            head_sha=head_before,
-            proof_command=proof_command,
-            result=result,
-            verdict=verdict,
-            inputs=inputs,
-            secrets=secrets,
-        )
-        st.append_event(
-            run_id,
-            {
-                "transition": "review",
-                "session_id": result.session_id,
-                "round": round_no,
-                "confirmed": done,
-                "verdict": verdict,
-            },
-        )
-        _persist_block(
-            st,
-            run_id,
-            verdict=verdict,
-            head_sha=head_before,
-            reviewer_session_id=result.session_id,
-            authoring_session_id=authoring_session_id,
-            provider=result.provider,
-            findings=findings,
-            outcome=verdict,
-            secrets=secrets,
-        )
-
-        if done:
-            return ContractReview(
                 verdict=verdict,
-                accepted=True,
+                inputs=inputs,
+                secrets=secrets,
+            )
+            st.append_event(
+                run_id,
+                {
+                    "transition": "review",
+                    "session_id": result.session_id,
+                    "round": round_no,
+                    "confirmed": done,
+                    "verdict": verdict,
+                },
+            )
+            _persist_block(
+                st,
+                run_id,
+                verdict=verdict,
                 head_sha=head_before,
                 reviewer_session_id=result.session_id,
-                rounds=round_no,
+                authoring_session_id=authoring_session_id,
+                provider=result.provider,
                 findings=findings,
-                packet_path=packet_path,
+                outcome=verdict,
+                secrets=secrets,
             )
 
-        # Blocking: reopen another bounded round ONLY for a finding never seen in ANY prior round
-        # (fix 5, cumulative — an a->b->a sequence does not reopen on the repeated ``a``).
-        is_new = any(f not in seen_findings for f in findings)
-        seen_findings |= set(findings)
-        should_continue = round_no < bound and fixer is not None and reprove is not None and is_new
-        if not should_continue:
-            _pause(st, run_id)
-            return ContractReview(
-                verdict=verdict,
-                accepted=False,
-                head_sha=head_before,
-                reviewer_session_id=result.session_id,
-                rounds=round_no,
-                findings=findings,
-                packet_path=packet_path,
-            )
+            if done:
+                return ContractReview(
+                    verdict=verdict,
+                    accepted=True,
+                    head_sha=head_before,
+                    reviewer_session_id=result.session_id,
+                    rounds=round_no,
+                    findings=findings,
+                    packet_path=packet_path,
+                )
 
-        # A test change RE-RUNS the full S10 predicate set and mints NEW sha-bound red evidence: fix,
-        # require the HEAD to have genuinely ADVANCED (fix 2 — a no-op fixer that leaves the head
-        # unchanged cannot reach ``done`` at the original head), then reprove that changed head.
-        fixer()
-        new_head = _resolve_head(worktree)
-        if new_head == prev_head or new_head == head_before:
-            _pause(st, run_id)
-            return ContractReview(
-                verdict=verdict,
-                accepted=False,
-                head_sha=head_before,
-                reviewer_session_id=result.session_id,
-                rounds=round_no,
-                findings=findings,
-                packet_path=packet_path,
+            # Blocking: reopen another bounded round ONLY for a finding never seen in ANY prior round
+            # (fix 5, cumulative — an a->b->a sequence does not reopen on the repeated ``a``).
+            is_new = any(f not in seen_findings for f in findings)
+            seen_findings |= set(findings)
+            should_continue = (
+                round_no < bound and fixer is not None and reprove is not None and is_new
             )
-        prev_head = new_head
-        review_inputs["red_evidence"] = reprove(new_head)
+            if not should_continue:
+                _pause(st, run_id)
+                return ContractReview(
+                    verdict=verdict,
+                    accepted=False,
+                    head_sha=head_before,
+                    reviewer_session_id=result.session_id,
+                    rounds=round_no,
+                    findings=findings,
+                    packet_path=packet_path,
+                )
+
+            # A test change RE-RUNS the full S10 predicate set and mints NEW sha-bound red evidence:
+            # fix, require the HEAD to have genuinely ADVANCED (fix 2 — a no-op fixer that leaves the
+            # head unchanged cannot reach ``done`` at the original head), then RE-PROVE that changed
+            # head. ``reprove`` now returns a ``RedProof`` (never a bare string); the gate REQUIRES a
+            # re-verified ACCEPTED proof (reason ``behavioral_red``, the review ``base_sha``) BOUND to
+            # the advanced head (#82 item 1). Anything else — unaccepted, wrong reason, wrong base,
+            # bound to the OLD head, or not a ``RedProof`` — is FAIL-LOUD: the round's blocking block is
+            # already persisted, so PAUSE and return blocking WITHOUT reaching a confirmation round.
+            fixer()
+            new_head = _resolve_head(worktree)
+            if new_head == prev_head or new_head == head_before:
+                _pause(st, run_id)
+                return ContractReview(
+                    verdict=verdict,
+                    accepted=False,
+                    head_sha=head_before,
+                    reviewer_session_id=result.session_id,
+                    rounds=round_no,
+                    findings=findings,
+                    packet_path=packet_path,
+                )
+            prev_head = new_head
+            proof = reprove(new_head)
+            if not (
+                isinstance(proof, RedProof)
+                and proof.accepted is True
+                and proof.reason == "behavioral_red"
+                and proof.base_sha == base_sha
+                and proof.head_sha == new_head
+            ):
+                _pause(st, run_id)
+                return ContractReview(
+                    verdict=verdict,
+                    accepted=False,
+                    head_sha=head_before,
+                    reviewer_session_id=result.session_id,
+                    rounds=round_no,
+                    findings=findings,
+                    packet_path=packet_path,
+                )
+            review_inputs["red_evidence"] = red_evidence_from_proof(proof)
+    finally:
+        # Attempt EVERY tracked subdir even if one removal fails (e.g. a partial-write or an
+        # intervening delete left a subdir missing, so ``remove_scratch``'s ``rmtree`` raises), so a
+        # single failure never leaks the remaining materialized (secret-bearing) subdirs. Retain the
+        # errors rather than swallow them: if the try body is returning normally (no exception
+        # propagating) but cleanup failed, FAIL LOUD — a review must never report acceptance while
+        # materialized inputs linger on disk. If a body exception is already propagating, let it
+        # surface unmasked (cleanup was still attempted on every subdir).
+        cleanup_errors: list[Exception] = []
+        for subdir in materialized_subdirs:
+            try:
+                seam.remove_scratch(subdir)
+            except Exception as exc:  # noqa: BLE001 - aggregated; re-raised below only on a clean body
+                cleanup_errors.append(exc)
+        if cleanup_errors and sys.exc_info()[0] is None:
+            raise RuntimeError(
+                f"review-input cleanup failed for {len(cleanup_errors)} subdir(s); "
+                f"materialized inputs may linger on disk: {cleanup_errors!r}"
+            )
 
 
 # --------------------------------------------------------------------------- override + finalize

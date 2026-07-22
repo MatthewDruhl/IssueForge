@@ -1394,7 +1394,6 @@ def test_equal_reviewer_session_rejected_fail_loud(tmp_path, fake_provider_scrip
 # ------------------------------------------------- M. Execution capability: materialize + verbatim cmd
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
 def test_inputs_materialized_in_run_owned_subdir_then_removed(tmp_path, fake_provider_script):
     """EVERY review input is written with EXACT BYTES BEFORE the reviewer runs (S7, no network), inside a
     RUN-OWNED temp subdir UNDER ``materialize_dest`` (not dest directly) — proven inside the reviewer
@@ -1786,7 +1785,6 @@ def test_test_change_reproves_and_rebinds_c1_stale_c2_current(tmp_path, fake_pro
 # -------------------------------------------------------------- Q. Batched round protocol + counter
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
 def test_blocking_then_reproved_confirmation_is_done(tmp_path, fake_provider_script):
     """The batched contract: a blocking first pass, then a FIX -> RE-PROVE (new head) -> confirmation
     that consumes evidence DERIVED FROM A RE-VERIFIED PROOF -> ``done``, two rounds. Between rounds the
@@ -1863,7 +1861,6 @@ def test_blocking_then_reproved_confirmation_is_done(tmp_path, fake_provider_scr
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
 def test_red_evidence_from_proof_renders_records_independently():
     """``contract.red_evidence_from_proof`` renders a verified proof's records to the confirmation
     red_evidence text, pinned to a LITERAL expected string (not the seam itself), so the reproved-
@@ -1901,7 +1898,6 @@ def test_red_evidence_from_proof_renders_records_independently():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
 @pytest.mark.parametrize(
     "defect",
     ["not_accepted", "bound_to_old_head", "wrong_base_sha", "wrong_reason", "bare_string"],
@@ -1999,7 +1995,6 @@ def test_reprove_unverified_or_misbound_proof_is_fail_loud(tmp_path, fake_provid
     assert block.get("accepted") is not True, "gate persisted accepted state on a rejected reprove"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
 @pytest.mark.parametrize("path_kind", ["success", "fail_loud", "exception", "reviewer_raises"])
 def test_materialized_inputs_removed_on_all_exit_paths(tmp_path, fake_provider_script, path_kind):
     """The run-owned materialized input dir is removed in a ``finally`` on EVERY exit path — each path's
@@ -2149,7 +2144,6 @@ def _valid_reproof(scen):
     return reprove
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
 def test_persistent_blocking_stops_at_default_two_rounds_counted(tmp_path, fake_provider_script):
     """``contract_review_rounds`` defaults to 2: a persistently-blocking reviewer is invoked EXACTLY
     twice (two distinct fresh sessions, two review events), the counter persists 2, and the run pauses
@@ -2195,7 +2189,6 @@ def test_persistent_blocking_stops_at_default_two_rounds_counted(tmp_path, fake_
     assert review.verdict.startswith("blocking:") and record["status"] == "paused"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
 def test_reopen_only_on_new_blocking_finding(tmp_path, fake_provider_script):
     """Above the default bound, a confirmation round REOPENS the review only when it introduces a NEW
     blocking finding; a confirmation that repeats the SAME finding does not reopen — it terminates
@@ -2266,7 +2259,6 @@ def test_reopen_only_on_new_blocking_finding(tmp_path, fake_provider_script):
     assert review.verdict == "done" and review.rounds == 3
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
 def test_counter_incremented_through_store_apply_and_isolated(
     tmp_path, fake_provider_script, monkeypatch
 ):
