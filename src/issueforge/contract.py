@@ -1285,7 +1285,14 @@ def finalize_review(run_id: str, verdict: str) -> None:
 
     def _transform(record: dict) -> dict:
         transition(State(record["status"]), State.COMPLETED)  # raises before any field is returned
-        block = {**record.get("contract_review", {}), "verdict": verdict, "outcome": verdict}
+        existing = record.get("contract_review", {})
+        # The terminal ``outcome`` is what the currency check reads; ``verdict`` is the reviewer's
+        # own finding and is PRESERVED when one is already recorded (an override sets outcome="done"
+        # while keeping verdict="blocking:n"). Only mint ``verdict`` when the block has none yet, so
+        # finalizing an overridden review never erases the reviewer's verdict/provenance.
+        block = {**existing, "outcome": verdict}
+        if "verdict" not in existing:
+            block["verdict"] = verdict
         return {"status": State.COMPLETED.value, "contract_review": block}
 
     RunStore().apply(run_id, _transform)

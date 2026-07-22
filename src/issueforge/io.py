@@ -60,8 +60,17 @@ class WriteSeam:
                 raise BoundaryViolation(
                     f"scratch root {root} is, or is an ancestor of, a protected root {guarded}"
                 )
-        if self._git_facts(root) is not None:
-            raise BoundaryViolation(f"scratch root {root} is inside a Git worktree")
+        # Check the nearest EXISTING ancestor for Git-worktree membership: for a not-yet-created
+        # scratch dir, ``git -C <nonexistent>`` cannot discover its parent worktree, so probing
+        # ``root`` alone would authorize ``<checkout>/new-scratch`` and let it be created inside a
+        # real checkout. Walk up to the first directory that exists and probe THAT.
+        anchor = root
+        while not anchor.exists() and anchor != anchor.parent:
+            anchor = anchor.parent
+        if self._git_facts(anchor) is not None:
+            raise BoundaryViolation(
+                f"scratch root {root} is inside a Git worktree (via existing ancestor {anchor})"
+            )
         if root.exists():
             if not root.is_dir() or root.is_symlink():
                 raise BoundaryViolation(f"scratch root {root} is not a plain directory")

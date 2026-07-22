@@ -186,3 +186,45 @@ def test_allow_scratch_rejects_broad_sensitive_and_repo_roots(tmp_path):
     flat.mkdir()
     (flat / "diff.txt").write_text("x")
     WriteSeam().allow_scratch(flat)  # flat reuse across rounds (fresh seam each time)
+
+
+# --------------------------------------------- N2: nonexistent scratch inside a checkout (build-confirm)
+def test_allow_scratch_rejects_nonexistent_path_inside_checkout():
+    """A NOT-YET-CREATED scratch path inside a Git checkout must be refused. ``git -C <nonexistent>``
+    cannot discover the parent worktree, so the guard probes the nearest EXISTING ancestor: otherwise
+    ``<checkout>/new-review-scratch`` would be authorized and then created inside a real checkout."""
+    repo = Path(tempfile.mkdtemp())
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    nonexistent = repo / "new-review-scratch"
+    assert not nonexistent.exists()
+    with pytest.raises(BoundaryViolation):
+        WriteSeam().allow_scratch(nonexistent)
+
+
+# --------------------------------------------- N3: finalize preserves an overridden verdict (build-confirm)
+def test_finalize_review_preserves_overridden_reviewer_verdict():
+    """finalize_review must not erase a reviewer verdict that an override preserved: it sets the
+    terminal ``outcome`` while keeping ``verdict='blocking:n'`` for provenance, and currency (which
+    reads the effective outcome) recovers at the bound head."""
+    run = "fin-preserve"
+    store.RunStore().apply(
+        run,
+        lambda _r: {
+            "status": "running",
+            "contract_review": {"verdict": "blocking:1", "outcome": "done", "head_sha": "h"},
+        },
+        create=True,
+    )
+    contract.finalize_review(run, "done")
+    block = store.RunStore().read(run)["contract_review"]
+    assert block["verdict"] == "blocking:1"  # reviewer verdict/provenance preserved
+    assert block["outcome"] == "done"  # terminal outcome recovered
+    assert contract.red_evidence_current(store.RunStore().read(run), "h") is True
+
+
+# A fresh run with no prior block still mints the verdict on finalize (unchanged behavior).
+def test_finalize_review_mints_verdict_when_no_prior_block():
+    run = "fin-fresh"
+    store.RunStore().apply(run, lambda _r: {"status": "running"}, create=True)
+    contract.finalize_review(run, "done")
+    assert store.RunStore().read(run)["contract_review"]["verdict"] == "done"
