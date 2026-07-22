@@ -92,9 +92,9 @@ def emit_invocation(record: dict, *, secrets: set[str] | None = None) -> None:
     # Longest-first so a longer secret is masked before a shorter one it contains.
     redacted = _redact_record(record, sorted(secrets or (), key=len, reverse=True))
     payload = json.dumps(redacted, default=str, sort_keys=True)
-    # The seam is the sanctioned writer; dispatch through the instance so the guarded
-    # write_text runs (the boundary lint's name heuristic cannot see a raw write here).
-    getattr(seam, "write_text")(target, payload)
+    # The seam is the sanctioned writer; the boundary lint's receiver-aware exemption (#40)
+    # recognizes write_text on a provable local WriteSeam, so no getattr dispatch is needed.
+    seam.write_text(target, payload)
 
 
 def _redact_record(value: object, secrets: list[str]) -> object:

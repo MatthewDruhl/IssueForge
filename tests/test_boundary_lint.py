@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from issueforge.boundary import check_source
@@ -562,7 +561,6 @@ def test_class6_rename_keyword_form_flagged(tmp_path: Path) -> None:
 _WRITE_TEXT_RULE = "write-surface: .write_text() outside the IO seam"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#40)")
 def test_class6_process_style_plain_seam_write_is_clean(tmp_path: Path) -> None:
     """(#40) The plain seam.write_text(target, payload) form process.run wants (no getattr) passes.
 
@@ -581,7 +579,6 @@ def test_class6_process_style_plain_seam_write_is_clean(tmp_path: Path) -> None:
     assert lint(tmp_path, code) == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#40)")
 def test_class6_write_text_on_qualified_writeseam_is_exempt(tmp_path: Path) -> None:
     """(#40) Provable-binding form 2: a receiver bound to the qualified io.WriteSeam() constructor."""
     code = (
@@ -593,7 +590,6 @@ def test_class6_write_text_on_qualified_writeseam_is_exempt(tmp_path: Path) -> N
     assert lint(tmp_path, code) == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#40)")
 def test_class6_write_text_on_annotated_writeseam_is_exempt(tmp_path: Path) -> None:
     """(#40) Provable-binding form 3: an annotated construction `seam: WriteSeam = WriteSeam()` (AnnAssign).
 
@@ -708,3 +704,287 @@ def test_class6_rebound_write_text_attr_still_flagged_guard(tmp_path: Path) -> N
     code = "def f(path):\n    write = path.write_text\n    write('x')\n"
     v = lint(tmp_path, code)
     assert any("write-surface: write() outside the IO seam" in x for x in v)
+
+
+# --- issue #40 (round 2): binder-precision guards from the Codex cross-review -----------------
+# Seam trust is granted ONLY by a provable WriteSeam()/io.WriteSeam() construction bound to a
+# FUNCTION-LOCAL name, and is CLEARED by every other binder of that name. These pin the shapes
+# the first eight guards did not cover: module scope, exception handlers, destructuring, loop and
+# with targets, and lambda/comprehension shadowing. All stay flagged.
+
+
+def test_class6_module_level_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A MODULE-LEVEL `seam = WriteSeam()` then a direct module-level write is NOT local.
+
+    Option A exempts a provable LOCAL in a function body; the module scope is not a function scope,
+    so a module-level seam.write_text stays flagged (cf. the module-global-used-in-function guard).
+    """
+    code = (
+        "from issueforge.io import WriteSeam\nseam = WriteSeam()\nseam.write_text('target', 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_except_as_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) `except ... as seam` binds an exception, not a WriteSeam — trust is cleared."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target):\n"
+        "    seam = WriteSeam()\n"
+        "    try:\n"
+        "        pass\n"
+        "    except Exception as seam:\n"
+        "        seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_destructured_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A tuple/list unpack is a non-simple binder — it clears trust even if a leaf is WriteSeam()."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, other):\n"
+        "    seam, extra = WriteSeam(), other\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_for_target_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A `for seam in ...` loop target rebinds seam to a loop item — trust is cleared."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, seams):\n"
+        "    seam = WriteSeam()\n"
+        "    for seam in seams:\n"
+        "        seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_with_target_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A `with ctx as seam` context binding rebinds seam — trust is cleared."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, ctx):\n"
+        "    seam = WriteSeam()\n"
+        "    with ctx as seam:\n"
+        "        seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_walrus_bound_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A walrus `seam := <non-WriteSeam>` binding is non-simple — trust is cleared."""
+    code = (
+        "def emit(target, factory):\n"
+        "    if (seam := factory()):\n"
+        "        seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_lambda_shadowed_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A lambda PARAMETER named seam shadows an outer trusted seam — the body is not exempt."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def outer(target):\n"
+        "    seam = WriteSeam()\n"
+        "    return lambda seam: seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_comprehension_shadowed_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A comprehension TARGET named seam shadows an outer trusted seam — the body is not exempt."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, seams):\n"
+        "    seam = WriteSeam()\n"
+        "    return [seam.write_text(target, 'x') for seam in seams]\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+# --- issue #40 (round 3): unconditional-binding guards from the Codex confirmation ------------
+# Trust is granted ONLY for an UNCONDITIONAL binding — one not nested under an if/try/for/while/
+# with body, where the WriteSeam value is not guaranteed at the write site — and never for a name
+# declared global/nonlocal. These pin the three shapes round 2 still exempted.
+
+
+def test_class6_conditional_if_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A `seam = WriteSeam()` under an `if` is conditional — not provably a WriteSeam later."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, flag):\n"
+        "    if flag:\n"
+        "        seam = WriteSeam()\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_try_body_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A `seam = WriteSeam()` inside a `try` body is conditional — trust is not granted."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target):\n"
+        "    try:\n"
+        "        seam = WriteSeam()\n"
+        "    finally:\n"
+        "        pass\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_global_declared_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A `global seam; seam = WriteSeam()` names the module global, not a local — flagged."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target):\n"
+        "    global seam\n"
+        "    seam = WriteSeam()\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_match_case_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A `seam = WriteSeam()` inside a `case` body is conditional — trust is not granted."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, command):\n"
+        "    match command:\n"
+        "        case 'go':\n"
+        "            seam = WriteSeam()\n"
+        "        case _:\n"
+        "            seam = target\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_match_capture_rebinds_seam_still_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A `case ... as seam` capture rebinds a trusted seam to a matched value — flagged."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, command):\n"
+        "    seam = WriteSeam()\n"
+        "    match command:\n"
+        "        case str() as seam:\n"
+        "            pass\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_type_alias_rebinds_seam_still_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A PEP 695 `type seam = ...` statement rebinds seam — a disqualifying binding, flagged."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target):\n"
+        "    seam = WriteSeam()\n"
+        "    type seam = int\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_class_body_seam_does_not_revoke_outer_local(tmp_path: Path) -> None:
+    """(#40 positive) A class body opens its own scope: a `seam = path` inside it must NOT flag the enclosing function's legitimate unconditional local WriteSeam."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, path):\n"
+        "    seam = WriteSeam()\n"
+        "    class C:\n"
+        "        seam = path\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert lint(tmp_path, code) == []
+
+
+# --- issue #40 (round 4): whitelist pre-pass guards from the Codex round-3 confirmation --------
+# The robust rewrite counts EVERY binding of a name in a scope and trusts only the single-clean
+# shape. These pin the binders the incremental clear-list still missed: import-as, an enclosing-
+# scope walrus inside a comprehension, and a walrus in a nested def's default/decorator.
+
+
+def test_class6_import_as_seam_write_text_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard, round 4) `import X as seam` binds seam — a disqualifying binding, write stays flagged."""
+    code = "def emit(target):\n    import pathlib as seam\n    seam.write_text(target, 'x')\n"
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_comprehension_enclosing_walrus_seam_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard, round 4) A walrus `seam := ...` inside a comprehension binds the ENCLOSING scope — disqualifying."""
+    code = (
+        "def emit(target, paths):\n"
+        "    [(seam := path) for path in paths]\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_nested_def_default_walrus_rebinds_seam_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard, round 4) A walrus in a nested def's default rebinds the outer seam in THIS scope — disqualifying.
+
+    The nested def BODY is a separate scope (not scanned), but its argument defaults evaluate in the
+    enclosing scope (PEP 572), so the `seam :=` there is a second binding of seam and revokes trust.
+    """
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, other):\n"
+        "    seam = WriteSeam()\n"
+        "    def helper(value=(seam := other)):\n"
+        "        return value\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_clean_seam_amid_unrelated_code_is_exempt(tmp_path: Path) -> None:
+    """(#40 positive) A single unconditional `seam = WriteSeam()` stays exempt amid unrelated bindings and control flow."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "from pathlib import Path\n"
+        "def emit(target, payload, items):\n"
+        "    seam = WriteSeam()\n"
+        "    total = 0\n"
+        "    for item in items:\n"
+        "        total += 1\n"
+        "    if total:\n"
+        "        note = Path('note')\n"
+        "    seam.write_text(target, payload)\n"
+    )
+    assert lint(tmp_path, code) == []
+
+
+# --- issue #40 (round 5): exhaustive walrus collection from the Codex round-4 confirmation -----
+# Walrus collection is now exhaustive by construction (every ast.NamedExpr evaluated in the scope,
+# any position), so no expression slot can be missed. These pin two positions the position-by-
+# position scan skipped: an assignment-TARGET subscript, and a class BASE.
+
+
+def test_class6_walrus_in_assignment_target_seam_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard, round 5) A walrus in an assignment TARGET (`d[(seam := path)] = 1`) binds seam — disqualifying."""
+    code = (
+        "def emit(target, path):\n"
+        "    d = {}\n"
+        "    d[(seam := path)] = 1\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_walrus_in_class_base_rebinds_seam_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard, round 5) A walrus in a class BASE rebinds a trusted seam → record [True, False] → untrusted."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, path):\n"
+        "    seam = WriteSeam()\n"
+        "    class C((seam := path)):\n"
+        "        pass\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
