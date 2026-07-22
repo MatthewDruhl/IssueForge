@@ -63,12 +63,19 @@ class BaselineStatus(Enum):
 
 @dataclass(frozen=True)
 class NodeRecord:
-    """One phase-aware node record: a single test id in a single phase, with its outcome."""
+    """One phase-aware node record: a single test id in a single phase, with its outcome.
+
+    ``wasxfail`` retains pytest's report-log ``wasxfail`` marker: a NON-strict xfail that PASSES
+    reports ``outcome="passed"`` with ``wasxfail`` set (an XPASS). Without it an XPASS is
+    indistinguishable from a genuine pass, so the S10 red proof could not reject the XPASS third
+    state. ``None`` for every ordinary record.
+    """
 
     nodeid: str
     phase: str
     outcome: Outcome
     longrepr: object = None
+    wasxfail: object = None
 
 
 @dataclass(frozen=True)

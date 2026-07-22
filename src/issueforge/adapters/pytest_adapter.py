@@ -157,6 +157,20 @@ class ProbeResult:
     capabilities: object
 
 
+@dataclass(frozen=True)
+class BaselineSelection:
+    """The reconciliation of a candidate collection against the protected base id set.
+
+    ``added`` is the COMPUTED ``candidate - base`` set (sorted, never a declared list nor a
+    ``collected(base) - new_ids`` subtraction); ``missing`` names every base id absent from the
+    candidate (a disappeared preexisting test); ``ok`` is True exactly when nothing disappeared.
+    """
+
+    added: tuple
+    missing: tuple
+    ok: bool
+
+
 class PytestAdapter:
     """Verification adapter for the pytest framework, using pytest's own reporter."""
 
@@ -189,6 +203,20 @@ class PytestAdapter:
         if provisioner is not None:
             return provisioner(worktree, frozen_deps)
         return _provision_default(worktree, frozen_deps)
+
+    def select_baseline(self, base_ids: object, candidate_ids: object) -> BaselineSelection:
+        """Reconcile a candidate collection against the protected base ids.
+
+        ``added`` is the sorted COMPUTED ``candidate - base`` set — the genuinely new ids, never a
+        declared value and never a ``base - new`` subtraction (which would silently launder a
+        reused base id out of the protected set). ``missing`` is every base id the candidate no
+        longer collects (a disappeared preexisting test); ``ok`` is True only when none disappeared.
+        """
+        base = set(base_ids)
+        candidate = set(candidate_ids)
+        added = tuple(sorted(candidate - base))
+        missing = tuple(sorted(base - candidate))
+        return BaselineSelection(added=added, missing=missing, ok=not missing)
 
     def canonical_collect(self, invocation: object) -> object:
         """Return the EXACT repo-relative node-id set for ``invocation`` via ``--collect-only``.
@@ -248,6 +276,7 @@ class PytestAdapter:
                 phase=record.get("when"),
                 outcome=_to_outcome(record.get("outcome")),
                 longrepr=record.get("longrepr"),
+                wasxfail=record.get("wasxfail"),
             )
             for record in records
         )
