@@ -490,6 +490,17 @@ def apply_revision(
     s = store.RunStore()
     record = s.read(run_id)
 
+    # Workflow eligibility: only a buildable, approved (running) run may have its revision applied — the
+    # same rule propose_revision enforces. A paused/blocked/oversized/failed run is refused BEFORE any
+    # write (the plan-level pre-approval gate alone does not enforce this workflow rule).
+    shape = record.get("shape")
+    if not (
+        record.get("status") == State.RUNNING.value
+        and isinstance(shape, dict)
+        and shape.get("classification") == "buildable"
+    ):
+        raise ValueError(f"apply_revision requires a buildable, approved run; {run_id!r} is not eligible")
+
     # Resume integrity (Option A): a recorded op-ID binds to the EXACT op that completed. A changed op
     # under a recorded id is refused; a matching one is treated as already done (seeded into the set).
     persisted: dict = record.get("revision_ledger") or {}

@@ -58,36 +58,59 @@ def pr_facts(run_id: str) -> dict:
 
 
 def _is_issue_ref(ref: Any) -> bool:
-    """True iff ``ref`` is a repo-qualified issue reference ``(owner: str, repo: str, number: int)``."""
+    """True iff ``ref`` is a repo-qualified issue reference ``(owner: str, repo: str, number: int)``.
+
+    Owner and repo must be non-empty and the number a positive int (not a bool), so a mutation can
+    never target an empty repository or a zero/negative issue.
+    """
     return (
         isinstance(ref, tuple)
         and len(ref) == 3
         and isinstance(ref[0], str)
+        and bool(ref[0])
         and isinstance(ref[1], str)
+        and bool(ref[1])
         and isinstance(ref[2], int)
         and not isinstance(ref[2], bool)
+        and ref[2] > 0
     )
 
 
 def _is_repo_ref(ref: Any) -> bool:
-    """True iff ``ref`` is a repo reference ``(owner: str, repo: str)``."""
+    """True iff ``ref`` is a repo reference ``(owner: str, repo: str)`` with non-empty parts."""
     return (
         isinstance(ref, tuple)
         and len(ref) == 2
         and isinstance(ref[0], str)
+        and bool(ref[0])
         and isinstance(ref[1], str)
+        and bool(ref[1])
     )
 
 
+def _require_str(op: dict, key: str, kind: str) -> None:
+    if not isinstance(op.get(key), str):
+        raise ValueError(f"{kind} op needs a string {key!r}, got {op.get(key)!r}")
+
+
 def _validate_op(op: dict) -> None:
-    """Reject any op whose target is not repo-qualified (or whose ``op`` is unknown), before a write."""
+    """Reject a malformed op (bad id, unknown kind, non-repo-qualified target, or missing/ill-typed
+    payload field) BEFORE any write, so a malformed op later in the plan can never leave earlier ops
+    half-applied."""
+    op_id = op.get("id")
+    if not isinstance(op_id, str) or not op_id:
+        raise ValueError(f"op needs a non-empty string id, got {op_id!r}")
     kind = op.get("op")
     if kind in ("update_body", "add_comment"):
         if not _is_issue_ref(op.get("issue")):
             raise ValueError(f"{kind} op needs a repo-qualified issue ref, got {op.get('issue')!r}")
+        _require_str(op, "body", kind)
     elif kind == "create_issue":
         if not _is_repo_ref(op.get("repo")):
             raise ValueError(f"create_issue op needs a repo ref, got {op.get('repo')!r}")
+        if not isinstance(op.get("title"), str) or not op.get("title"):
+            raise ValueError(f"create_issue op needs a non-empty title, got {op.get('title')!r}")
+        _require_str(op, "body", "create_issue")
     elif kind == "link_child":
         if not _is_issue_ref(op.get("parent")):
             raise ValueError(
@@ -123,8 +146,12 @@ def apply(plan: list[dict], gateway: Any, *, ledger: set) -> None:
     already done). An op's ``id`` is added to ``ledger`` only AFTER its gateway call returns; a raising
     gateway propagates with the ledger recording exactly the ops that completed.
     """
+    seen_ids: set = set()
     for op in plan:
         _validate_op(op)
+        if op["id"] in seen_ids:
+            raise ValueError(f"duplicate op id {op['id']!r} in plan")
+        seen_ids.add(op["id"])
     for op in plan:
         if op["id"] in ledger:
             continue
