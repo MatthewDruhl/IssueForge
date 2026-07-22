@@ -1303,7 +1303,6 @@ def _state_files() -> list[Path]:
 # ------------------------------------------------------------------- L. Session independence (US-9.5)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_review_session_bound_to_airesult_and_recorded(tmp_path, fake_provider_script):
     """The reviewer session is FRESH (not the authoring session) and the recorded id is the ACTUAL
     reviewer AIResult's session — not an arbitrary string the gate could invent.
@@ -1332,7 +1331,6 @@ def test_review_session_bound_to_airesult_and_recorded(tmp_path, fake_provider_s
     assert any(e.get("session_id") == real.session_id for e in _events(run, "review"))
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_equal_reviewer_session_rejected_fail_loud(tmp_path, fake_provider_script):
     """A review whose session equals the authoring session is REJECTED (US-9.5) — and the rejection is
     fail-loud: the run pauses, NO ``done``/accepted verdict is persisted, and the failure records BOTH
@@ -1371,7 +1369,6 @@ def test_equal_reviewer_session_rejected_fail_loud(tmp_path, fake_provider_scrip
 # ------------------------------------------------- M. Execution capability: materialize + verbatim cmd
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_inputs_materialized_exact_bytes_under_dest_before_review(tmp_path, fake_provider_script):
     """EVERY review input is written to local disk under ``materialize_dest`` with EXACT BYTES BEFORE
     the reviewer runs (S7, no network) — proven inside the reviewer callback, not merely afterward.
@@ -1399,7 +1396,6 @@ def test_inputs_materialized_exact_bytes_under_dest_before_review(tmp_path, fake
     assert Path(got["head_sha"]).read_text().strip() == scen.candidate_sha
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_proof_command_byte_exact_never_normalized(tmp_path, fake_provider_script):
     """The literal proof command reaches the reviewer and the materialized file BYTE-FOR-BYTE — a
     whitespace/quote/backslash/newline-fragile command survives unchanged (no strip, no re-quote).
@@ -1427,7 +1423,6 @@ def test_proof_command_byte_exact_never_normalized(tmp_path, fake_provider_scrip
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_review_runs_against_real_worktree_with_network_off_marker(tmp_path, fake_provider_script):
     """The reviewer is given EXECUTION CAPABILITY against the REAL candidate worktree under a
     network-off provisioner marker (network denial itself is S6/S15's hermetic-env contract).
@@ -1467,7 +1462,6 @@ def test_review_runs_against_real_worktree_with_network_off_marker(tmp_path, fak
         ),
     ],
 )
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_failed_invocation_full_contract(tmp_path, fake_provider_script, name, spec, cause):
     """Empty output OR non-zero exit OR timeout = FAILED review, NEVER a pass — even when the reviewer
     CLAIMS correspondence. The failure is fully recorded: exact ``blocking:1``, run paused, a failed
@@ -1497,7 +1491,6 @@ def test_failed_invocation_full_contract(tmp_path, fake_provider_script, name, s
 # --------------------------------------------------------- O. Semantic correspondence (core deliverable)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_correspondence_true_no_findings_is_done_but_findings_block(tmp_path, fake_provider_script):
     """``done`` requires BOTH correspondence AND zero findings: a reviewer that AFFIRMS correspondence
     yet still returns a blocking finding does NOT pass (a gate of ``accepted = correspondence`` fails).
@@ -1553,7 +1546,6 @@ def test_correspondence_true_no_findings_is_done_but_findings_block(tmp_path, fa
         ),
     ],
 )
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_semantic_failure_is_blocking_from_distinct_inputs(
     tmp_path, fake_provider_script, name, red_evidence, contract_reason, finding
 ):
@@ -1583,7 +1575,6 @@ def test_semantic_failure_is_blocking_from_distinct_inputs(
     assert finding in store.RunStore().read(run)["contract_review"]["findings"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_missing_correspondence_is_blocking_one(tmp_path, fake_provider_script):
     """A healthy invocation that does NOT affirm correspondence and names no explicit finding is still
     blocking — a bare OK can never substitute for the semantic judgment; the gate synthesizes the
@@ -1610,7 +1601,6 @@ def test_missing_correspondence_is_blocking_one(tmp_path, fake_provider_script):
 # ------------------------------------------------------- P. Sha-binding, staleness, evidence currency
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_verdict_bound_to_real_candidate_head_not_echoed(tmp_path, fake_provider_script):
     """The verdict binds to the REAL resolved HEAD of the candidate worktree — not a caller-supplied
     value, and distinct from the base sha (a gate that binds to base or echoes an argument fails).
@@ -1643,7 +1633,6 @@ def test_verdict_bound_to_real_candidate_head_not_echoed(tmp_path, fake_provider
         ("malformed", {"contract_review": {"head_sha": "h"}}, "h", False),
     ],
 )
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_currency_predicate_only_current_done_matching_head(name, manifest, head, expected):
     """``red_evidence_current`` is True ONLY for a ``done`` verdict whose recorded head equals the
     current head; a stale head, a non-``done`` verdict, an absent block, or a malformed block is False.
@@ -1656,7 +1645,6 @@ def test_currency_predicate_only_current_done_matching_head(name, manifest, head
     assert contract.red_evidence_current(manifest, head) is expected
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_require_current_evidence_refuses_stale(tmp_path):
     """S11 owns a currency CONSUMER guard a downstream gate (S12 freeze) calls: it refuses stale or
     non-current evidence, so a stale red proof can never be reused. (S12's freeze itself is out of
@@ -1678,7 +1666,6 @@ def test_require_current_evidence_refuses_stale(tmp_path):
             contract.require_current_evidence(bad, "h")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_test_change_reproves_and_rebinds_c1_stale_c2_current(tmp_path, fake_provider_script):
     """A change to a test RE-RUNS the full S10 predicate set and mints NEW sha-bound red evidence, in
     the RIGHT order: prove (C1) precedes review (C1); a mutation advances to C2; a real re-prove (C2)
@@ -1744,7 +1731,6 @@ def test_test_change_reproves_and_rebinds_c1_stale_c2_current(tmp_path, fake_pro
 # -------------------------------------------------------------- Q. Batched round protocol + counter
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_blocking_then_reproved_confirmation_is_done(tmp_path, fake_provider_script):
     """The batched contract: a blocking first pass, then a FIX -> RE-PROVE (new head) -> confirmation
     that consumes the REVISED evidence -> ``done``, two rounds. The confirmation reviews the NEW head
@@ -1794,7 +1780,6 @@ def test_blocking_then_reproved_confirmation_is_done(tmp_path, fake_provider_scr
     assert Path(reviewer.packets[1]["inputs"]["red_evidence"]).read_text() == reproved_evidence
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_first_pass_exhaustive_all_findings_ordered_in_packet(tmp_path, fake_provider_script):
     """The first pass carries the exhaustive-enumeration instruction and records ALL findings in order
     (it does not stop at the first). Without that instruction the reviewer truncates — so the gate is
@@ -1827,7 +1812,6 @@ def test_first_pass_exhaustive_all_findings_ordered_in_packet(tmp_path, fake_pro
     assert "REJECT one two three" in Path(review.packet_path).read_text()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_persistent_blocking_stops_at_default_two_rounds_counted(tmp_path, fake_provider_script):
     """``contract_review_rounds`` defaults to 2: a persistently-blocking reviewer is invoked EXACTLY
     twice (two distinct fresh sessions, two review events), the counter persists 2, and the run pauses
@@ -1873,7 +1857,6 @@ def test_persistent_blocking_stops_at_default_two_rounds_counted(tmp_path, fake_
     assert review.verdict.startswith("blocking:") and record["status"] == "paused"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_reopen_only_on_new_blocking_finding(tmp_path, fake_provider_script):
     """Above the default bound, a confirmation round REOPENS the review only when it introduces a NEW
     blocking finding; a confirmation that repeats the SAME finding does not reopen — it terminates
@@ -1944,7 +1927,6 @@ def test_reopen_only_on_new_blocking_finding(tmp_path, fake_provider_script):
     assert review.verdict == "done" and review.rounds == 3
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_counter_incremented_through_store_apply_and_isolated(
     tmp_path, fake_provider_script, monkeypatch
 ):
@@ -2012,7 +1994,6 @@ def test_counter_incremented_through_store_apply_and_isolated(
 # ------------------------------------------------------- R. Override + verdict vocabulary (US-5.4)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_override_records_full_provenance_and_updates_outcome(tmp_path, fake_provider_script):
     """A failed review may be explicitly overridden; the override RECORDS who/why/when (a PARSEABLE
     timestamp), the NEW verdict, the verdict it OVERRODE, the reviewed head, and the reviewer
@@ -2075,7 +2056,6 @@ def test_override_records_full_provenance_and_updates_outcome(tmp_path, fake_pro
         )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_override_is_not_a_silent_retry(tmp_path, fake_provider_script):
     """An override is a first-class recorded EVENT, never a re-invocation of the reviewer: exactly one
     new ``override`` event, and no new ``review`` event, transcript, reviewer session, or round.
@@ -2128,7 +2108,6 @@ def test_override_is_not_a_silent_retry(tmp_path, fake_provider_script):
         ("", False),
     ],
 )
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_valid_contract_verdict_boundaries(verdict, legal):
     """The verdict vocabulary is exactly ``done`` / ``blocking:<positive int>`` / ``skipped:<non-empty
     one-line reason>`` — a zero/negative/junk count, a bare keyword, a whitespace-only or multi-line
@@ -2142,7 +2121,6 @@ def test_valid_contract_verdict_boundaries(verdict, legal):
     assert contract.valid_contract_verdict(verdict) is legal
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_terminal_verdict_enforced_on_terminal_write(tmp_path):
     """The vocabulary is ENFORCED when the review is finalized at TERMINAL status — not merely a
     standalone predicate. Finalizing with an out-of-vocabulary or malformed verdict is refused and
@@ -2171,7 +2149,6 @@ def test_terminal_verdict_enforced_on_terminal_write(tmp_path):
 
 
 @pytest.mark.parametrize("path_kind", ["success", "failure"])
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_full_review_packet_structured_and_retained(tmp_path, fake_provider_script, path_kind):
     """The full review packet is retained as a STRUCTURED auditable artifact — every named field of the
     round is reconstructible — on BOTH the success and the failure path (a FAILED review still persists
@@ -2226,7 +2203,6 @@ def test_full_review_packet_structured_and_retained(tmp_path, fake_provider_scri
 @pytest.mark.parametrize(
     "path_kind", ["success", "failure_nonzero", "failure_empty", "failure_timeout"]
 )
-@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
 def test_redaction_canary_copied_into_packet_then_redacted(
     tmp_path, fake_provider_script, path_kind
 ):

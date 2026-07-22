@@ -37,6 +37,14 @@ class WriteSeam:
         self._validate_worktree(root, registered_repo)
         self._roots[root] = registered_repo
 
+    def allow_scratch(self, root: Path) -> None:
+        """Permit writes under a caller-owned EPHEMERAL scratch directory (transient working
+        material, e.g. the review inputs materialized for a fresh reviewer session), which is
+        neither the state root nor a registered worktree. No Git-worktree validation applies: the
+        directory is caller-owned scratch, NOT persisted run state, so it carries no registered repo.
+        """
+        self._roots[Path(root).resolve()] = None
+
     def _validate_worktree(self, root: Path, registered_repo: Path) -> None:
         worktree = self._git_facts(root)
         repository = self._git_facts(registered_repo)

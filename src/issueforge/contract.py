@@ -20,15 +20,17 @@ from __future__ import annotations
 import ast
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from issueforge import engine, process
+from issueforge import engine, process, providers
 from issueforge import verify as _verify
 from issueforge import workspace as _workspace_mod
 from issueforge.adapters.base import BaselineStatus, Outcome
+from issueforge.io import WriteSeam
 from issueforge.state import State, transition
-from issueforge.store import REDACTED, RunStore
+from issueforge.store import REDACTED, RunStore, write_artifact
 
 _GIT_TIMEOUT = 120.0
 _COLLECT_TIMEOUT = 120.0
@@ -612,3 +614,496 @@ def reject_false_green(test_source: str) -> str | None:
 def example_reproduced_verbatim(issue_example: str, fixtures: object) -> bool:
     """True iff EXACTLY ONE fixture reproduces ``issue_example`` byte-for-byte."""
     return sum(1 for value in fixtures.values() if value == issue_example) == 1
+
+
+# =============================================================== S11 (#17): independent red review
+#
+# S10 proves the tests executed and FAILED at a bound sha. It CANNOT prove the red corresponds to the
+# NAMED missing behavior. ``review_red_contract`` adds that irreducibly semantic gate: an independent,
+# FRESH session reviews the REAL candidate worktree with the LITERAL proof command, is fail-loud on
+# empty/non-zero/timeout, binds its verdict to the REAL candidate HEAD, runs a bounded batched-round
+# protocol on its OWN under-lock counter, records an explicit override, and retains a fully-redacted
+# structured audit packet.
+
+_DEFAULT_MAX_ROUNDS = 2
+_EXHAUSTIVE_INSTRUCTION = (
+    "Independently review the observed red against the expected behavioral reason. This is the first "
+    "pass: enumerate ALL blocking findings (weak golden, wrong-reason red, coverage gap); do not stop "
+    "at the first."
+)
+_CONFIRMATION_INSTRUCTION = (
+    "Confirmation round: verify the reproved red now corresponds to the expected behavioral reason. "
+    "Reopen ONLY if you find a NEW blocking finding."
+)
+_BLOCKING_RE = re.compile(r"^blocking:([0-9]+)$")
+_MISSING_CORRESPONDENCE = "missing-correspondence"
+
+
+@dataclass(frozen=True)
+class ContractReview:
+    """The whole contract-review verdict: the verdict string, its acceptance, the bound reviewed head,
+    the real reviewer session, the round count, the findings, and the retained audit-packet path."""
+
+    verdict: str
+    accepted: bool
+    head_sha: str
+    reviewer_session_id: str
+    rounds: int
+    findings: tuple[str, ...]
+    packet_path: Path
+
+
+# --------------------------------------------------------------------------- verdict vocabulary
+
+
+def valid_contract_verdict(verdict: object) -> bool:
+    """The verdict vocabulary: ``done`` | ``blocking:<positive int>`` | ``skipped:<one-line reason>``.
+
+    A zero/negative/junk count, a bare keyword, a whitespace-only or multi-line skip reason, or an
+    unknown token is rejected (ported from MARVIN's ``_validate_cross_review`` enforcement rule).
+    """
+    if not isinstance(verdict, str):
+        return False
+    if verdict == "done":
+        return True
+    match = _BLOCKING_RE.match(verdict)
+    if match:
+        return int(match.group(1)) > 0
+    if verdict.startswith("skipped:"):
+        reason = verdict[len("skipped:") :]
+        return bool(reason.strip()) and "\n" not in reason
+    return False
+
+
+# --------------------------------------------------------------------------- currency predicates
+
+
+def red_evidence_current(manifest: dict, head: str) -> bool:
+    """True iff the manifest's ``contract_review`` is a ``done`` verdict bound to the current head."""
+    block = manifest.get("contract_review")
+    if not isinstance(block, dict):
+        return False
+    return block.get("verdict") == "done" and block.get("head_sha") == head
+
+
+def require_current_evidence(manifest: dict, head: str) -> None:
+    """The consumer guard S12's freeze calls: refuse (``ValueError``) stale or non-current evidence."""
+    if not red_evidence_current(manifest, head):
+        raise ValueError(
+            "contract-review evidence is stale or non-current: no ``done`` verdict bound to the "
+            f"current head {head!r}"
+        )
+
+
+# --------------------------------------------------------------------------- git head resolution
+
+
+def _resolve_head(worktree: Path) -> str:
+    """The REAL current HEAD of ``worktree`` (never a caller-supplied sha)."""
+    return _git(worktree, "rev-parse", "HEAD").stdout.strip()
+
+
+# --------------------------------------------------------------------------- input materialization
+
+
+def _materialize_review_inputs(
+    dest: Path, review_inputs: dict, proof_command: str, head_sha: str
+) -> dict[str, Path]:
+    """Write every review input to ``dest`` with EXACT BYTES before the review runs (S7 posture).
+
+    ``dest`` is caller-supplied transient scratch (the reviewer's working material), deliberately
+    OUTSIDE the run store, so it is registered on the guarded write seam as an ephemeral scratch
+    root; every field is written UTF-8 byte-for-byte (no strip, no re-quote, no CRLF drift).
+    """
+    dest = Path(dest)
+    seam = WriteSeam()
+    seam.allow_scratch(dest)
+    fields = {
+        "diff": review_inputs["diff"],
+        "contract": review_inputs["contract"],
+        "manifest": review_inputs["manifest"],
+        "red_evidence": review_inputs["red_evidence"],
+        "proof_command": proof_command,
+        "head_sha": head_sha,
+    }
+    out: dict[str, Path] = {}
+    for name, value in fields.items():
+        target = dest / f"{name}.txt"
+        seam.write_text(target, value)
+        out[name] = target
+    return out
+
+
+# --------------------------------------------------------------------------- audit packet
+
+
+def _fail_cause(result: providers.AIResult) -> str:
+    """The SPECIFIC fail-loud cause: timeout, then non-zero exit, then empty output."""
+    if result.timed_out:
+        return "timeout"
+    if result.returncode != 0:
+        return "nonzero_exit"
+    return "empty_output"
+
+
+def _write_packet(
+    run_id: str,
+    *,
+    round_no: int,
+    head_sha: str,
+    proof_command: str,
+    result: providers.AIResult,
+    verdict: str,
+    inputs: dict[str, Path],
+    secrets: frozenset,
+) -> Path:
+    """Persist a STRUCTURED, redacted audit packet under the run dir (success AND failure paths).
+
+    The text carries the reviewed head, the literal proof command, the reviewer provider + session,
+    the invocation status, the reviewer stdout AND stderr, the verdict, and every materialized input
+    (name + echoed content). The store's redacting writer scrubs every seeded secret to ``[REDACTED]``.
+    """
+    lines = [
+        f"contract-review packet (round {round_no})",
+        f"head_sha: {head_sha}",
+        f"proof_command: {proof_command}",
+        f"provider: {result.provider}",
+        f"reviewer_session_id: {result.session_id}",
+        f"status: {result.status.value}",
+        f"verdict: {verdict}",
+        "--- inputs ---",
+    ]
+    for name, path in inputs.items():
+        try:
+            content = Path(path).read_text(errors="replace")
+        except OSError:
+            content = ""
+        lines.append(f"{name}: {content}")
+    lines += ["--- stdout ---", result.stdout, "--- stderr ---", result.stderr]
+    name = f"contract-review-packet-round-{round_no}-{result.session_id}.txt"
+    return write_artifact(run_id, name, "\n".join(lines), secrets=secrets)
+
+
+# --------------------------------------------------------------------------- persistence helpers
+
+
+def _bump_rounds(st: RunStore, run_id: str) -> None:
+    """Increment ``contract_review_rounds`` by ONE, cumulatively, THROUGH the under-lock apply."""
+    st.apply(
+        run_id,
+        lambda r: {"contract_review_rounds": int(r.get("contract_review_rounds", 0)) + 1},
+    )
+
+
+def _persist_block(
+    st: RunStore,
+    run_id: str,
+    *,
+    verdict: str,
+    head_sha: str,
+    reviewer_session_id: str,
+    authoring_session_id: str,
+    provider: str,
+    findings: tuple[str, ...],
+    outcome: str,
+) -> None:
+    """Persist the manifest ``contract_review`` block (no secrets ever reach the un-redacted manifest)."""
+    block = {
+        "verdict": verdict,
+        "head_sha": head_sha,
+        "reviewer_session_id": reviewer_session_id,
+        "authoring_session_id": authoring_session_id,
+        "provider": provider,
+        "findings": list(findings),
+        "outcome": outcome,
+    }
+    st.apply(run_id, lambda _r: {"contract_review": block})
+
+
+def _compose_verdict(outcome: object) -> tuple[str, tuple[str, ...], bool]:
+    """``done`` iff correspondence AND no findings; else ``blocking:<n>`` (synthesizing the
+    missing-correspondence finding when correspondence is absent and no explicit finding was named)."""
+    findings = tuple(outcome.findings)
+    if outcome.correspondence and not findings:
+        return "done", (), True
+    if not findings:
+        findings = (_MISSING_CORRESPONDENCE,)
+    return f"blocking:{len(findings)}", findings, False
+
+
+# --------------------------------------------------------------------------- the review gate
+
+
+def review_red_contract(
+    run_id: str,
+    *,
+    candidate_worktree: object,
+    base_sha: str,
+    proof_command: str,
+    reviewer: object,
+    authoring_session_id: str,
+    materialize_dest: object,
+    review_inputs: dict,
+    provisioner: object,
+    secrets: frozenset = frozenset(),
+    max_rounds: int | None = None,
+    reprove: object = None,
+    fixer: object = None,
+) -> ContractReview:
+    """The independent semantic review of the red contract (see the S11 section doc).
+
+    Consumes an ACCEPTED S10 red proof on the SAME run, binds the verdict to the REAL candidate HEAD,
+    materializes every input before each review, runs the bounded batched-round protocol (one
+    exhaustive pass -> fix -> RE-PROVE -> confirmation, reopening only on a NEW finding), is fail-loud
+    on any non-OK invocation, rejects an equal reviewer session, increments its OWN under-lock counter,
+    and retains a redacted structured audit packet every round.
+    """
+    st = RunStore()
+    secrets = frozenset(secrets)
+    worktree = Path(candidate_worktree)
+    review_inputs = dict(review_inputs)
+    bound = _DEFAULT_MAX_ROUNDS if max_rounds is None else max_rounds
+
+    record = st.read(run_id)
+    proof = record.get("red_proof")
+    if not (isinstance(proof, dict) and proof.get("accepted") is True):
+        raise ValueError(
+            f"cannot review {run_id!r}: no accepted S10 red proof on the run (proof precedes review)"
+        )
+
+    # Provision the real candidate worktree: the handle carries the network-off marker the reviewer
+    # runs under (the raw provisioner is a callable; ``.network`` lives on the provisioned handle).
+    handle = provisioner(worktree)
+
+    authoring_ref = SimpleNamespace(session_id=authoring_session_id)
+    prev_findings: tuple[str, ...] | None = None
+    round_no = 0
+
+    while True:
+        round_no += 1
+        _bump_rounds(st, run_id)
+
+        head_sha = _resolve_head(worktree)
+        inputs = _materialize_review_inputs(
+            materialize_dest, review_inputs, proof_command, head_sha
+        )
+        packet = {
+            "worktree": worktree,
+            "proof_command": proof_command,
+            "head_sha": head_sha,
+            "provisioner": handle,
+            "inputs": inputs,
+            "instruction": (
+                _EXHAUSTIVE_INSTRUCTION if round_no == 1 else _CONFIRMATION_INSTRUCTION
+            ),
+            "prior_findings": list(prev_findings or ()),
+        }
+        outcome = reviewer(packet)
+        result = outcome.result
+
+        # Independence (US-9.5): an equal session is fail-loud — persist + pause BEFORE raising.
+        if result.session_id == authoring_session_id:
+            st.append_event(
+                run_id,
+                {
+                    "transition": "review",
+                    "session_id": result.session_id,
+                    "authoring_session_id": authoring_session_id,
+                    "round": round_no,
+                    "confirmed": False,
+                    "failed": True,
+                    "cause": "shared_session",
+                },
+            )
+            _write_packet(
+                run_id,
+                round_no=round_no,
+                head_sha=head_sha,
+                proof_command=proof_command,
+                result=result,
+                verdict="blocking:1",
+                inputs=inputs,
+                secrets=secrets,
+            )
+            _pause(st, run_id)
+            providers.validate_review_independence(result, authoring_ref)  # raises
+
+        # Fail-loud (from S7): empty output / non-zero exit / timeout = FAILED, never a pass.
+        if result.status is not providers.InvocationStatus.OK:
+            cause = _fail_cause(result)
+            packet_path = _write_packet(
+                run_id,
+                round_no=round_no,
+                head_sha=head_sha,
+                proof_command=proof_command,
+                result=result,
+                verdict="blocking:1",
+                inputs=inputs,
+                secrets=secrets,
+            )
+            st.append_event(
+                run_id,
+                {
+                    "transition": "review",
+                    "session_id": result.session_id,
+                    "round": round_no,
+                    "confirmed": False,
+                    "failed": True,
+                    "cause": cause,
+                },
+            )
+            _persist_block(
+                st,
+                run_id,
+                verdict="blocking:1",
+                head_sha=head_sha,
+                reviewer_session_id=result.session_id,
+                authoring_session_id=authoring_session_id,
+                provider=result.provider,
+                findings=(),
+                outcome="blocking:1",
+            )
+            _pause(st, run_id)
+            return ContractReview(
+                verdict="blocking:1",
+                accepted=False,
+                head_sha=head_sha,
+                reviewer_session_id=result.session_id,
+                rounds=round_no,
+                findings=(),
+                packet_path=packet_path,
+            )
+
+        # Healthy invocation: compose the semantic verdict.
+        verdict, findings, done = _compose_verdict(outcome)
+        packet_path = _write_packet(
+            run_id,
+            round_no=round_no,
+            head_sha=head_sha,
+            proof_command=proof_command,
+            result=result,
+            verdict=verdict,
+            inputs=inputs,
+            secrets=secrets,
+        )
+        st.append_event(
+            run_id,
+            {
+                "transition": "review",
+                "session_id": result.session_id,
+                "round": round_no,
+                "confirmed": done,
+                "verdict": verdict,
+            },
+        )
+        _persist_block(
+            st,
+            run_id,
+            verdict=verdict,
+            head_sha=head_sha,
+            reviewer_session_id=result.session_id,
+            authoring_session_id=authoring_session_id,
+            provider=result.provider,
+            findings=findings,
+            outcome=verdict,
+        )
+
+        if done:
+            return ContractReview(
+                verdict=verdict,
+                accepted=True,
+                head_sha=head_sha,
+                reviewer_session_id=result.session_id,
+                rounds=round_no,
+                findings=findings,
+                packet_path=packet_path,
+            )
+
+        # Blocking: decide whether to run another bounded round.
+        can_continue = round_no < bound and fixer is not None and reprove is not None
+        if round_no == 1:
+            should_continue = can_continue
+        else:
+            # Confirmation round or beyond: reopen ONLY on a NEW blocking finding; a repeated finding
+            # terminates blocked.
+            has_new = any(f not in (prev_findings or ()) for f in findings)
+            should_continue = can_continue and has_new
+
+        if not should_continue:
+            _pause(st, run_id)
+            return ContractReview(
+                verdict=verdict,
+                accepted=False,
+                head_sha=head_sha,
+                reviewer_session_id=result.session_id,
+                rounds=round_no,
+                findings=findings,
+                packet_path=packet_path,
+            )
+
+        # A test change RE-RUNS the full S10 predicate set and mints NEW sha-bound red evidence: fix,
+        # re-resolve the head, reprove for fresh evidence, then re-review that new head.
+        prev_findings = findings
+        fixer()
+        new_head = _resolve_head(worktree)
+        review_inputs["red_evidence"] = reprove(new_head)
+
+
+# --------------------------------------------------------------------------- override + finalize
+
+
+def override_contract_review(
+    run_id: str, *, by: str, reason: str, verdict: str, method: str
+) -> dict:
+    """Explicitly override a FAILED review, recording full provenance (US-5.4) — never a silent retry.
+
+    Records an ``override`` event carrying who/why/when (a parseable ISO 8601 timestamp), the NEW
+    verdict, the verdict it OVERRODE, the reviewed head, and the reviewer session/provider/method, then
+    updates the manifest ``contract_review`` outcome. Refused (``ValueError``) when there is no failed
+    review to override (no review block, or an already-``done`` review). The reviewer is NEVER re-run.
+    """
+    st = RunStore()
+    record = st.read(run_id)
+    block = record.get("contract_review")
+    if not isinstance(block, dict):
+        raise ValueError(f"cannot override {run_id!r}: no contract-review to override")
+    prior = block.get("verdict")
+    if prior == "done" or block.get("outcome") == "done":
+        raise ValueError(f"cannot override {run_id!r}: the review already succeeded")
+
+    event = {
+        "transition": "override",
+        "by": by,
+        "reason": reason,
+        "verdict": verdict,
+        "overrode": prior,
+        "head_sha": block.get("head_sha"),
+        "reviewer_session_id": block.get("reviewer_session_id"),
+        "provider": block.get("provider"),
+        "method": method,
+        "when": datetime.now(timezone.utc).isoformat(),
+    }
+    st.append_event(run_id, event)
+    st.apply(
+        run_id,
+        lambda r: {"contract_review": {**r["contract_review"], "outcome": verdict}},
+    )
+    return event
+
+
+def finalize_review(run_id: str, verdict: str) -> None:
+    """Enforce the verdict vocabulary on the TERMINAL write: raise (leaving the run non-terminal) on a
+    bad verdict; on a valid verdict, record it and drive the run to a terminal status."""
+    if not valid_contract_verdict(verdict):
+        raise ValueError(f"invalid terminal contract verdict {verdict!r}")
+    st = RunStore()
+    st.apply(
+        run_id,
+        lambda r: {"contract_review": {**r.get("contract_review", {}), "verdict": verdict}},
+    )
+
+    def _terminal(record: dict) -> dict:
+        transition(State(record["status"]), State.COMPLETED)
+        return {"status": State.COMPLETED.value}
+
+    st.apply(run_id, _terminal)
