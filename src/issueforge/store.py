@@ -23,9 +23,13 @@ from typing import Any
 
 from issueforge.io import WriteSeam
 from issueforge.paths import state_root
-from issueforge.state import State
+from issueforge.state import TERMINAL, State
 
 ALLOWED_STATUS = {s.value for s in State}
+
+# The persisted status strings with no outgoing edge: an active slot pointing at one of these is a
+# stuck-occupied slot (finalize wrote the terminal manifest but crashed before releasing the slot).
+_TERMINAL_STATUS = {s.value for s in TERMINAL}
 
 REDACTED = "[REDACTED]"
 
@@ -183,6 +187,61 @@ class RunStore:
     def write_queue_unlocked(self, queue: dict) -> None:
         """Atomically persist the admission queue; caller MUST hold the store lock."""
         self._seam.write_text_atomic(queue_path(), self._dump(queue))
+
+    # --- crash-transactionality: reconcile queue.json against the manifests (#48) -------------
+    def _live_status(self, run_id: str) -> str | None:
+        """The run's status if its manifest exists AND is a VALID, KNOWN record, else ``None``.
+
+        A missing, unparseable, or invalid manifest (an unknown/absent status that ``validate_record``
+        would reject) yields ``None`` — such a record is NEVER silently declared live. Only a manifest
+        that both exists and re-validates through the ONE record validator returns its status string.
+        """
+        if not manifest_path(run_id).exists():
+            return None
+        try:
+            record = self.read(run_id)  # re-validates via validate_record
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return None
+        status = record.get("status")
+        return status if status in ALLOWED_STATUS else None
+
+    def reconcile(self) -> None:
+        """Idempotent, lock-guarded sweep making ``queue.json`` consistent with the manifests.
+
+        Admission and completion each write the manifest and ``queue.json`` under one lock, but the
+        pair is not crash-atomic. This reconciles the ENTIRE queue against the manifests:
+
+        - the ACTIVE slot is freed to ``None`` when its run has NO manifest (an ORPHAN left by a
+          crash between admission's queue-first write and the manifest write), a TERMINAL manifest
+          (a STUCK-occupied slot left by a crash between finalize's terminal write and the slot
+          release), or a MALFORMED/unknown manifest (never treated as a live run);
+        - a QUEUED WAITER is dropped when its manifest is missing, terminal, or malformed, or when
+          its status is anything other than exactly ``queued`` — so the drain that later promotes the
+          head never resurrects a terminal run nor crashes admission on a phantom waiter.
+
+        A manifest is never fabricated nor mutated; only ``queue.json`` is rewritten, and only when a
+        bad entry is actually removed. A no-op on an already-consistent store: when ``active`` is
+        ``None`` or names a valid non-terminal run and every waiter is a valid ``queued`` run, nothing
+        is written and ``queue.json`` stays byte-for-byte unchanged.
+        """
+        with self._lock():
+            queue = self.read_queue()
+            active = queue.get("active")
+            waiters = list(queue.get("queue", []))
+
+            active_status = self._live_status(active) if active is not None else None
+            new_active = (
+                active
+                if (active_status is not None and active_status not in _TERMINAL_STATUS)
+                else None
+            )
+            new_waiters = [w for w in waiters if self._live_status(w) == State.QUEUED.value]
+
+            if new_active == active and new_waiters == waiters:
+                return  # consistent: byte-for-byte unchanged
+            queue["active"] = new_active
+            queue["queue"] = new_waiters
+            self.write_queue_unlocked(queue)
 
     def _read_unlocked(self, run_id: str) -> dict:
         return json.loads(manifest_path(run_id).read_text(encoding="utf-8"))
