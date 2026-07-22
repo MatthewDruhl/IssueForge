@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import re
+import sys
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1236,15 +1237,24 @@ def review_red_contract(
                 )
             review_inputs["red_evidence"] = red_evidence_from_proof(proof)
     finally:
-        # Best-effort cleanup: attempt EVERY tracked subdir even if one removal fails (e.g. a
-        # partial-write or an intervening delete left a subdir missing, so ``remove_scratch``'s
-        # ``rmtree`` raises), and never let a cleanup failure mask an in-flight exception from the
-        # try body. A single failed removal must not leak the remaining materialized subdirs.
+        # Attempt EVERY tracked subdir even if one removal fails (e.g. a partial-write or an
+        # intervening delete left a subdir missing, so ``remove_scratch``'s ``rmtree`` raises), so a
+        # single failure never leaks the remaining materialized (secret-bearing) subdirs. Retain the
+        # errors rather than swallow them: if the try body is returning normally (no exception
+        # propagating) but cleanup failed, FAIL LOUD — a review must never report acceptance while
+        # materialized inputs linger on disk. If a body exception is already propagating, let it
+        # surface unmasked (cleanup was still attempted on every subdir).
+        cleanup_errors: list[Exception] = []
         for subdir in materialized_subdirs:
             try:
                 seam.remove_scratch(subdir)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - aggregated; re-raised below only on a clean body
+                cleanup_errors.append(exc)
+        if cleanup_errors and sys.exc_info()[0] is None:
+            raise RuntimeError(
+                f"review-input cleanup failed for {len(cleanup_errors)} subdir(s); "
+                f"materialized inputs may linger on disk: {cleanup_errors!r}"
+            )
 
 
 # --------------------------------------------------------------------------- override + finalize
