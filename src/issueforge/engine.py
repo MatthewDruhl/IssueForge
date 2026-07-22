@@ -499,7 +499,9 @@ def apply_revision(
         and isinstance(shape, dict)
         and shape.get("classification") == "buildable"
     ):
-        raise ValueError(f"apply_revision requires a buildable, approved run; {run_id!r} is not eligible")
+        raise ValueError(
+            f"apply_revision requires a buildable, approved run; {run_id!r} is not eligible"
+        )
 
     # Resume integrity (Option A): a recorded op-ID binds to the EXACT op that completed. A changed op
     # under a recorded id is refused; a matching one is treated as already done (seeded into the set).
