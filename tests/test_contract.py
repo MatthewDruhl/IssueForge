@@ -2588,3 +2588,1151 @@ def test_redaction_canary_copied_into_packet_then_redacted(
     if path_kind != "failure_empty":
         assert _MARK_RESPONSE in body, "response field not copied into the packet"
     assert _MARK_STDERR in body, "stderr field not copied into the packet"
+
+
+# =====================================================================================
+# S12 (#18) — freeze / manifest gate (Group B) + boundary mutations (Group C).
+#
+# The FREEZE composes the protected contract boundary from the adapter's discovered closure,
+# hashes every protected file's COMMITTED blob, mirrors ``engine.apply_revision`` (approver BEFORE
+# any write, rejection mutates nothing, approval appends one event + persists the manifest), and
+# consumes ``require_current_evidence``. Every symbol below (``freeze_contract``, the adapter's
+# ``discover_contract_dependencies``/``ContractClosure``/``DiscoveryError``) lands in S12 and does
+# not exist yet, so each test imports inside its body and is
+# @pytest.mark.xfail(strict=True, reason="PENDING (#18)").
+#
+# Assumed public API this suite AUTHORS (the contract /spec-dev implements to):
+#   issueforge.contract.freeze_contract(
+#       run_id, *, candidate_worktree, base_sha, adapter, provisioner, approver,
+#       user_added_paths=(), secrets=frozenset(), store=None) -> FreezeResult
+#     - resolves contract_commit = the real committed HEAD of candidate_worktree;
+#     - refuses (ValueError) unless require_current_evidence(record, HEAD) holds and the run's
+#       accepted S10 red_proof is bound to that HEAD;
+#     - runs adapter.discover_contract_dependencies over the candidate collection; a DiscoveryError
+#       propagates as a named freeze refusal (nothing persisted);
+#     - composes contract_paths per the schema formula (test_files ∪ fixture_closure ∪
+#       (test_body_imports − write_scope) ∪ {selected config} ∪ {.issueforge.toml} ∪ user_added),
+#       stored paths verbatim (symlinks never collapsed);
+#     - refuses (ValueError naming it) any protected-category path that lexically collides with the
+#       write scope; records test_body_imports ∩ write_scope in excluded_sut;
+#     - hashes each protected path's committed blob (a symlink -> its resolved in-repo target's
+#       committed blob) into dep_hashes; records symlink targets in symlinks;
+#     - persists ONE canonical manifest artifact (sorted keys, UTF-8, no self hash) via the store's
+#       redacting write_artifact, shows the approver the EXACT persisted bytes, and on approval
+#       appends a ``freeze`` event carrying {"approved": true, "manifest_hash": sha256(bytes)}.
+#   FreezeResult: .approved (bool), .manifest (dict schema or None), .manifest_hash (str or None),
+#       .artifact_path (Path or None).
+# =====================================================================================
+
+_MANIFEST_ARTIFACT = "contract-manifest.json"
+
+
+def _approve_all(_payload) -> bool:
+    return True
+
+
+def _reject_all(_payload) -> bool:
+    return False
+
+
+def _sha256(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def _committed_blob(repo, ref: str) -> bytes:
+    """The raw committed blob bytes of ``ref`` (e.g. ``<commit>:tests/helpers.py``) — the independent
+    symlink-aware hashing oracle for dep_hashes."""
+    result = subprocess.run(["git", "-C", str(repo), "show", ref], capture_output=True)
+    return result.stdout
+
+
+def _canonical_bytes(obj) -> bytes:
+    """The canonical manifest serialization the freeze must emit: sorted keys, compact separators,
+    ensure_ascii=False, UTF-8, no trailing newline."""
+    import json
+
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def _collect_ids(worktree) -> tuple[str, ...]:
+    """The sorted/dedup canonical node-id set of ``worktree`` via the real adapter seam — the
+    independent oracle for manifest ``collected_ids``."""
+    adapter = _adapter()
+    handle = adapter.provision_environment(worktree, None, provisioner=_provisioner())
+    invocation = SimpleNamespace(
+        worktree=Path(worktree),
+        interpreter=handle.interpreter,
+        command=["-m", "pytest"],
+        env=getattr(handle, "env", None),
+    )
+    return tuple(sorted(set(adapter.canonical_collect(invocation).ids)))
+
+
+def _seed_freeze_proof(
+    run_id,
+    scen,
+    *,
+    added_ids=(_NEW_X,),
+    accepted=True,
+    reason="behavioral_red",
+    head=None,
+    base_sha=None,
+):
+    head = scen.candidate_sha if head is None else head
+    base = scen.base_sha if base_sha is None else base_sha
+    first = added_ids[0] if added_ids else ""
+    store.RunStore().apply(
+        run_id,
+        lambda _r: {
+            "red_proof": {
+                "accepted": accepted,
+                "reason": reason,
+                "base_sha": base,
+                "head_sha": head,
+                "added_ids": list(added_ids),
+                "records": [
+                    {
+                        "nodeid": first,
+                        "exception_type": "AssertionError",
+                        "assertion_line": 2,
+                        "message": "assert 1 == 2",
+                    }
+                ],
+            }
+        },
+    )
+
+
+def _seed_done_review(run_id, scen, *, head=None, outcome="done", verdict="done"):
+    head = scen.candidate_sha if head is None else head
+    store.RunStore().apply(
+        run_id,
+        lambda _r: {
+            "contract_review": {
+                "verdict": verdict,
+                "outcome": outcome,
+                "head_sha": head,
+                "reviewer_session_id": "rev-1",
+                "authoring_session_id": "auth-1",
+                "provider": "cli",
+                "findings": [],
+            }
+        },
+    )
+
+
+def _fscen(root, name="freeze", *, extra=None):
+    """A REAL two-commit repo whose candidate authors one genuine red (``test_x``) plus ``extra``."""
+    files = {"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"}
+    if extra:
+        files.update(extra)
+    return _scenario(root, name, candidate_files=files)
+
+
+def _write_scope(paths):
+    return [{"op": "edit", "path": p, "justification": "sut"} for p in paths]
+
+
+def _freeze_run(scen, *, write_scope=(), run_id="run-1", added_ids=(_NEW_X,), review_head=None):
+    """Mint a buildable run seeded with an accepted S10 proof + a done contract-review bound to the
+    candidate HEAD, plus the approved write scope — the precondition the freeze consumes."""
+    run = _mk_run(run_id)
+    ws = _write_scope(write_scope)
+    store.RunStore().apply(run, lambda r: {"shape": {**r["shape"], "write_scope": ws}})
+    _seed_freeze_proof(run, scen, added_ids=added_ids)
+    _seed_done_review(run, scen, head=review_head)
+    return run
+
+
+def _freeze(run, scen, *, approver=None, user_added_paths=(), secrets=frozenset()):
+    from issueforge import contract
+
+    return contract.freeze_contract(
+        run,
+        candidate_worktree=scen.candidate_worktree,
+        base_sha=scen.base_sha,
+        adapter=_adapter(),
+        provisioner=_provisioner(),
+        approver=_approve_all if approver is None else approver,
+        user_added_paths=tuple(user_added_paths),
+        secrets=frozenset(secrets),
+    )
+
+
+def _freeze_events(run):
+    return _events(run, "freeze")
+
+
+def _manifest_artifact_path(run):
+    from issueforge.paths import run_dir
+
+    return run_dir(run) / _MANIFEST_ARTIFACT
+
+
+def _no_freeze_writes(run):
+    """No freeze event, no manifest artifact — the atomic-refusal invariant."""
+    return not _freeze_events(run) and not _manifest_artifact_path(run).exists()
+
+
+# =============================================================== Group B — freeze / manifest
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_manifest_records_every_frozen_field_populated(tmp_path):
+    """On approval the manifest freezes EVERY schema field, each populated from the scenario — the
+    contract commit, per-file hashes, the discovered closure, config, command arrays, collected ids,
+    red evidence, review verdict, and write scope.
+
+    technical: every schema key present AND non-empty (no placeholder value).
+    """
+    scen = _fscen(tmp_path, extra={"tests/helpers.py": "H = 1\n"})
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    m = res.manifest
+    for key in (
+        "contract_commit",
+        "contract_paths",
+        "dep_hashes",
+        "symlinks",
+        "external_pins",
+        "excluded_sut",
+        "test_config",
+        "command",
+        "collected_ids",
+        "red_evidence",
+        "contract_review",
+        "write_scope",
+    ):
+        assert key in m, f"missing manifest key {key!r}"
+    assert m["contract_commit"] == scen.candidate_sha
+    assert m["contract_paths"] and m["dep_hashes"]
+    assert m["collected_ids"] and m["red_evidence"] and m["contract_review"]
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+@pytest.mark.parametrize(
+    "mutate",
+    ["verdict_not_accepted", "stale_head", "missing_review_block", "stale_red", "chain_mismatch"],
+)
+def test_freeze_refuses_noncurrent_review_evidence(tmp_path, mutate):
+    """The freeze refuses on each distinct currency failure and leaves artifact/event/run-state
+    untouched.
+
+    technical: each of {verdict != accepted, stale head, missing review block, stale red evidence,
+    evidence-chain mismatch} -> ValueError; no manifest artifact, no freeze event, status unchanged.
+    """
+    scen = _fscen(tmp_path, name=f"noncurrent-{mutate}")
+    run = _freeze_run(scen)
+    if mutate == "verdict_not_accepted":
+        _seed_done_review(run, scen, outcome="blocking:1", verdict="blocking:1")
+    elif mutate == "stale_head":
+        _seed_done_review(run, scen, head="deadbeef")
+    elif mutate == "missing_review_block":
+        store.RunStore().apply(run, lambda r: {k: v for k, v in r.items()})  # no-op keep
+        # Remove the review block by rewriting the record without it.
+        rec = store.RunStore().read(run)
+        rec.pop("contract_review", None)
+        store.RunStore().apply(run, lambda _r: {"contract_review": None})
+    elif mutate == "stale_red":
+        _seed_freeze_proof(run, scen, head="deadbeef")
+    elif mutate == "chain_mismatch":
+        _seed_freeze_proof(run, scen, accepted=False, reason="not_red")
+
+    before = store.RunStore().read(run)["status"]
+    with pytest.raises(ValueError):
+        _freeze(run, scen)
+    assert _no_freeze_writes(run)
+    assert store.RunStore().read(run)["status"] == before
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_binds_contract_commit_ancestor_of_implementation_independent_oracle(tmp_path):
+    """The frozen contract commit is the real committed HEAD — an ancestor of a later implementation
+    commit — verified against an independent git oracle, and it is distinct from the base sha.
+
+    technical: manifest["contract_commit"] == the oracle HEAD == scen.candidate_sha != base_sha, and
+    is a merge-base ancestor of a later impl commit.
+    """
+    scen = _fscen(tmp_path, name="ancestor")
+    run = _freeze_run(scen)
+    oracle_head = _git(scen.candidate_worktree, "rev-parse", "HEAD").stdout.strip()
+    res = _freeze(run, scen)
+    assert res.manifest["contract_commit"] == oracle_head == scen.candidate_sha
+    assert res.manifest["contract_commit"] != scen.base_sha
+    # A later implementation commit: the frozen contract commit is its ancestor.
+    (scen.candidate_worktree / "impl.py").write_text("X = 1\n")
+    _git(scen.candidate_worktree, "add", "-A")
+    _git(scen.candidate_worktree, "commit", "-qm", "impl")
+    impl = _git(scen.candidate_worktree, "rev-parse", "HEAD").stdout.strip()
+    anc = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(scen.candidate_worktree),
+            "merge-base",
+            "--is-ancestor",
+            oracle_head,
+            impl,
+        ]
+    )
+    assert anc.returncode == 0
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_rejects_dirty_protected_file_never_freezes_uncommitted_bytes(tmp_path):
+    """An uncommitted change to a protected file makes the freeze refuse — bytes are frozen from the
+    committed blob, never the dirty worktree.
+
+    technical: modify committed tests/test_new.py uncommitted, freeze -> refuses naming the dirty
+    path; nothing persisted.
+    """
+    scen = _fscen(tmp_path, name="dirty")
+    run = _freeze_run(scen)
+    (scen.candidate_worktree / "tests/test_new.py").write_text(
+        "def test_x():\n    assert 1 == 2  # dirty\n"
+    )
+    with pytest.raises(ValueError) as excinfo:
+        _freeze(run, scen)
+    assert "tests/test_new.py" in str(excinfo.value)
+    assert _no_freeze_writes(run)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_dep_hashes_domain_equals_contract_paths_exact_blob_hashes(tmp_path):
+    """Every protected in-repo file has an exact committed-blob sha256, and the hash-map domain equals
+    contract_paths exactly.
+
+    technical: set(dep_hashes) == set(contract_paths); each value == sha256 of the committed blob
+    computed by an independent oracle.
+    """
+    scen = _fscen(tmp_path, name="dephash", extra={"tests/helpers.py": "H = 1\n"})
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    m = res.manifest
+    assert set(m["dep_hashes"]) == set(m["contract_paths"])
+    for path, digest in m["dep_hashes"].items():
+        target = m.get("symlinks", {}).get(path, path)
+        oracle = _sha256(_committed_blob(scen.candidate_worktree, f"{scen.candidate_sha}:{target}"))
+        assert digest == oracle, f"hash mismatch for {path}"
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_two_sets_disjoint_after_normalization_alias_collision_named(tmp_path):
+    """The contract set and write scope share no path after normalization; a path ALIAS is caught, not
+    passed as distinct.
+
+    technical: a write_scope alias ``tests/../tests/helpers.py`` of a discovered contract path -> named
+    collision + freeze refusal; otherwise contract_paths ∩ write_scope == ∅, both non-empty.
+    """
+    scen = _fscen(tmp_path, name="alias", extra={"tests/helpers.py": "H = 1\n"})
+    run = _freeze_run(scen, write_scope=("tests/../tests/helpers.py",))
+    with pytest.raises(ValueError) as excinfo:
+        _freeze(run, scen)
+    assert "helpers.py" in str(excinfo.value)
+    assert _no_freeze_writes(run)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+@pytest.mark.parametrize(
+    "category, path, extra",
+    [
+        ("fixture_helper", "tests/helpers.py", {"tests/helpers.py": "H = 1\n"}),
+        ("test_module", "tests/test_new.py", None),
+        ("selected_config", "pytest.ini", {"pytest.ini": "[pytest]\n"}),
+        ("issueforge_toml", ".issueforge.toml", None),
+        ("user_added", "extra/thing.py", {"extra/thing.py": "T = 1\n"}),
+    ],
+)
+def test_freeze_fails_when_any_protected_category_is_in_write_scope(
+    tmp_path, category, path, extra
+):
+    """A path proposed as BOTH a contract input and an implementation target fails the freeze, naming
+    it — for every protected category.
+
+    technical: each of {fixture helper, test module, selected config, .issueforge.toml, user-added}
+    placed in write_scope -> named freeze failure; never silently dropped.
+    """
+    files = {"tests/helpers.py": "H = 1\n"}
+    if extra:
+        files.update(extra)
+    scen = _fscen(tmp_path, name=f"cat-{category}", extra=files)
+    user_added = ("extra/thing.py",) if category == "user_added" else ()
+    run = _freeze_run(scen, write_scope=(path,))
+    with pytest.raises(ValueError) as excinfo:
+        _freeze(run, scen, user_added_paths=user_added)
+    assert path in str(excinfo.value)
+    assert _no_freeze_writes(run)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_does_not_silently_sanitize_collisions(tmp_path):
+    """The freeze never rewrites the sets to force disjointness; a real overlap fails rather than being
+    edited away.
+
+    technical: an overlapping write_scope (the discovered helper) -> ValueError; neither set had an
+    entry deleted to fake disjointness (the freeze produced no manifest).
+    """
+    scen = _fscen(tmp_path, name="nosanitize", extra={"tests/helpers.py": "H = 1\n"})
+    run = _freeze_run(scen, write_scope=("tests/helpers.py",))
+    with pytest.raises(ValueError):
+        _freeze(run, scen)
+    assert _no_freeze_writes(run)
+    # The approved write scope on the record is preserved verbatim (nothing silently deleted).
+    ws = [e["path"] for e in store.RunStore().read(run)["shape"]["write_scope"]]
+    assert ws == ["tests/helpers.py"]
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_excludes_in_scope_sut_surfaces_it_and_build_proceeds(tmp_path):
+    """A test-body import IN the write scope is excluded from the frozen set, RECORDED as an editable
+    SUT, and the build proceeds; editing it is allowed.
+
+    technical: app/calc.py in test_body_imports ∩ write_scope -> not in contract_paths, in
+    manifest["excluded_sut"]; freeze succeeds; a later edit of app/calc.py passes the write-scope check.
+    """
+    from issueforge import engine
+
+    scen = _fscen(
+        tmp_path,
+        name="excluded-sut",
+        extra={
+            "app/calc.py": "def calc():\n    return 1\n",
+            "tests/test_new.py": "from app.calc import calc\n\n\ndef test_x():\n    assert calc() == 2\n",
+        },
+    )
+    run = _freeze_run(scen, write_scope=("app/calc.py",))
+    res = _freeze(run, scen)
+    assert "app/calc.py" in res.manifest["excluded_sut"]
+    assert "app/calc.py" not in res.manifest["contract_paths"]
+    diff = "--- a/app/calc.py\n+++ b/app/calc.py\n"
+    assert engine.enforce_write_scope(run, diff) == []
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_protects_test_body_import_not_in_scope(tmp_path):
+    """A test-body import NOT in the write scope stays protected (an under-scoped SUT is frozen).
+
+    technical: app/other.py in test_body_imports, not in write_scope -> in contract_paths + dep_hashes.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="body-protected",
+        extra={
+            "app/other.py": "def other():\n    return 1\n",
+            "tests/test_new.py": "from app.other import other\n\n\ndef test_x():\n    assert other() == 2\n",
+        },
+    )
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    assert "app/other.py" in res.manifest["contract_paths"]
+    assert "app/other.py" in res.manifest["dep_hashes"]
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_protects_directly_imported_oracle_outside_scope(tmp_path):
+    """An oracle imported directly in a test body but kept OUT of the write scope is protected; its edit
+    is caught.
+
+    technical: tests/oracle.py in test_body_imports, not in write_scope -> in contract_paths; an edit
+    mismatches its frozen hash.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="oracle",
+        extra={
+            "tests/oracle.py": "GOLD = 42\n",
+            "tests/test_new.py": "from oracle import GOLD\n\n\ndef test_x():\n    assert GOLD == 0\n",
+        },
+    )
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    frozen = res.manifest["dep_hashes"]["tests/oracle.py"]
+    (scen.candidate_worktree / "tests/oracle.py").write_text("GOLD = 999\n")
+    assert _sha256((scen.candidate_worktree / "tests/oracle.py").read_bytes()) != frozen
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_helpers_bypass_caught_via_frozen_hash(tmp_path):
+    """After approval, mutating ONLY helpers.py is caught because its S12-frozen hash mismatches.
+
+    technical: freeze -> mutate tests/helpers.py -> the working bytes' sha256 != manifest["dep_hashes"]
+    entry (the bypass is detectable before build).
+    """
+    scen = _fscen(tmp_path, name="bypass", extra={"tests/helpers.py": "H = 1\n"})
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    frozen = res.manifest["dep_hashes"]["tests/helpers.py"]
+    (scen.candidate_worktree / "tests/helpers.py").write_text("H = 999\n")
+    assert _sha256((scen.candidate_worktree / "tests/helpers.py").read_bytes()) != frozen
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_write_scope_exactly_preserved(tmp_path):
+    """The frozen write scope is EXACTLY the normalized approved shape["write_scope"].
+
+    technical: manifest["write_scope"] == the normalized approved paths (none dropped/replaced).
+    """
+    scen = _fscen(tmp_path, name="ws-preserved")
+    run = _freeze_run(scen, write_scope=("app/impl.py", "app/impl2.py"))
+    res = _freeze(run, scen)
+    assert tuple(sorted(res.manifest["write_scope"])) == ("app/impl.py", "app/impl2.py")
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_contract_paths_match_composition_formula_user_can_only_add(tmp_path):
+    """The protected boundary equals the composition formula; a user list omitting a discovered path
+    does NOT remove it, and a user-added path IS included — user config can only ADD.
+
+    technical: with a narrower .issueforge.toml contract list, the discovered helpers.py is still in
+    contract_paths; a user_added extra/thing.py is present; the test module is present.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="composition",
+        extra={
+            "tests/helpers.py": "H = 1\n",
+            "extra/thing.py": "T = 1\n",
+            ".issueforge.toml": (
+                'baseline = ["-m", "pytest"]\nframework = "pytest"\n'
+                'contract_paths = ["tests/test_new.py"]\n'
+            ),
+        },
+    )
+    run = _freeze_run(scen)
+    res = _freeze(run, scen, user_added_paths=("extra/thing.py",))
+    paths = set(res.manifest["contract_paths"])
+    assert "tests/helpers.py" in paths  # omitted by config, still present (never removed)
+    assert "extra/thing.py" in paths  # user-added
+    assert "tests/test_new.py" in paths
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_collected_ids_exact_bound_to_collection(tmp_path):
+    """The frozen collected-id set equals the adapter's collection exactly (sorted, dedup).
+
+    technical: manifest["collected_ids"] == the sorted/dedup canonical_collect result; an arbitrary id
+    is absent.
+    """
+    scen = _fscen(tmp_path, name="collected-ids")
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    assert tuple(res.manifest["collected_ids"]) == _collect_ids(scen.candidate_worktree)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_red_evidence_is_the_exact_s10_proof(tmp_path):
+    """The frozen red evidence is the EXACT S10 proof — accepted, failing, bound to base/head, with
+    added_ids == the collected targeted ids — proven by running the REAL prove_red.
+
+    technical: manifest["red_evidence"] carries accepted True, reason "behavioral_red",
+    base_sha == scen.base_sha, added_ids == [_NEW_X] (the real proof, not a dummy string).
+    """
+    scen = _red_scenario(tmp_path, "red-evidence")
+    run = _mk_run("run-1")
+    proof = _prove(run, scen, targeted_ids=(_NEW_X,))
+    assert proof.accepted
+    _seed_done_review(run, scen)
+    res = _freeze(run, scen)
+    ev = res.manifest["red_evidence"]
+    assert ev["accepted"] is True
+    assert ev["reason"] == "behavioral_red"
+    assert ev["base_sha"] == scen.base_sha
+    assert list(ev["added_ids"]) == [_NEW_X]
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_command_arrays_exact_ordering_and_boundaries(tmp_path):
+    """Every .issueforge.toml command array is frozen exactly, preserving order and argument
+    boundaries.
+
+    technical: baseline ["pytest", "-q", "--maxfail=1"] frozen byte-identical as a list-of-lists; a
+    truncated or flattened form fails.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="command",
+        extra={
+            ".issueforge.toml": (
+                'baseline = ["pytest", "-q", "--maxfail=1"]\nframework = "pytest"\n'
+            )
+        },
+    )
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    assert ("pytest", "-q", "--maxfail=1") in {tuple(c) for c in res.manifest["command"]}
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+@pytest.mark.parametrize(
+    "form, files, marker",
+    [
+        (
+            "pyproject",
+            {
+                "pyproject.toml": '[tool.pytest.ini_options]\npython_files = ["check_pyproject.py"]\n'
+            },
+            "check_pyproject.py",
+        ),
+        ("pytest_ini", {"pytest.ini": "[pytest]\npython_files = check_ini.py\n"}, "check_ini.py"),
+        ("tox_ini", {"tox.ini": "[pytest]\npython_files = check_tox.py\n"}, "check_tox.py"),
+        (
+            "setup_cfg",
+            {"setup.cfg": "[tool:pytest]\npython_files = check_cfg.py\n"},
+            "check_cfg.py",
+        ),
+        (
+            "precedence",
+            {
+                "pytest.ini": "[pytest]\npython_files = check_ini.py\n",
+                "setup.cfg": "[tool:pytest]\npython_files = check_cfg.py\n",
+            },
+            "check_ini.py",  # pytest.ini wins over setup.cfg
+        ),
+    ],
+)
+def test_freeze_config_four_forms_and_precedence(tmp_path, form, files, marker):
+    """Each pytest config form is frozen with its exact adapter-supplied values, and precedence picks
+    the right one.
+
+    technical: manifest["test_config"] reflects the WINNING form's values (its distinctive
+    python_files marker is present).
+    """
+    import json
+
+    scen = _fscen(tmp_path, name=f"config-{form}", extra=files)
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    assert marker in json.dumps(res.manifest["test_config"])
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_config_and_issueforge_toml_are_hashed_boundary_members(tmp_path):
+    """The selected config file and .issueforge.toml are protected paths with content hashes; editing
+    either after approval is detected.
+
+    technical: both paths in contract_paths + dep_hashes; a byte change to either mismatches the frozen
+    hash.
+    """
+    scen = _fscen(tmp_path, name="config-hashed", extra={"pytest.ini": "[pytest]\n"})
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    for path in (".issueforge.toml", "pytest.ini"):
+        assert path in res.manifest["contract_paths"]
+        assert path in res.manifest["dep_hashes"]
+    frozen = res.manifest["dep_hashes"]["pytest.ini"]
+    (scen.candidate_worktree / "pytest.ini").write_text("[pytest]\naddopts = -q\n")
+    assert _sha256((scen.candidate_worktree / "pytest.ini").read_bytes()) != frozen
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_external_pins_flow_into_manifest_hash(tmp_path, monkeypatch):
+    """The external pins are part of the manifest hash — swapping a plugin version changes the frozen
+    hash.
+
+    technical: metadata.version stubbed V1 vs V2 -> manifest_hash differs (external pins are hashed).
+    """
+    import importlib.metadata as meta
+
+    monkeypatch.setattr(meta, "packages_distributions", lambda: {"pytest_reportlog": ["Dist"]})
+    extra = {"tests/conftest.py": "import pytest_reportlog  # noqa: F401\n"}
+    scen1 = _fscen(tmp_path, name="pin-v1", extra=extra)
+    scen2 = _fscen(tmp_path, name="pin-v2", extra=extra)
+    run1 = _freeze_run(scen1, run_id="run-v1")
+    run2 = _freeze_run(scen2, run_id="run-v2")
+    monkeypatch.setattr(meta, "version", lambda dist: "1.0.0")
+    res1 = _freeze(run1, scen1)
+    monkeypatch.setattr(meta, "version", lambda dist: "2.0.0")
+    res2 = _freeze(run2, scen2)
+    assert res1.manifest_hash != res2.manifest_hash
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_reject_writes_nothing_atomic(tmp_path):
+    """On rejection nothing is written — no manifest, no event, no frozen state, no partial closure.
+
+    technical: approver -> False -> result.approved False, no artifact, no freeze event, status
+    unchanged.
+    """
+    scen = _fscen(tmp_path, name="reject")
+    run = _freeze_run(scen)
+    before = store.RunStore().read(run)["status"]
+    res = _freeze(run, scen, approver=_reject_all)
+    assert res.approved is False
+    assert _no_freeze_writes(run)
+    assert store.RunStore().read(run)["status"] == before
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_approver_called_before_any_write(tmp_path):
+    """The approver is consulted BEFORE the first store/event write.
+
+    technical: at approver call-time there is no freeze event and no manifest artifact yet.
+    """
+    scen = _fscen(tmp_path, name="before-write")
+    run = _freeze_run(scen)
+    seen = {}
+
+    def approver(_payload):
+        seen["events"] = list(_freeze_events(run))
+        seen["artifact"] = _manifest_artifact_path(run).exists()
+        return True
+
+    _freeze(run, scen, approver=approver)
+    assert seen["events"] == []
+    assert seen["artifact"] is False
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_approver_bound_to_exact_persisted_manifest(tmp_path):
+    """The exact bytes shown to the approver equal the immutable persisted artifact bytes, and the
+    event's manifest hash is the sha256 of those same bytes — no show-A-persist-B.
+
+    technical: captured callback bytes == persisted artifact bytes AND
+    event["manifest_hash"] == sha256(persisted bytes).
+    """
+    scen = _fscen(tmp_path, name="bound-bytes")
+    run = _freeze_run(scen)
+    captured = {}
+
+    def approver(payload):
+        captured["bytes"] = bytes(payload)
+        return True
+
+    _freeze(run, scen, approver=approver)
+    persisted = _manifest_artifact_path(run).read_bytes()
+    assert captured["bytes"] == persisted
+    event = _freeze_events(run)[-1]
+    assert event["manifest_hash"] == _sha256(persisted)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_callback_once_decision_controls_transition_no_default_path(tmp_path):
+    """The callback is called exactly once for both outcomes; its boolean controls the transition;
+    omission/exception cannot freeze.
+
+    technical: count == 1; True -> a freeze event exists, False -> none; a raising approver -> no
+    freeze event.
+    """
+    scen = _fscen(tmp_path, name="callback-once")
+
+    # True path: exactly one call, freeze event recorded.
+    run_t = _freeze_run(scen, run_id="run-true")
+    calls_t = {"n": 0}
+
+    def approve(_p):
+        calls_t["n"] += 1
+        return True
+
+    _freeze(run_t, scen, approver=approve)
+    assert calls_t["n"] == 1
+    assert _freeze_events(run_t)
+
+    # False path: exactly one call, no freeze event.
+    run_f = _freeze_run(scen, run_id="run-false")
+    calls_f = {"n": 0}
+
+    def reject(_p):
+        calls_f["n"] += 1
+        return False
+
+    _freeze(run_f, scen, approver=reject)
+    assert calls_f["n"] == 1
+    assert not _freeze_events(run_f)
+
+    # Raising approver: no freeze.
+    run_r = _freeze_run(scen, run_id="run-raise")
+
+    def boom(_p):
+        raise RuntimeError("approver blew up")
+
+    with pytest.raises(RuntimeError):
+        _freeze(run_r, scen, approver=boom)
+    assert not _freeze_events(run_r)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_event_carries_decision_and_manifest_hash(tmp_path):
+    """The approval event records the approver's decision AND the exact manifest hash.
+
+    technical: a freeze event {"approved": true, "manifest_hash": H} with H == sha256(persisted bytes).
+    """
+    scen = _fscen(tmp_path, name="event-hash")
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    event = _freeze_events(run)[-1]
+    assert event["approved"] is True
+    persisted = _manifest_artifact_path(run).read_bytes()
+    assert event["manifest_hash"] == _sha256(persisted) == res.manifest_hash
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_manifest_is_canonical_bytes_verified_from_persisted(tmp_path):
+    """The persisted manifest artifact is canonical (sorted keys, UTF-8), carries NO self-referential
+    hash field, and the freeze event's manifest_hash is sha256 of those exact persisted bytes.
+
+    technical: persisted bytes == the canonical serialization of the parsed object;
+    "manifest_hash" not in the parsed object; event["manifest_hash"] == sha256(persisted).
+    """
+    import json
+
+    scen = _fscen(tmp_path, name="canonical")
+    run = _freeze_run(scen)
+    _freeze(run, scen)
+    persisted = _manifest_artifact_path(run).read_bytes()
+    parsed = json.loads(persisted)
+    assert "manifest_hash" not in parsed
+    assert persisted == _canonical_bytes(parsed)
+    event = _freeze_events(run)[-1]
+    assert event["manifest_hash"] == _sha256(persisted)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_content_hashes_exact_both_versions(tmp_path):
+    """Each frozen hash is the content hash of the committed blob; two scenarios differing by one byte
+    have different, independently-verified digests.
+
+    technical: S vs S' (helpers.py ±1 byte) -> each dep_hashes["tests/helpers.py"] == sha256 of that
+    version's committed blob (not merely unequal).
+    """
+    scen_a = _fscen(tmp_path, name="ver-a", extra={"tests/helpers.py": "H = 1\n"})
+    scen_b = _fscen(tmp_path, name="ver-b", extra={"tests/helpers.py": "H = 2\n"})
+    run_a = _freeze_run(scen_a, run_id="run-a")
+    run_b = _freeze_run(scen_b, run_id="run-b")
+    res_a = _freeze(run_a, scen_a)
+    res_b = _freeze(run_b, scen_b)
+    oracle_a = _sha256(
+        _committed_blob(scen_a.candidate_worktree, f"{scen_a.candidate_sha}:tests/helpers.py")
+    )
+    oracle_b = _sha256(
+        _committed_blob(scen_b.candidate_worktree, f"{scen_b.candidate_sha}:tests/helpers.py")
+    )
+    assert res_a.manifest["dep_hashes"]["tests/helpers.py"] == oracle_a
+    assert res_b.manifest["dep_hashes"]["tests/helpers.py"] == oracle_b
+    assert oracle_a != oracle_b
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_manifest_is_permanent_addressable_artifact(tmp_path):
+    """The manifest persists as a permanent artifact a fresh reader retrieves unchanged; a later freeze
+    of a different run does not overwrite it.
+
+    technical: persist, re-read the artifact bytes+hash unchanged after a second freeze of another run.
+    """
+    scen1 = _fscen(tmp_path, name="perm-1")
+    scen2 = _fscen(tmp_path, name="perm-2")
+    run1 = _freeze_run(scen1, run_id="run-perm-1")
+    run2 = _freeze_run(scen2, run_id="run-perm-2")
+    res1 = _freeze(run1, scen1)
+    bytes_before = _manifest_artifact_path(run1).read_bytes()
+    _freeze(run2, scen2)
+    bytes_after = _manifest_artifact_path(run1).read_bytes()
+    assert bytes_after == bytes_before
+    assert _sha256(bytes_after) == res1.manifest_hash
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_redaction_removes_only_secrets_preserves_command_structure(tmp_path):
+    """Secret redaction blanks only secret material; the executable command structure survives and two
+    materially-different commands do not both collapse to [REDACTED].
+
+    technical: a secret in the command -> [REDACTED] while the array shape/args remain; two different
+    commands stay distinguishable in their manifests.
+    """
+    scen1 = _fscen(
+        tmp_path,
+        name="redact-1",
+        extra={
+            ".issueforge.toml": 'baseline = ["pytest", "--token=SEKRET"]\nframework = "pytest"\n'
+        },
+    )
+    scen2 = _fscen(
+        tmp_path,
+        name="redact-2",
+        extra={
+            ".issueforge.toml": 'baseline = ["pytest", "--other=SEKRET"]\nframework = "pytest"\n'
+        },
+    )
+    run1 = _freeze_run(scen1, run_id="run-redact-1")
+    run2 = _freeze_run(scen2, run_id="run-redact-2")
+    res1 = _freeze(run1, scen1, secrets={"SEKRET"})
+    res2 = _freeze(run2, scen2, secrets={"SEKRET"})
+    import json
+
+    dumped1 = json.dumps(res1.manifest["command"])
+    assert "SEKRET" not in dumped1
+    assert "[REDACTED]" in dumped1
+    assert "pytest" in dumped1  # command structure preserved
+    assert res1.manifest["command"] != res2.manifest["command"]  # still distinguishable
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_fails_closed_on_incomplete_discovery_atomic(tmp_path):
+    """If discovery cannot resolve an import, the freeze refuses entirely, naming it — no manifest,
+    event, or frozen state.
+
+    technical: discovery raises DiscoveryError("nonexistent_pkg_xyz") -> freeze refusal names it;
+    nothing persisted.
+    """
+    from issueforge.adapters.pytest_adapter import DiscoveryError
+
+    scen = _fscen(
+        tmp_path,
+        name="incomplete-discovery",
+        extra={"tests/conftest.py": "import nonexistent_pkg_xyz  # noqa: F401\n"},
+    )
+    run = _freeze_run(scen)
+    with pytest.raises((DiscoveryError, ValueError)) as excinfo:
+        _freeze(run, scen)
+    assert "nonexistent_pkg_xyz" in str(excinfo.value)
+    assert _no_freeze_writes(run)
+
+
+# =============================================================== Group C — boundary mutations
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_deleted_file_reads_as_empty_module_delta_names_every_nodeid(tmp_path):
+    """A deleted contract test file reads as an empty module — the deletion delta contains EVERY
+    node-id it declared, not a generic missing-file error.
+
+    technical: a committed file with two node-ids, deleted from the worktree before freeze -> the
+    refusal names BOTH node-ids; nothing persisted.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="deleted-delta",
+        extra={
+            "tests/test_del.py": "def test_a():\n    assert False\n\n\ndef test_b():\n    assert False\n"
+        },
+    )
+    run = _freeze_run(scen)
+    (scen.candidate_worktree / "tests/test_del.py").unlink()
+    with pytest.raises(ValueError) as excinfo:
+        _freeze(run, scen)
+    message = str(excinfo.value)
+    assert "test_a" in message and "test_b" in message
+    assert _no_freeze_writes(run)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_partial_deletion_of_a_node_is_detected(tmp_path):
+    """Deleting ONE of two test functions is detected via collected-id loss.
+
+    technical: commit test_pair.py with test_a + test_b, remove test_b in the worktree -> the missing
+    id is detected; freeze refuses naming it.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="partial-del",
+        extra={
+            "tests/test_pair.py": "def test_a():\n    assert False\n\n\ndef test_b():\n    assert False\n"
+        },
+    )
+    run = _freeze_run(scen)
+    (scen.candidate_worktree / "tests/test_pair.py").write_text("def test_a():\n    assert False\n")
+    with pytest.raises(ValueError) as excinfo:
+        _freeze(run, scen)
+    assert "test_b" in str(excinfo.value)
+    assert _no_freeze_writes(run)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+@pytest.mark.parametrize(
+    "kind, path, extra",
+    [
+        ("helper", "tests/helpers.py", {"tests/helpers.py": "H = 1\n"}),
+        (
+            "plugin",
+            "plug.py",
+            {"pytest.ini": "[pytest]\naddopts = -p plug\n", "plug.py": "PU = 1\n"},
+        ),
+        ("issueforge_toml", ".issueforge.toml", None),
+        ("config", "pytest.ini", {"pytest.ini": "[pytest]\n"}),
+    ],
+)
+def test_deletion_of_nontest_protected_file_refuses(tmp_path, kind, path, extra):
+    """Deleting a protected non-test file has a defined missing-file representation and refusal per
+    class.
+
+    technical: each of {helper, plugin, .issueforge.toml, selected config} deleted before freeze ->
+    named refusal; nothing persisted.
+    """
+    scen = _fscen(tmp_path, name=f"del-nontest-{kind}", extra=extra)
+    run = _freeze_run(scen)
+    (scen.candidate_worktree / path).unlink()
+    with pytest.raises(ValueError) as excinfo:
+        _freeze(run, scen)
+    assert path in str(excinfo.value)
+    assert _no_freeze_writes(run)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_rename_detected_old_deleted_new_no_silent_identity(tmp_path):
+    """Renaming a protected file shows the old path recorded and the new path does NOT silently inherit
+    the old identity.
+
+    technical: freeze records tests/helpers.py; after renaming to tests/helper_new.py in the worktree,
+    the new path is not a member of the frozen contract_paths (no inherited identity) and the old path
+    remains the recorded member.
+    """
+    scen = _fscen(tmp_path, name="rename", extra={"tests/helpers.py": "H = 1\n"})
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    assert "tests/helpers.py" in res.manifest["contract_paths"]
+    # Rename in the worktree: the frozen manifest never grants the new path the old identity.
+    (scen.candidate_worktree / "tests/helpers.py").rename(
+        scen.candidate_worktree / "tests/helper_new.py"
+    )
+    assert "tests/helper_new.py" not in res.manifest["contract_paths"]
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_generated_file_authoritative_snapshot_is_frozen_commit_blob(tmp_path):
+    """A generated helper present at collection is frozen from the COMMITTED snapshot; a later byte
+    change is measured against that snapshot.
+
+    technical: a committed tests/gen_helper.py -> dep_hashes value == sha256 of the commit blob; a
+    post-approval byte change mismatches it.
+    """
+    scen = _fscen(tmp_path, name="generated", extra={"tests/gen_helper.py": "GEN = 1\n"})
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    frozen = res.manifest["dep_hashes"]["tests/gen_helper.py"]
+    oracle = _sha256(
+        _committed_blob(scen.candidate_worktree, f"{scen.candidate_sha}:tests/gen_helper.py")
+    )
+    assert frozen == oracle
+    (scen.candidate_worktree / "tests/gen_helper.py").write_text("GEN = 999\n")
+    assert _sha256((scen.candidate_worktree / "tests/gen_helper.py").read_bytes()) != frozen
+
+
+def _symlink_scenario(root, name, *, link_rel, target_rel, target_content=None, cyclic=False):
+    """A REAL two-commit repo with a committed in-repo symlink ``link_rel`` -> ``target_rel``.
+
+    Mirrors ``_scenario``'s origin/HEAD setup so the freeze's currency + HEAD resolution work. When
+    ``target_content`` is None the target is not created (a broken link). ``cyclic`` makes the target
+    a symlink back to the link (a cycle).
+    """
+    repo = root / name
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    (repo / ".issueforge.toml").write_text(_CONFIG)
+    _write(repo, dict(_BASE_FILES))
+    (repo / "tests/test_new.py").write_text("def test_x():\n    assert 1 == 2\n")
+    link_path = repo / link_rel
+    target_path = repo / target_rel
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    if cyclic:
+        os.symlink(os.path.relpath(link_path, target_path.parent), target_path)
+    elif target_content is not None:
+        target_path.write_text(target_content)
+    os.symlink(os.path.relpath(target_path, link_path.parent), link_path)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "remote", "add", "origin", "git@github.com:Owner/IssueForge.git")
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    _git(repo, "update-ref", "refs/remotes/origin/main", base_sha)
+    base_checkout = root / f"{name}-base"
+    shutil.copytree(repo, base_checkout, symlinks=True)
+    candidate_sha = base_sha
+    return SimpleNamespace(
+        base_checkout=base_checkout,
+        candidate_worktree=repo,
+        base_sha=base_sha,
+        candidate_sha=candidate_sha,
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+@pytest.mark.parametrize(
+    "case", ["in_repo", "outside_repo", "broken", "cyclic", "retarget_outside"]
+)
+def test_symlink_boundary_behavior(tmp_path, case):
+    """An in-repo symlink is frozen by its RESOLVED in-repo target's committed blob while keeping its
+    own contract path and recording the link target; broken, cyclic, outside-repo, and retargeted-
+    outside links fail closed.
+
+    technical: in_repo -> dep_hashes[link] == sha256(committed blob of the resolved in-repo target),
+    link in contract_paths, symlinks[link] recorded; every other case -> freeze refusal, nothing
+    persisted.
+    """
+    link_rel = "tests/link_helper.py"
+    if case == "in_repo":
+        scen = _symlink_scenario(
+            tmp_path,
+            "sym-in",
+            link_rel=link_rel,
+            target_rel="tests/real_helper.py",
+            target_content="H = 1\n",
+        )
+        run = _freeze_run(scen, run_id="run-sym-in")
+        res = _freeze(run, scen)
+        assert link_rel in res.manifest["contract_paths"]
+        assert link_rel in res.manifest["symlinks"]
+        oracle = _sha256(
+            _committed_blob(scen.candidate_worktree, f"{scen.candidate_sha}:tests/real_helper.py")
+        )
+        assert res.manifest["dep_hashes"][link_rel] == oracle
+        return
+
+    if case == "outside_repo":
+        outside = tmp_path / "outside_target.py"
+        outside.write_text("H = 1\n")
+        scen = _symlink_scenario(
+            tmp_path,
+            "sym-out",
+            link_rel=link_rel,
+            target_rel="tests/real_helper.py",
+            target_content="H = 1\n",
+        )
+        # Retarget the committed link to point outside the repo, then commit that.
+        (scen.candidate_worktree / link_rel).unlink()
+        os.symlink(str(outside), scen.candidate_worktree / link_rel)
+        _git(scen.candidate_worktree, "add", "-A")
+        _git(scen.candidate_worktree, "commit", "-qm", "retarget-outside")
+        scen.candidate_sha = _git(scen.candidate_worktree, "rev-parse", "HEAD").stdout.strip()
+        run = _freeze_run(scen, run_id="run-sym-out")
+    elif case == "retarget_outside":
+        outside = tmp_path / "retarget_target.py"
+        outside.write_text("H = 2\n")
+        scen = _symlink_scenario(
+            tmp_path,
+            "sym-retarget",
+            link_rel=link_rel,
+            target_rel="tests/real_helper.py",
+            target_content="H = 1\n",
+        )
+        (scen.candidate_worktree / link_rel).unlink()
+        os.symlink(
+            os.path.relpath(outside, (scen.candidate_worktree / link_rel).parent),
+            scen.candidate_worktree / link_rel,
+        )
+        run = _freeze_run(scen, run_id="run-sym-retarget")
+    elif case == "broken":
+        scen = _symlink_scenario(
+            tmp_path,
+            "sym-broken",
+            link_rel=link_rel,
+            target_rel="tests/missing_target.py",
+            target_content=None,
+        )
+        run = _freeze_run(scen, run_id="run-sym-broken")
+    else:  # cyclic
+        scen = _symlink_scenario(
+            tmp_path,
+            "sym-cyclic",
+            link_rel=link_rel,
+            target_rel="tests/cycle_target.py",
+            cyclic=True,
+        )
+        run = _freeze_run(scen, run_id="run-sym-cyclic")
+
+    with pytest.raises(ValueError):
+        _freeze(run, scen)
+    assert _no_freeze_writes(run)
