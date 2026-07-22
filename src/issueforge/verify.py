@@ -94,6 +94,9 @@ def _parse_report_log(text: str, exit_code: int | None = None) -> tuple[list[dic
                     "when": data.get("when"),
                     "outcome": data.get("outcome"),
                     "longrepr": data.get("longrepr"),
+                    # Retain pytest's ``wasxfail`` marker so an XPASS (a non-strict xfail that
+                    # PASSED) stays distinguishable from a genuine pass downstream (S10).
+                    "wasxfail": data.get("wasxfail"),
                 }
             )
     # The SessionFinish must be the TERMINAL record: a session-end marker followed by any later

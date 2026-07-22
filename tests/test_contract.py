@@ -266,7 +266,6 @@ def _assert_rejected(run_id, rp, reason):
 # =============================================================== A. Collection identity (set equality)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_collection_identity_ties_targeted_added_and_executed(tmp_path):
     """Acceptance requires the targeted set, the computed ADDED set, and the executed/recorded set to
     be IDENTICAL — proven by identity across TWO new ids, not a count.
@@ -291,7 +290,6 @@ def test_collection_identity_ties_targeted_added_and_executed(tmp_path):
     assert {r.nodeid for r in rp.records} == {x, y}
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_same_cardinality_id_mismatch_rejected(tmp_path):
     """A SAME-SIZE targeted/ADDED mismatch is rejected — equality is by identity, never cardinality.
 
@@ -313,7 +311,6 @@ def test_same_cardinality_id_mismatch_rejected(tmp_path):
     _assert_rejected(run, rp, "missing_targeted_id")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_missing_targeted_id_rejected_even_when_collected_nonzero(tmp_path):
     """A targeted id the candidate never collects is rejected — a nonzero count is not identity.
 
@@ -333,7 +330,6 @@ def test_missing_targeted_id_rejected_even_when_collected_nonzero(tmp_path):
 # =============================================================== B. Call-phase discrimination
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 @pytest.mark.parametrize(
     "name, files, exc",
     [
@@ -373,7 +369,6 @@ def test_call_phase_behavioral_failure_is_valid_red(tmp_path, name, files, exc):
     assert any(r.nodeid == _NEW_ID and r.exception_type == exc for r in rp.records)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_collection_import_error_is_invalid(tmp_path):
     """A COLLECTION-phase ImportError (the authored module is not importable) is INVALID red.
 
@@ -393,7 +388,6 @@ def test_collection_import_error_is_invalid(tmp_path):
     _assert_rejected(run, rp, "import_error")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_call_phase_import_error_is_invalid(tmp_path):
     """A CALL-phase ImportError is STILL invalid — import errors are invalid at EVERY phase.
 
@@ -414,7 +408,6 @@ def test_call_phase_import_error_is_invalid(tmp_path):
     _assert_rejected(run, rp, "import_error")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_syntax_error_collection_is_invalid(tmp_path):
     """A syntax error at collection is INVALID red — distinguished from an import error.
 
@@ -431,7 +424,6 @@ def test_syntax_error_collection_is_invalid(tmp_path):
     _assert_rejected(run, rp, "collection_error")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_missing_fixture_setup_error_is_invalid(tmp_path):
     """A missing-fixture SETUP-phase error is INVALID — the failure is not in the call phase.
 
@@ -450,7 +442,6 @@ def test_missing_fixture_setup_error_is_invalid(tmp_path):
     _assert_rejected(run, rp, "setup_error")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_teardown_failure_with_passing_call_is_invalid(tmp_path):
     """A TEARDOWN-phase failure with a PASSING call is INVALID — infra breakage, not a behavioral red.
 
@@ -473,7 +464,6 @@ def test_teardown_failure_with_passing_call_is_invalid(tmp_path):
     _assert_rejected(run, rp, "teardown_error")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_passing_targeted_test_is_not_red(tmp_path):
     """An ordinary PASSING authored test is not a red and is rejected — red is never the else branch.
 
@@ -490,7 +480,6 @@ def test_passing_targeted_test_is_not_red(tmp_path):
     _assert_rejected(run, rp, "not_red")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_mixed_targeted_outcomes_reject_when_any_is_not_red(tmp_path):
     """EVERY targeted id must be a valid call-phase red — one red plus one pass is rejected.
 
@@ -515,7 +504,6 @@ def test_mixed_targeted_outcomes_reject_when_any_is_not_red(tmp_path):
 # =============================================================== C. Baseline-still-green by ID-set
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_every_base_id_runs_at_candidate_second_break_is_caught(tmp_path):
     """The baseline runs EVERY base id at the candidate — a break in the SECOND base id is caught.
 
@@ -536,7 +524,6 @@ def test_every_base_id_runs_at_candidate_second_break_is_caught(tmp_path):
     _assert_rejected(run, rp, "baseline_not_green")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_base_suite_red_at_bound_sha_is_refused(tmp_path):
     """A red BASE suite at the bound sha refuses — a healthy baseline at ``base_sha`` is required.
 
@@ -557,7 +544,6 @@ def test_base_suite_red_at_bound_sha_is_refused(tmp_path):
     _assert_rejected(run, rp, "baseline_not_green")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_base_id_disappeared_is_hard_failure(tmp_path):
     """A preexisting base id that DISAPPEARED at the candidate is a hard failure, not a green baseline.
 
@@ -575,7 +561,6 @@ def test_base_id_disappeared_is_hard_failure(tmp_path):
     _assert_rejected(run, rp, "base_id_disappeared")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_authored_test_reusing_base_id_is_hard_failure(tmp_path):
     """An authored test that REUSES a preexisting base id is a hard failure — caught, NEVER subtracted.
 
@@ -594,7 +579,6 @@ def test_authored_test_reusing_base_id_is_hard_failure(tmp_path):
     _assert_rejected(run, rp, "reused_base_id")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_select_baseline_added_is_computed_not_declared(tmp_path):
     """The adapter's baseline selection COMPUTES ADDED = candidate - base and flags a disappeared id.
 
@@ -615,7 +599,6 @@ def test_select_baseline_added_is_computed_not_declared(tmp_path):
 # =============================================================== D. Third-state rejections
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 @pytest.mark.parametrize(
     "name, body, reason",
     [
@@ -653,7 +636,6 @@ def test_broken_states_rejected(tmp_path, name, body, reason):
 # =============================================================== E. Red-evidence record (accuracy)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_red_records_carry_accurate_type_line_and_message(tmp_path):
     """Each canonical record carries the ACCURATE exception type, the real source line, and the message.
 
@@ -684,7 +666,6 @@ def test_red_records_carry_accurate_type_line_and_message(tmp_path):
     assert "boom detail" in by_id[a].message
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_red_proof_persisted_as_permanent_manifest_artifact(tmp_path):
     """The red proof is a PERMANENT manifest artifact plus an append-only event.
 
@@ -709,7 +690,6 @@ def test_red_proof_persisted_as_permanent_manifest_artifact(tmp_path):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_red_verdict_is_fully_rederivable(tmp_path):
     """The per-unit verdict is RE-DERIVABLE: proving the same candidate commit twice yields the SAME
     complete canonical records.
@@ -737,7 +717,6 @@ def test_red_verdict_is_fully_rederivable(tmp_path):
     assert _canon(first) == _canon(second)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_permanent_manifest_holds_canonical_record_not_raw_dump(tmp_path):
     """The WHOLE permanent manifest holds only the canonical record — never a raw pytest output dump.
 
@@ -764,7 +743,6 @@ def test_permanent_manifest_holds_canonical_record_not_raw_dump(tmp_path):
 # =============================================================== F. SHA-binding (real verification)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_red_evidence_is_sha_bound(tmp_path):
     """An accepted red is SHA-BOUND to the verified base sha in both the verdict and the manifest.
 
@@ -784,7 +762,6 @@ def test_red_evidence_is_sha_bound(tmp_path):
     assert store.RunStore().read(run)["red_proof"]["base_sha"] == scen.base_sha
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_wrong_base_sha_is_refused_not_echoed(tmp_path):
     """A ``base_sha`` that does not match the base checkout's verified origin-default is REFUSED, not
     echoed — the sha binding is verified against real git state, defeating an echo-the-argument stub.
@@ -803,7 +780,6 @@ def test_wrong_base_sha_is_refused_not_echoed(tmp_path):
     _assert_rejected(run, rp, "sha_mismatch")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_baseline_bound_to_origin_sha_not_base_checkout_local_head(tmp_path):
     """The base baseline runs at the BOUND origin-default sha, not the base checkout's local HEAD.
 
@@ -826,7 +802,6 @@ def test_baseline_bound_to_origin_sha_not_base_checkout_local_head(tmp_path):
 # =============================================================== G. Redaction canary (both paths)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_redaction_canary_success_path(tmp_path):
     """SUCCESS path: the secret in the captured red message is redacted IN the canonical record and
     absent from every persisted file.
@@ -855,7 +830,6 @@ def test_redaction_canary_success_path(tmp_path):
     assert all(secret not in t for t in texts)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_redaction_canary_failure_path(tmp_path):
     """FAILURE path: a REJECTED proof still PERSISTS a redacted diagnostic — the secret is captured,
     redacted, and absent everywhere (not vacuously absent because nothing was written).
@@ -885,7 +859,6 @@ def test_redaction_canary_failure_path(tmp_path):
 # =============================================================== H. Discover-before-authoring
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_authoring_refuses_when_existing_test_undisposed_and_authors_nothing(tmp_path):
     """Authoring refuses when any existing contract test lacks a disposition — and invokes no author.
 
@@ -912,7 +885,6 @@ def test_authoring_refuses_when_existing_test_undisposed_and_authors_nothing(tmp
 # =============================================================== I. Authoring gate
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_authoring_refuses_unless_buildable_and_revision_applied(tmp_path):
     """Authoring runs ONLY behind a buildable, revision-applied run — otherwise it refuses, authoring
     nothing and invoking no author.
@@ -937,7 +909,6 @@ def test_authoring_refuses_unless_buildable_and_revision_applied(tmp_path):
     assert calls["n"] == 0
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_authoring_legal_case_invokes_author_and_records_event(tmp_path):
     """A buildable, revision-applied run with complete dispositions PASSES the gate: it invokes the
     author once and records exactly one authoring event.
@@ -963,7 +934,6 @@ def test_authoring_legal_case_invokes_author_and_records_event(tmp_path):
     assert sum(1 for e in events if e.get("transition") == "authoring") == 1
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 def test_authoring_refuses_on_invalid_disposition_value(tmp_path):
     """A disposition VALUE outside keep/revise/supersede is not a valid disposition — authoring refuses.
 
@@ -992,7 +962,6 @@ def test_authoring_refuses_on_invalid_disposition_value(tmp_path):
 # =============================================================== J. Verbatim-example fixture
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 @pytest.mark.parametrize(
     "fixtures, expected",
     [
@@ -1021,7 +990,6 @@ def test_verbatim_example_fixture_exactly_one_byte_for_byte(tmp_path, fixtures, 
 # =============================================================== K. Suite-level anti-false-green
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#16)")
 @pytest.mark.parametrize(
     "source, rejected",
     [
