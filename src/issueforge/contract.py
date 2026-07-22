@@ -18,6 +18,7 @@ verdict, record, pause, and redaction is persisted through the S4 ``RunStore`` (
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -185,35 +186,89 @@ def _is_empty_parametrize(notset_id: str, by_node: dict) -> bool:
     return False
 
 
+# A traceback line naming a raised exception: a dotted class whose leaf ends in a Python-exception
+# suffix, optionally followed by ``: <message>``. Matches ``ImportError: ...``,
+# ``pkg.NotImplementedError``, ``SystemExit`` — never a rewritten-assert body line (``assert x == y``).
+_EXC_HEADER = re.compile(
+    r"^([A-Za-z_][\w.]*(?:Error|Exception|Warning|Exit|Interrupt))\b\s*:?\s*(.*)$"
+)
+_LINE_RE = re.compile(r"\bline (\d+)\b")
+
+
+def _strip_e(line: str) -> str:
+    """Strip pytest's leading ``E`` traceback marker so the exception header can be matched."""
+    line = line.rstrip()
+    if line[:1] == "E":
+        return line[1:].strip()
+    return line.strip()
+
+
+def _exc_from_text(text: str) -> tuple[str | None, str | None]:
+    """Extract ``(exception_type, header_line)`` from a STRING ``longrepr``'s traceback text.
+
+    The LAST exception-header line wins (the innermost raised type). This is why a call-phase
+    ``ImportError`` whose longrepr is a plain string (not the default structured dict) is still
+    recognized as an import error — invalid at every phase — rather than accepted as a red.
+    """
+    exc_type: str | None = None
+    message: str | None = None
+    for raw in text.splitlines():
+        match = _EXC_HEADER.match(_strip_e(raw))
+        if match:
+            exc_type = match.group(1).split(".")[-1]
+            message = _strip_e(raw)
+    return exc_type, message
+
+
+def _line_from_text(text: str) -> int | None:
+    """The last ``line N`` reference in a string ``longrepr`` (best-effort source line)."""
+    found: int | None = None
+    for match in _LINE_RE.finditer(text):
+        found = int(match.group(1))
+    return found
+
+
 def _exception_type(longrepr: object) -> str:
-    """The ACTUAL raised exception type — read from the innermost traceback frame's
-    ``reprfileloc.message`` (which carries the type even for a pytest-rewritten bare assert whose
-    reprcrash message is only ``assert x == y``), never coerced to AssertionError."""
+    """The ACTUAL raised exception type — from the innermost traceback frame's ``reprfileloc.message``
+    for the structured dict form (which carries the type even for a pytest-rewritten bare assert whose
+    reprcrash message is only ``assert x == y``), or parsed from the traceback text for the STRING
+    form. Never coerced to AssertionError, and never a benign ``"Exception"`` when a real type is
+    recoverable (so a string-form call-phase ImportError cannot slip through as a red)."""
     if isinstance(longrepr, dict):
         entries = (longrepr.get("reprtraceback") or {}).get("reprentries") or []
         if entries:
             message = ((entries[-1].get("data") or {}).get("reprfileloc") or {}).get("message")
             if message:
                 return str(message)
-        crash = longrepr.get("reprcrash") or {}
-        first = str(crash.get("message", "")).split("\n", 1)[0]
-        if ":" in first:
-            return first.split(":", 1)[0].strip()
-        return first.strip() or "Exception"
+        exc_type, _ = _exc_from_text(str((longrepr.get("reprcrash") or {}).get("message", "")))
+        return exc_type or "Exception"
+    if isinstance(longrepr, str):
+        exc_type, _ = _exc_from_text(longrepr)
+        return exc_type or "Exception"
     return "Exception"
 
 
 def _red_record(nodeid: str, call: object, secrets: frozenset) -> RedRecord:
-    """Build the canonical, redacted red-evidence record from a call-phase failure's longrepr."""
-    longrepr = call.longrepr if isinstance(call.longrepr, dict) else {}
-    crash = longrepr.get("reprcrash") or {}
-    lineno = crash.get("lineno")
-    message = _redact(str(crash.get("message", "")), secrets)
+    """Build the canonical, redacted red-evidence record from a call-phase failure's ``longrepr``,
+    handling BOTH the structured dict form and the plain-string form (so a string-form failure still
+    yields an accurate type and a redacted message, never an empty record)."""
+    longrepr = call.longrepr
+    if isinstance(longrepr, dict):
+        crash = longrepr.get("reprcrash") or {}
+        lineno = crash.get("lineno")
+        raw_message = str(crash.get("message", ""))
+    elif isinstance(longrepr, str):
+        lineno = _line_from_text(longrepr)
+        _, header = _exc_from_text(longrepr)
+        raw_message = header if header is not None else longrepr
+    else:
+        lineno = None
+        raw_message = ""
     return RedRecord(
         nodeid=nodeid,
-        exception_type=_exception_type(call.longrepr),
+        exception_type=_exception_type(longrepr),
         assertion_line=lineno if isinstance(lineno, int) else None,
-        message=message,
+        message=_redact(str(raw_message), secrets),
     )
 
 
@@ -230,25 +285,38 @@ def _classify_targeted(
     records = by_node.get(nodeid)
     if not records:
         return ("missing_targeted_id", None)
-    if any(_failed(r) for r in _phase(records, "setup")):
-        return ("setup_error", None)
+    setup = _phase(records, "setup")
+    teardown = _phase(records, "teardown")
     call = _phase(records, "call")
+    # A setup-phase FAILED/BROKEN is infra breakage: the body never ran.
+    if any(_failed(r) for r in setup):
+        return ("setup_error", None)
+    # A SKIPPED setup with no call (e.g. ``@pytest.mark.skip``) is a skip, NOT a setup error.
+    if not call and any(r.outcome is Outcome.SKIPPED for r in setup):
+        return ("all_skipped", None)
     if not call:
         return ("setup_error", None)
+    # A teardown FAILED/BROKEN forbids a clean red EVEN when the call itself failed — the seam's
+    # rule is that NO setup/teardown FAILED/BROKEN may exist anywhere for a trustworthy red, so an
+    # infra-contaminated call failure is rejected as a teardown error, never accepted.
+    if any(_failed(r) for r in teardown):
+        return ("teardown_error", None)
     call_record = call[0]
     if call_record.outcome is Outcome.SKIPPED:
         return ("all_skipped", None)
     if call_record.outcome is Outcome.PASSED:
-        if any(_failed(r) for r in _phase(records, "teardown")):
-            return ("teardown_error", None)
         if call_record.wasxfail is not None:
             return ("xpass", None)
         return ("not_red", None)
-    # Call FAILED/BROKEN: a genuine behavioral red unless the raised type is an import error.
-    record = _red_record(nodeid, call_record, secrets)
-    if record.exception_type in _IMPORT_TYPES:
-        return ("import_error", record)
-    return ("behavioral_red", record)
+    # ONLY a genuine call-phase FAILED is a behavioral red (unless the raised type is an import
+    # error, invalid at every phase). A call-phase BROKEN — an unknown/alternate outcome such as a
+    # rerun — is infrastructure noise, not a clean red, and is rejected.
+    if call_record.outcome is Outcome.FAILED:
+        record = _red_record(nodeid, call_record, secrets)
+        if record.exception_type in _IMPORT_TYPES:
+            return ("import_error", record)
+        return ("behavioral_red", record)
+    return ("not_red", None)
 
 
 # --------------------------------------------------------------------------- persistence
@@ -272,13 +340,29 @@ def _proof_dict(proof: RedProof) -> dict:
     }
 
 
+def _redact_strings(value: object, secrets: frozenset) -> object:
+    """Recursively ``[REDACTED]``-scrub every string in a payload (longest-first per field)."""
+    if isinstance(value, str):
+        return _redact(value, secrets)
+    if isinstance(value, dict):
+        return {key: _redact_strings(item, secrets) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_strings(item, secrets) for item in value]
+    return value
+
+
 def _persist(store: RunStore, run_id: str, proof: RedProof, outcome: str) -> None:
     """Persist the canonical verdict manifest artifact PLUS the append-only ``red_proof`` event.
 
     Only the canonical record lands in the permanent manifest — never a raw pytest dump. The store
-    redacts the event; the record messages are already redacted in place.
+    does NOT redact manifest writes (only ``append_event``/``write_artifact`` redact), so EVERY string
+    field of the payload — nodeid (a parametrized id can embed a secret), exception_type, message,
+    reason, base_sha, added_ids — is scrubbed here BEFORE ``apply`` writes it, on both the accept and
+    reject paths. The event is redacted by the store on append.
     """
-    store.apply(run_id, lambda _record: {"red_proof": _proof_dict(proof)})
+    secrets = frozenset(getattr(store, "_secrets", set()))
+    payload = _redact_strings(_proof_dict(proof), secrets)
+    store.apply(run_id, lambda _record: {"red_proof": payload})
     event = {"transition": "red_proof", "outcome": outcome}
     if proof.reason:
         event["reason"] = proof.reason
