@@ -1190,3 +1190,348 @@ def test_no_github_write_occurs_on_any_shaping_branch(isolated_state_home, branc
             github=gh,
         )
         assert _shape("run-1")["version"] == 2
+
+
+# =================================================================================================
+# S20 (#14) — propose the in-place revision for a buildable run and perform the FIRST GitHub
+# mutation, behind a human gate. propose_revision(run_id, issue, *, reviser) returns a mutation
+# plan (no write) and hands the reviser the PERSISTED buildable shape; engine.apply_revision(
+# run_id, plan, gateway, *, approver) writes ONLY on human approval, persists completed op-IDs in
+# the RunStore so a resumed apply never re-dispatches a completed op (Option A idempotency; the
+# ambiguous server-side-success case is a documented v1 limitation), and records a "revision" event
+# binding the applied plan's completed op-IDs. (enter_authoring's rewiring to read that evidence is
+# #73, out of scope here.)
+# =================================================================================================
+
+
+class _SpyGateway:
+    """A spy for the S20 write gateway; records each call, optionally appending to a shared trace
+    (to observe approval-before-write ordering) and raising on the Nth call (to model a mid-plan
+    failure for the resume test)."""
+
+    def __init__(self, trace: list | None = None, fail_on_call: int | None = None):
+        self.calls: list = []
+        self._trace = trace
+        self._fail_on_call = fail_on_call
+
+    def _record(self, entry):
+        self.calls.append(entry)
+        if self._trace is not None:
+            self._trace.append("write")
+        if self._fail_on_call is not None and len(self.calls) == self._fail_on_call:
+            raise RuntimeError(f"gateway boom on call {self._fail_on_call}")
+
+    def update_body(self, *, issue, body):
+        self._record(("update_body", issue, body))
+
+    def create_issue(self, *, repo, title, body):
+        self._record(("create_issue", repo, title))
+        return (repo[0], repo[1], 901)
+
+    def add_comment(self, *, issue, body):
+        self._record(("add_comment", issue, body))
+
+    def link_child(self, *, parent, child):
+        self._record(("link_child", parent, child))
+
+
+class _ExplodingGateway:
+    """A gateway that raises on ANY attribute access — proves that NOT ONE op writes."""
+
+    def __getattr__(self, name):
+        raise AssertionError(f"GitHub write attempted before approval: {name!r}")
+
+
+def _traced_approver(trace: list, value: bool = True):
+    def _a(shape):
+        trace.append("approve")
+        return value
+
+    return _a
+
+
+def _make_buildable(run_id):
+    """Drive a buildable, confirmed, human-approved run so S20 can propose its revision."""
+    from issueforge import shaper
+
+    shaper.run_shaping(
+        run_id,
+        _ISSUE,
+        assessor=_assessor(_proposal()),
+        reviewer=_reviewer(_review("review-1")),
+        approver=_approver(),
+        github=_ReadOnlyGitHub(),
+    )
+
+
+def _multi_op_plan():
+    """A three-op plan (all repo-qualified) for the persisted-resume test."""
+    return [
+        {
+            "op": "update_body",
+            "id": "op-1",
+            "issue": ("MatthewDruhl", "IssueForge", 13),
+            "body": "R",
+        },
+        {
+            "op": "add_comment",
+            "id": "op-2",
+            "issue": ("MatthewDruhl", "IssueForge", 13),
+            "body": "c2",
+        },
+        {
+            "op": "add_comment",
+            "id": "op-3",
+            "issue": ("MatthewDruhl", "IssueForge", 13),
+            "body": "c3",
+        },
+    ]
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
+def test_buildable_run_receives_a_proposed_in_place_revision(isolated_state_home):
+    """A buildable run receives a proposed in-place revision: an AI-authored new body carried by a repo-qualified update_body op in the mutation plan (US-3.1).
+
+    technical (contract): after a buildable run, propose_revision("run-1", issue, reviser=<returns
+    "REVISED BODY">) returns a plan whose update_body op has issue == ("MatthewDruhl","IssueForge",
+    13) and body == "REVISED BODY".
+    """
+    from issueforge import shaper
+
+    _make_buildable("run-1")
+    result = shaper.propose_revision("run-1", _ISSUE, reviser=lambda issue, shape: "REVISED BODY")
+
+    update_ops = [op for op in result["plan"] if op["op"] == "update_body"]
+    assert update_ops, "the revision plan must carry an update_body op"
+    assert update_ops[0]["issue"] == ("MatthewDruhl", "IssueForge", 13)
+    assert update_ops[0]["body"] == "REVISED BODY"
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
+def test_reviser_receives_the_exact_persisted_buildable_shape(isolated_state_home):
+    """The revision is authored against the run's PERSISTED buildable shape — the reviser is handed exactly the shape recorded at approval, not an empty or reconstructed stand-in, so the revision reflects the real classification and scope.
+
+    technical (contract): the reviser passed to propose_revision("run-1", issue, ...) receives a
+    shape argument equal to store.RunStore().read("run-1")["shape"].
+    """
+    from issueforge import shaper
+
+    _make_buildable("run-1")
+    seen = {}
+
+    def reviser(issue, shape):
+        seen["shape"] = shape
+        return "REVISED BODY"
+
+    shaper.propose_revision("run-1", _ISSUE, reviser=reviser)
+    assert seen["shape"] == _shape("run-1")
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
+@pytest.mark.parametrize(
+    "setup",
+    [
+        "missing",  # never shaped
+        "blocked",  # classification blocked (not_testable)
+        "oversized",  # classification oversized
+        "paused",  # a pause condition (unknown footprint)
+    ],
+)
+def test_only_a_buildable_run_gets_the_revision_path(isolated_state_home, setup):
+    """Only a buildable, approved run can be revised: a missing, blocked, oversized, or paused run is refused — the in-place revision is not offered for issues S9 did not clear as buildable.
+
+    technical (contract): propose_revision on a run that is missing / blocked / oversized / paused
+    raises rather than returning a mutation plan.
+    """
+    from issueforge import shaper
+
+    if setup == "blocked":
+        shaper.run_shaping(
+            "run-1",
+            _ISSUE,
+            assessor=_assessor(_proposal(classification="blocked", blocked_reason="not_testable")),
+            reviewer=_reviewer_forbidden,
+            approver=_approver_forbidden,
+            github=_ReadOnlyGitHub(),
+        )
+    elif setup == "oversized":
+        shaper.run_shaping(
+            "run-1",
+            _ISSUE,
+            assessor=_assessor(_proposal(classification="oversized")),
+            reviewer=_reviewer_forbidden,
+            approver=_approver_forbidden,
+            github=_ReadOnlyGitHub(),
+        )
+    elif setup == "paused":
+        shaper.run_shaping(
+            "run-1",
+            _ISSUE,
+            assessor=_assessor(_proposal(footprint_known=False)),
+            reviewer=_reviewer_forbidden,
+            approver=_approver_forbidden,
+            github=_ReadOnlyGitHub(),
+        )
+    # "missing": never shaped
+
+    with pytest.raises(ValueError):
+        shaper.propose_revision("run-1", _ISSUE, reviser=lambda issue, shape: "REVISED")
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
+def test_propose_revision_performs_no_gh_write(isolated_state_home, monkeypatch):
+    """Proposing the revision performs NO GitHub call of any kind — it only plans; the write boundary is never touched until apply time.
+
+    technical (contract): with subprocess.run patched to raise on any invocation, propose_revision
+    ("run-1", issue, reviser=...) still returns a plan and never triggers a subprocess call.
+    """
+    import subprocess
+
+    from issueforge import shaper
+
+    _make_buildable("run-1")
+
+    def _no_subprocess(*args, **kwargs):
+        raise AssertionError("propose_revision must not shell out to gh")
+
+    monkeypatch.setattr(subprocess, "run", _no_subprocess)
+    result = shaper.propose_revision("run-1", _ISSUE, reviser=lambda issue, shape: "REVISED")
+    assert [op for op in result["plan"] if op["op"] == "update_body"]
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
+def test_no_op_of_the_plan_writes_before_approval(isolated_state_home):
+    """No op of the mutation plan — not update_body, create_issue, add_comment, or link_child — writes before the human approves; a rejected revision touches the gateway for zero ops and records no revision evidence.
+
+    technical (contract): engine.apply_revision("run-1", <full four-op plan>, <gateway raising on
+    ANY attribute access>, approver=<returns False>) does NOT raise (the gateway is never touched)
+    and records NO "revision" event.
+    """
+    from issueforge import engine
+
+    _make_buildable("run-1")
+    full_plan = [
+        {
+            "op": "update_body",
+            "id": "op-1",
+            "issue": ("MatthewDruhl", "IssueForge", 13),
+            "body": "R",
+        },
+        {
+            "op": "create_issue",
+            "id": "op-2",
+            "repo": ("MatthewDruhl", "IssueForge"),
+            "title": "T",
+            "body": "b",
+        },
+        {
+            "op": "add_comment",
+            "id": "op-3",
+            "issue": ("MatthewDruhl", "IssueForge", 13),
+            "body": "c",
+        },
+        {
+            "op": "link_child",
+            "id": "op-4",
+            "parent": ("MatthewDruhl", "IssueForge", 13),
+            "child": ("MatthewDruhl", "IssueForge", 901),
+        },
+    ]
+
+    engine.apply_revision("run-1", full_plan, _ExplodingGateway(), approver=_approver(False))
+    assert _events("run-1", "revision") == []
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
+def test_approved_revision_writes_the_exact_body_after_approval_and_binds_evidence(
+    isolated_state_home,
+):
+    """On approval the revision is applied — the human's approval is recorded BEFORE any write, exactly the approved "REVISED" body is written once, and the persisted revision evidence binds the completed op-IDs (US-3.1; "Human: EVERY GitHub mutation").
+
+    technical (contract): with a shared trace, engine.apply_revision("run-1", <update_body op-1 with
+    body "REVISED">, gateway, approver=<True>) records "approve" before the single "write"; the
+    gateway sees exactly one update_body call carrying body == "REVISED"; and the persisted
+    "revision" event's completed op-IDs == ["op-1"].
+    """
+    from issueforge import engine
+
+    _make_buildable("run-1")
+    plan = [
+        {
+            "op": "update_body",
+            "id": "op-1",
+            "issue": ("MatthewDruhl", "IssueForge", 13),
+            "body": "REVISED",
+        }
+    ]
+
+    trace: list = []
+    gw = _SpyGateway(trace=trace)
+    engine.apply_revision("run-1", plan, gw, approver=_traced_approver(trace, True))
+
+    assert trace[0] == "approve"  # approval precedes every write
+    assert "write" in trace and trace.index("approve") < trace.index("write")
+    update_calls = [c for c in gw.calls if c[0] == "update_body"]
+    assert len(update_calls) == 1
+    assert update_calls[0] == ("update_body", ("MatthewDruhl", "IssueForge", 13), "REVISED")
+
+    revision_events = _events("run-1", "revision")
+    assert revision_events
+    assert revision_events[-1]["completed"] == ["op-1"]
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
+def test_apply_revision_resumes_from_persisted_op_ids_without_reissuing(isolated_state_home):
+    """A revision apply that fails mid-plan resumes from the RunStore-persisted operation IDs: a completed op is never re-dispatched after the process is reconstructed, so a resumed mutation never duplicates a landed one (Option A idempotency).
+
+    technical (contract): apply_revision("run-1", <three-op plan>, <gateway raising on its 2nd
+    call>, approver=True) raises after op-1 lands; a SECOND apply_revision call (a fresh RunStore
+    reading the persisted op-IDs) dispatches ONLY op-2 then op-3 — the completed update_body op-1 is
+    never re-dispatched.
+    """
+    from issueforge import engine
+
+    _make_buildable("run-1")
+    plan = _multi_op_plan()
+
+    failing = _SpyGateway(fail_on_call=2)
+    with pytest.raises(RuntimeError):
+        engine.apply_revision("run-1", plan, failing, approver=_approver(True))
+
+    resumed = _SpyGateway()  # a fresh apply_revision call builds its own RunStore from disk
+    engine.apply_revision("run-1", plan, resumed, approver=_approver(True))
+    assert [c[0] for c in resumed.calls] == ["add_comment", "add_comment"]  # op-2, op-3 only
+    assert "update_body" not in [c[0] for c in resumed.calls]  # completed op-1 never re-dispatched
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
+def test_resume_with_a_changed_op_under_a_recorded_id_is_rejected(isolated_state_home):
+    """A persisted op-ID binds to the EXACT op that completed: resuming with the same id but a changed target/op/body is rejected, so a mutated plan can never reuse a recorded id to skip — and thereby falsely mark "complete" — a genuinely different mutation.
+
+    technical (contract): after apply_revision lands op-1 (update_body, body "R"), a second
+    apply_revision whose op-1 carries a DIFFERENT body ("MUTATED") raises ValueError — the recorded
+    op-ID does not match the new op's content, so the resume is refused, never silently skipped.
+    """
+    from issueforge import engine
+
+    _make_buildable("run-1")
+    original = [
+        {
+            "op": "update_body",
+            "id": "op-1",
+            "issue": ("MatthewDruhl", "IssueForge", 13),
+            "body": "R",
+        }
+    ]
+    engine.apply_revision("run-1", original, _SpyGateway(), approver=_approver(True))
+
+    mutated = [
+        {
+            "op": "update_body",
+            "id": "op-1",
+            "issue": ("MatthewDruhl", "IssueForge", 13),
+            "body": "MUTATED",
+        }
+    ]
+    with pytest.raises(ValueError):
+        engine.apply_revision("run-1", mutated, _SpyGateway(), approver=_approver(True))
