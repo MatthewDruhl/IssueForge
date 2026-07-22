@@ -2123,6 +2123,33 @@ def test_first_pass_exhaustive_all_findings_ordered_in_packet(tmp_path, fake_pro
     assert "REJECT one two three" in Path(review.packet_path).read_text()
 
 
+def _valid_reproof(scen):
+    """A reprove seam (post-#82) returning an ACCEPTED ``RedProof`` bound to the advanced head — the
+    valid replacement for the old bare-``_RED_A``-string stub, now that the reprove seam must yield a
+    re-verified proof rather than a raw evidence string (#82 item 1)."""
+    from issueforge import contract
+
+    def reprove(head_sha):
+        return contract.RedProof(
+            accepted=True,
+            reason="behavioral_red",
+            records=(
+                contract.RedRecord(
+                    nodeid=_NEW_X,
+                    exception_type="AssertionError",
+                    assertion_line=2,
+                    message="assert 1 == 2",
+                ),
+            ),
+            base_sha=scen.base_sha,
+            added_ids=(_NEW_X,),
+            head_sha=head_sha,
+        )
+
+    return reprove
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
 def test_persistent_blocking_stops_at_default_two_rounds_counted(tmp_path, fake_provider_script):
     """``contract_review_rounds`` defaults to 2: a persistently-blocking reviewer is invoked EXACTLY
     twice (two distinct fresh sessions, two review events), the counter persists 2, and the run pauses
@@ -2158,7 +2185,7 @@ def test_persistent_blocking_stops_at_default_two_rounds_counted(tmp_path, fake_
         dest=dest,
         max_rounds=None,
         fixer=fixer,
-        reprove=lambda h: _RED_A,
+        reprove=_valid_reproof(scen),
     )
     assert len(reviewer.results) == 2
     assert len({r.session_id for r in reviewer.results}) == 2
@@ -2168,6 +2195,7 @@ def test_persistent_blocking_stops_at_default_two_rounds_counted(tmp_path, fake_
     assert review.verdict.startswith("blocking:") and record["status"] == "paused"
 
 
+@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
 def test_reopen_only_on_new_blocking_finding(tmp_path, fake_provider_script):
     """Above the default bound, a confirmation round REOPENS the review only when it introduces a NEW
     blocking finding; a confirmation that repeats the SAME finding does not reopen — it terminates
@@ -2204,7 +2232,7 @@ def test_reopen_only_on_new_blocking_finding(tmp_path, fake_provider_script):
         dest=tmp_path / "same",
         max_rounds=4,
         fixer=mk_fixer(scen),
-        reprove=lambda h: _RED_A,
+        reprove=_valid_reproof(scen),
     )
     assert len(same_rev.results) == 2, (
         "a repeated finding must not reopen past the confirmation round"
@@ -2233,11 +2261,12 @@ def test_reopen_only_on_new_blocking_finding(tmp_path, fake_provider_script):
         dest=tmp_path / "newf",
         max_rounds=4,
         fixer=mk_fixer(scen2),
-        reprove=lambda h: _RED_A,
+        reprove=_valid_reproof(scen2),
     )
     assert review.verdict == "done" and review.rounds == 3
 
 
+@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
 def test_counter_incremented_through_store_apply_and_isolated(
     tmp_path, fake_provider_script, monkeypatch
 ):
@@ -2293,7 +2322,7 @@ def test_counter_incremented_through_store_apply_and_isolated(
         dest=tmp_path / "pkt",
         max_rounds=2,
         fixer=fixer,
-        reprove=lambda h: _RED_A,
+        reprove=_valid_reproof(scen),
     )
     record = store.RunStore().read(run)
     assert type(record["contract_review_rounds"]) is int
