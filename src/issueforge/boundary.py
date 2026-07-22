@@ -414,6 +414,10 @@ class _Linter(ast.NodeVisitor):
             for target in stmt.targets:
                 for name in self._bound_names(target):
                     record(name, False)
+        elif isinstance(stmt, getattr(ast, "TypeAlias", ())):
+            # PEP 695 `type NAME = ...` (3.12+) binds NAME in this scope — a disqualifying binding.
+            if isinstance(stmt.name, ast.Name):
+                record(stmt.name.id, False)
         elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             # The def/class NAME binds in THIS scope; its body is a SEPARATE scope (do not descend).
             record(stmt.name, False)

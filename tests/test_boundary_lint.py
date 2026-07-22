@@ -879,6 +879,18 @@ def test_class6_match_capture_rebinds_seam_still_flagged_guard(tmp_path: Path) -
     assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
 
 
+def test_class6_type_alias_rebinds_seam_still_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard) A PEP 695 `type seam = ...` statement rebinds seam — a disqualifying binding, flagged."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target):\n"
+        "    seam = WriteSeam()\n"
+        "    type seam = int\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
 def test_class6_class_body_seam_does_not_revoke_outer_local(tmp_path: Path) -> None:
     """(#40 positive) A class body opens its own scope: a `seam = path` inside it must NOT flag the enclosing function's legitimate unconditional local WriteSeam."""
     code = (
