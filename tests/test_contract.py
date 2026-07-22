@@ -1032,3 +1032,1251 @@ def test_reject_false_green_catalogue(tmp_path, source, rejected):
         assert isinstance(result, str) and result
     else:
         assert result is None
+
+
+# ===================================================================================================
+# S11 (#17) — Independent semantic review of the red contract.
+#
+# S10 proves the tests executed and FAILED in the call phase at a bound sha. It CANNOT prove the red
+# corresponds to the NAMED missing behavior, that the tests cover the issue, or that a golden is
+# semantically weak (``run cmd -> exit 0`` passes every syntactic check). S11 adds that irreducibly
+# semantic gate: an independent, FRESH session that reviews against the REAL candidate worktree with
+# the LITERAL proof command, is fail-loud on empty/non-zero/timeout, binds its verdict to the REAL
+# candidate HEAD, runs a bounded batched-round protocol on its OWN under-lock counter, records an
+# explicit override with full provenance, and retains a fully-redacted structured audit packet.
+#
+# The gate — ``contract.review_red_contract`` — consumes an ACCEPTED S10 red proof on the SAME run
+# (proof precedes review), then owns the deterministic half. Between blocking rounds it drives a fix
+# -> RE-PROVE (the full S10 predicate set, minting NEW sha-bound red evidence) -> RE-REVIEW loop
+# through injected ``fixer``/``reprove`` seams, so "any change to a test re-runs the proof" is part of
+# the round protocol. The reviewer is an INJECTED seam (like ``shaper._confirm``): each round it
+# returns an ``_Outcome`` carrying a REAL ``providers.AIResult`` (produced by launching the fake
+# provider CLI through the guarded subprocess seam IN THE CANDIDATE WORKTREE, so fail-loud, real-
+# worktree execution, session identity, and redaction are exercised against a real child) plus the
+# AI's structured judgment (``correspondence``, ``findings``). The reviewer here ASSERTS the packet it
+# was handed (real worktree, byte-exact proof command, ALL materialized inputs present with exact
+# BYTES before it runs, the expected-reason ``contract`` AND the observed ``red_evidence``, the
+# network-off provisioner marker, and the exhaustive-pass instruction), so a gate that fails to supply
+# any of them is caught rather than rubber-stamped.
+#
+# PENDING (#17): every test below is xfail(strict) until S11 is built; each flips to required then.
+# ===================================================================================================
+
+# Canaries: a synthetic secret seeded into the review packet (reviewer stdout, echoed inputs, captured
+# stderr). A field MARKER sits next to each canary so a test can prove the field was copied INTO the
+# S11 packet (marker present) AND then redacted (canary absent, ``[REDACTED]`` present).
+_CANARY_RESPONSE = "canary-resp-AAA111"
+_CANARY_INPUT = "canary-input-BBB222"
+_CANARY_STDERR = "canary-stderr-CCC333"
+_MARK_RESPONSE = "RESPFIELD"
+_MARK_INPUT = "INPUTFIELD"
+_MARK_STDERR = "STDERRFIELD"
+
+_AUTH_SESSION = "authoring-session-deadbeef"
+_PROOF_CMD = "python -m pytest tests/test_new.py::test_x -x"
+# A byte-fragile command: leading/trailing whitespace, doubled spaces, quotes, a backslash, and a
+# trailing newline, so a ``.strip()`` / ``shlex.join(shlex.split(...))`` normalization would CHANGE it.
+_PROOF_CMD_FRAGILE = '  python  -m pytest "tests/test_new.py::test_x[a b]" -k \\ansi -x \n'
+# The instruction fragment that marks the exhaustive first pass (vs a confirmation round).
+_EXHAUSTIVE = "enumerate ALL"
+
+_NEW_X = "tests/test_new.py::test_x"
+_RED_A = "tests/test_new.py::test_x call-phase FAILED: AssertionError (assert 1 == 2)\n"
+_CONTRACT_A = "S11 contract: test_x must FAIL because the missing behavior raises AssertionError\n"
+
+
+def _default_inputs(red_evidence: str = _RED_A, contract: str = _CONTRACT_A) -> dict:
+    return {
+        "diff": "diff --git a/tests/test_new.py b/tests/test_new.py\n+def test_x(): assert 1 == 2\n",
+        "contract": contract,
+        "manifest": '{"red_proof": {"reason": "behavioral_red"}}\n',
+        "red_evidence": red_evidence,
+    }
+
+
+def _red_scenario(root: Path, name: str = "review") -> SimpleNamespace:
+    """A REAL two-commit repo whose candidate authors one genuine call-phase red (``test_x``)."""
+    return _scenario(
+        root,
+        name,
+        candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
+    )
+
+
+def _seed_proof(run_id: str, scen: SimpleNamespace) -> None:
+    """Seed an ACCEPTED S10 red proof on ``run_id`` — the precondition the review consumes.
+
+    The review gate requires an accepted proof on the SAME run (proof precedes review); tests that are
+    not about the proof->review linkage seed it here so a gate that correctly checks the precondition
+    is exercised rather than tripped. The C1/C2 test runs the REAL ``prove_red`` instead.
+    """
+    store.RunStore().apply(
+        run_id,
+        lambda _r: {
+            "red_proof": {
+                "accepted": True,
+                "reason": "behavioral_red",
+                "base_sha": scen.base_sha,
+                "head_sha": scen.candidate_sha,
+                "added_ids": [_NEW_X],
+                "records": [],
+            }
+        },
+    )
+
+
+def _review_run(scen: SimpleNamespace, run_id: str = "run-1") -> str:
+    run = _mk_run(run_id)
+    _seed_proof(run, scen)
+    return run
+
+
+def _review_profile(script: Path, start: list[str]):
+    """A Profile whose executable runs the fake provider CLI through the real subprocess seam."""
+    from issueforge.config import Profile
+
+    return Profile(
+        name="reviewer-cli",
+        executable=[sys.executable, str(script)],
+        start=start,
+        resume=["--out", "resumed", "{prompt}"],
+        auth=["--exit", "0"],
+    )
+
+
+def _start_argv(spec: dict) -> list[str]:
+    """Build the fake-provider start template from a round spec (stdout lines, stderr lines, exit,
+    sleep). No ``--out`` line means EMPTY stdout — the fail-loud empty-output case."""
+    argv: list[str] = []
+    for line in spec.get("out", ()):
+        argv += ["--out", line]
+    for line in spec.get("err", ()):
+        argv += ["--err", line]
+    argv += ["--exit", str(spec.get("exit", 0)), "--sleep", str(spec.get("sleep", 0.0)), "{prompt}"]
+    return argv
+
+
+class _Outcome(SimpleNamespace):
+    """One round's reviewer return: a real AIResult plus the AI's semantic judgment. ``result`` drives
+    fail-loud + independence + redaction; ``correspondence``/``findings`` are the semantic half."""
+
+
+def _make_reviewer(
+    script: Path,
+    run_id: str,
+    specs: list[dict],
+    *,
+    scen: SimpleNamespace | None = None,
+    dest: Path | None = None,
+    expect_inputs: dict | None = None,
+    secrets=frozenset(),
+    shared_session: str | None = None,
+    proof_command: str = _PROOF_CMD,
+    require_exhaustive: bool = False,
+):
+    """An injected reviewer returning one ``_Outcome`` per round (last spec repeats).
+
+    It records every packet and every AIResult (``reviewer.packets`` / ``reviewer.results``) and — the
+    strong observable — ASSERTS the packet the gate handed it AT CALL TIME (before returning):
+
+    - the real candidate ``worktree``;
+    - the byte-exact ``proof_command`` (compared as bytes);
+    - EVERY materialized input already present on disk under ``dest`` with EXACT BYTES (a gate that
+      materializes lazily, partially, or with CRLF drift is caught here, during the review);
+    - both the observed ``red_evidence`` and the expected-reason ``contract`` (so the semantic
+      observed-vs-expected judgment is bound to BOTH inputs, not hand-fed);
+    - the network-off provisioner marker;
+    - the enumerate-ALL instruction on the first pass.
+
+    It launches the fake provider IN THE CANDIDATE WORKTREE (fresh session unless ``shared_session``
+    forces the equal-session path), and emits its full findings set ONLY when the packet carries the
+    exhaustive instruction, so a gate whose prompt says "stop at the first" is caught.
+    """
+    from issueforge import providers
+
+    packets: list = []
+    results: list = []
+    box = {"i": 0}
+
+    def reviewer(packet):
+        packets.append(packet)
+        if scen is not None:
+            assert Path(packet["worktree"]) == Path(scen.candidate_worktree), (
+                "not the real worktree"
+            )
+        assert packet["proof_command"].encode() == proof_command.encode(), (
+            "proof command not byte-exact"
+        )
+        prov = packet.get("provisioner")
+        assert prov is not None and getattr(prov, "network", True) is False, (
+            "network-off marker missing"
+        )
+        inputs = packet["inputs"]
+        if expect_inputs is not None:
+            assert set(inputs) == set(expect_inputs) | {"proof_command", "head_sha"}
+            for key, value in expect_inputs.items():
+                path = Path(inputs[key])
+                assert path.exists(), f"{key} not materialized before review"
+                if dest is not None:
+                    assert path.parent == Path(dest), f"{key} not under dest"
+                assert path.read_bytes() == value.encode(), f"{key} bytes not exact"
+        exhaustive = _EXHAUSTIVE in packet.get("instruction", "")
+        if require_exhaustive and box["i"] == 0:
+            assert exhaustive, "first pass did not carry the exhaustive-enumeration instruction"
+
+        spec = specs[min(box["i"], len(specs) - 1)]
+        box["i"] += 1
+        profile = _review_profile(script, _start_argv(spec))
+        cwd = Path(packet["worktree"]) if scen is not None else Path.cwd()
+        result = providers.invoke(
+            profile,
+            "review prompt",
+            cwd=cwd,
+            timeout=spec.get("timeout", 5.0),
+            run_id=run_id,
+            secrets=frozenset(secrets),
+            role="review",
+            session=shared_session if spec.get("shared") else None,
+        )
+        results.append(result)
+        findings = tuple(spec.get("findings", ()))
+        if findings and not exhaustive:
+            findings = findings[:1]
+        return _Outcome(
+            result=result, correspondence=spec.get("correspondence", True), findings=findings
+        )
+
+    reviewer.packets = packets
+    reviewer.results = results
+    reviewer.calls = box
+    return reviewer
+
+
+def _review(
+    run_id,
+    scen,
+    *,
+    reviewer,
+    dest: Path,
+    authoring_session_id: str = _AUTH_SESSION,
+    proof_command: str = _PROOF_CMD,
+    secrets=frozenset(),
+    max_rounds=None,
+    inputs=None,
+    reprove=None,
+    fixer=None,
+    provisioner=None,
+):
+    """One call into the S11 gate; centralized so a signature change touches one place (cf. ``_prove``).
+
+    The gate binds to the REAL HEAD of ``scen.candidate_worktree`` (never a caller-supplied sha),
+    materializes ``review_inputs`` to ``dest`` before each review, and drives the bounded round loop
+    (fix -> reprove -> re-review) through the injected ``fixer``/``reprove`` seams.
+    """
+    from issueforge import contract
+
+    return contract.review_red_contract(
+        run_id,
+        candidate_worktree=scen.candidate_worktree,
+        base_sha=scen.base_sha,
+        proof_command=proof_command,
+        reviewer=reviewer,
+        authoring_session_id=authoring_session_id,
+        materialize_dest=Path(dest),
+        review_inputs=inputs if inputs is not None else _default_inputs(),
+        provisioner=provisioner if provisioner is not None else _provisioner(),
+        secrets=frozenset(secrets),
+        max_rounds=max_rounds,
+        reprove=reprove,
+        fixer=fixer,
+    )
+
+
+def _events(run_id, transition):
+    return [e for e in store.RunStore().replay_events(run_id) if e.get("transition") == transition]
+
+
+def _state_files() -> list[Path]:
+    return [p for p in Path(state_root()).rglob("*") if p.is_file()]
+
+
+# ------------------------------------------------------------------- L. Session independence (US-9.5)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_review_session_bound_to_airesult_and_recorded(tmp_path, fake_provider_script):
+    """The reviewer session is FRESH (not the authoring session) and the recorded id is the ACTUAL
+    reviewer AIResult's session — not an arbitrary string the gate could invent.
+
+    technical (contract): review_red_contract -> ContractReview.reviewer_session_id equals the injected
+    reviewer's real AIResult.session_id (role "review"), differs from _AUTH_SESSION, and is recorded
+    identically on the manifest ``contract_review`` block AND a ``review`` event.
+    """
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [{"out": ["APPROVE"], "correspondence": True}],
+        scen=scen,
+        dest=dest,
+    )
+    review = _review(run, scen, reviewer=reviewer, dest=dest)
+    real = reviewer.results[-1]
+    assert real.role == "review"
+    assert review.reviewer_session_id == real.session_id != _AUTH_SESSION
+    block = store.RunStore().read(run)["contract_review"]
+    assert block["reviewer_session_id"] == real.session_id
+    assert block["authoring_session_id"] == _AUTH_SESSION
+    assert any(e.get("session_id") == real.session_id for e in _events(run, "review"))
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_equal_reviewer_session_rejected_fail_loud(tmp_path, fake_provider_script):
+    """A review whose session equals the authoring session is REJECTED (US-9.5) — and the rejection is
+    fail-loud: the run pauses, NO ``done``/accepted verdict is persisted, and the failure records BOTH
+    equal session ids.
+
+    technical (contract): a reviewer forced to reuse _AUTH_SESSION -> review_red_contract raises
+    providers.SharedSessionError; afterward the run status is "paused", the manifest has no
+    ``contract_review`` verdict "done", and a failed ``review`` event records the reviewer session id
+    equal to the authoring session id.
+    """
+    from issueforge import providers
+
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [{"out": ["APPROVE"], "correspondence": True, "shared": True}],
+        scen=scen,
+        dest=tmp_path / "pkt",
+        shared_session=_AUTH_SESSION,
+    )
+    with pytest.raises(providers.SharedSessionError):
+        _review(run, scen, reviewer=reviewer, dest=tmp_path / "pkt")
+    record = store.RunStore().read(run)
+    assert record["status"] == "paused"
+    assert record.get("contract_review", {}).get("verdict") != "done"
+    failed = [e for e in _events(run, "review") if e.get("confirmed") is False or e.get("failed")]
+    assert failed, "no failed review event recorded on the equal-session path"
+    assert any(
+        e.get("session_id") == _AUTH_SESSION and e.get("authoring_session_id") == _AUTH_SESSION
+        for e in failed
+    ), "failed event must record the equal (reviewer == authoring) session ids"
+
+
+# ------------------------------------------------- M. Execution capability: materialize + verbatim cmd
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_inputs_materialized_exact_bytes_under_dest_before_review(tmp_path, fake_provider_script):
+    """EVERY review input is written to local disk under ``materialize_dest`` with EXACT BYTES BEFORE
+    the reviewer runs (S7, no network) — proven inside the reviewer callback, not merely afterward.
+
+    technical (contract): the reviewer (via ``expect_inputs``) asserts, at call time, that each of
+    diff/contract/manifest/red_evidence exists under dest with byte-exact content, that proof_command
+    and head_sha are also materialized, and that the key set is exactly those six; head_sha's file
+    equals the real candidate HEAD.
+    """
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    inputs = _default_inputs()
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [{"out": ["APPROVE"]}],
+        scen=scen,
+        dest=dest,
+        expect_inputs=inputs,
+    )
+    _review(run, scen, reviewer=reviewer, dest=dest, inputs=inputs)
+    got = reviewer.packets[0]["inputs"]
+    assert Path(got["proof_command"]).read_bytes() == _PROOF_CMD.encode()
+    assert Path(got["head_sha"]).read_text().strip() == scen.candidate_sha
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_proof_command_byte_exact_never_normalized(tmp_path, fake_provider_script):
+    """The literal proof command reaches the reviewer and the materialized file BYTE-FOR-BYTE — a
+    whitespace/quote/backslash/newline-fragile command survives unchanged (no strip, no re-quote).
+
+    technical (contract): with proof_command=_PROOF_CMD_FRAGILE, packet["proof_command"] and the
+    materialized proof_command file both equal _PROOF_CMD_FRAGILE as BYTES (a normalization would
+    alter the doubled spaces / trailing newline and fail).
+    """
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [{"out": ["APPROVE"]}],
+        scen=scen,
+        dest=dest,
+        proof_command=_PROOF_CMD_FRAGILE,
+    )
+    _review(run, scen, reviewer=reviewer, dest=dest, proof_command=_PROOF_CMD_FRAGILE)
+    assert reviewer.packets[0]["proof_command"].encode() == _PROOF_CMD_FRAGILE.encode()
+    assert (
+        Path(reviewer.packets[0]["inputs"]["proof_command"]).read_bytes()
+        == _PROOF_CMD_FRAGILE.encode()
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_review_runs_against_real_worktree_with_network_off_marker(tmp_path, fake_provider_script):
+    """The reviewer is given EXECUTION CAPABILITY against the REAL candidate worktree under a
+    network-off provisioner marker (network denial itself is S6/S15's hermetic-env contract).
+
+    technical (contract): the packet's ``worktree`` == scen.candidate_worktree and its ``provisioner``
+    carries ``network is False``; the reviewer child is launched with cwd == the candidate worktree
+    (a diff-only gate that never supplies a worktree fails the packet assertions in _make_reviewer).
+    """
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [{"out": ["APPROVE"], "correspondence": True}],
+        scen=scen,
+        dest=dest,
+    )
+    _review(run, scen, reviewer=reviewer, dest=dest)
+    packet = reviewer.packets[0]
+    assert Path(packet["worktree"]) == Path(scen.candidate_worktree)
+    assert packet["provisioner"].network is False
+
+
+# ------------------------------------------------------------------------------ N. Fail-loud (from S7)
+
+
+@pytest.mark.parametrize(
+    "name, spec, cause",
+    [
+        ("empty_output", {"out": [], "correspondence": True}, "empty_output"),
+        ("nonzero_exit", {"out": ["APPROVE"], "exit": 1, "correspondence": True}, "nonzero_exit"),
+        (
+            "timeout",
+            {"out": ["APPROVE"], "sleep": 5.0, "timeout": 0.3, "correspondence": True},
+            "timeout",
+        ),
+    ],
+)
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_failed_invocation_full_contract(tmp_path, fake_provider_script, name, spec, cause):
+    """Empty output OR non-zero exit OR timeout = FAILED review, NEVER a pass — even when the reviewer
+    CLAIMS correspondence. The failure is fully recorded: exact ``blocking:1``, run paused, a failed
+    ``review`` event naming the SPECIFIC cause, and a retained packet; never ``done``, never
+    ``blocking:0``.
+
+    technical (contract): a reviewer whose AIResult status is FAILED but whose outcome claims
+    correspondence=True, max_rounds=1 -> verdict == "blocking:1", accepted False, run status "paused",
+    a failed review event whose ``cause`` distinguishes empty_output / nonzero_exit / timeout, and
+    ContractReview.packet_path exists.
+    """
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    reviewer = _make_reviewer(fake_provider_script, run, [spec], scen=scen, dest=dest)
+    review = _review(run, scen, reviewer=reviewer, dest=dest, max_rounds=1)
+    assert review.accepted is False
+    assert review.verdict == "blocking:1"
+    record = store.RunStore().read(run)
+    assert record["status"] == "paused"
+    assert record["contract_review"]["verdict"] != "done"
+    failed = [e for e in _events(run, "review") if e.get("failed")]
+    assert failed and failed[-1].get("cause") == cause, "failed event must name the specific cause"
+    assert Path(review.packet_path).exists()
+
+
+# --------------------------------------------------------- O. Semantic correspondence (core deliverable)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_correspondence_true_no_findings_is_done_but_findings_block(tmp_path, fake_provider_script):
+    """``done`` requires BOTH correspondence AND zero findings: a reviewer that AFFIRMS correspondence
+    yet still returns a blocking finding does NOT pass (a gate of ``accepted = correspondence`` fails).
+
+    technical (contract): correspondence=True, findings=() -> "done", accepted True; correspondence=True
+    with findings=("weak-golden",), max_rounds=1 -> "blocking:1", accepted False.
+    """
+    scen = _red_scenario(tmp_path)
+    ok_run = _review_run(scen, "ok-run")
+    ok_rev = _make_reviewer(
+        fake_provider_script,
+        ok_run,
+        [{"out": ["APPROVE"], "correspondence": True, "findings": ()}],
+        scen=scen,
+        dest=tmp_path / "ok",
+    )
+    ok = _review(ok_run, scen, reviewer=ok_rev, dest=tmp_path / "ok")
+    assert ok.verdict == "done" and ok.accepted is True
+
+    blk_run = _review_run(scen, "blk-run")
+    blk_rev = _make_reviewer(
+        fake_provider_script,
+        blk_run,
+        [{"out": ["APPROVE"], "correspondence": True, "findings": ("weak-golden",)}],
+        scen=scen,
+        dest=tmp_path / "blk",
+        require_exhaustive=True,
+    )
+    blk = _review(blk_run, scen, reviewer=blk_rev, dest=tmp_path / "blk", max_rounds=1)
+    assert blk.verdict == "blocking:1" and blk.accepted is False
+
+
+@pytest.mark.parametrize(
+    "name, red_evidence, contract_reason, finding",
+    [
+        (
+            "wrong_reason",
+            "tests/test_new.py::test_x FAILED: KeyError (unrelated)\n",
+            "test_x must fail with AssertionError for the missing behavior\n",
+            "red-mismatch",
+        ),
+        (
+            "weak_golden",
+            "tests/test_new.py::test_x cmd -> exit 0 (assert returncode == 0)\n",
+            "test_x must assert a NON-zero exit, not exit 0\n",
+            "weak-golden",
+        ),
+        (
+            "coverage_gap",
+            "tests/test_new.py::test_y FAILED (a different behavior)\n",
+            "the suite must cover test_x, the issue's behavior\n",
+            "coverage-gap",
+        ),
+    ],
+)
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_semantic_failure_is_blocking_from_distinct_inputs(
+    tmp_path, fake_provider_script, name, red_evidence, contract_reason, finding
+):
+    """A red-for-the-wrong-reason, a weak golden, or a coverage gap is ``blocking`` — NOT a rubber
+    stamp — and the reviewer must actually RECEIVE BOTH the observed red evidence AND the expected
+    behavioral reason (contract). A gate that forwards neither, or only one, is caught.
+
+    technical (contract): each case supplies DISTINCT red_evidence + contract; the injected reviewer
+    asserts (via expect_inputs) it received both exact bytes; with correspondence=False and one
+    finding, max_rounds=1 -> verdict "blocking:1", accepted False, the finding token persisted.
+    """
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    inputs = _default_inputs(red_evidence, contract_reason)
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [{"out": ["REJECT"], "correspondence": False, "findings": (finding,)}],
+        scen=scen,
+        dest=dest,
+        expect_inputs=inputs,
+    )
+    review = _review(run, scen, reviewer=reviewer, dest=dest, inputs=inputs, max_rounds=1)
+    assert review.accepted is False
+    assert review.verdict == "blocking:1"
+    assert finding in store.RunStore().read(run)["contract_review"]["findings"]
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_missing_correspondence_is_blocking_one(tmp_path, fake_provider_script):
+    """A healthy invocation that does NOT affirm correspondence and names no explicit finding is still
+    blocking — a bare OK can never substitute for the semantic judgment; the gate synthesizes the
+    missing-correspondence finding.
+
+    technical (contract): status OK, correspondence=False, findings=(), max_rounds=1 -> verdict
+    "blocking:1", accepted False, and a "missing-correspondence" finding persisted on the block.
+    """
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [{"out": ["OK"], "correspondence": False, "findings": ()}],
+        scen=scen,
+        dest=dest,
+    )
+    review = _review(run, scen, reviewer=reviewer, dest=dest, max_rounds=1)
+    assert review.verdict == "blocking:1" and review.accepted is False
+    assert "missing-correspondence" in store.RunStore().read(run)["contract_review"]["findings"]
+
+
+# ------------------------------------------------------- P. Sha-binding, staleness, evidence currency
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_verdict_bound_to_real_candidate_head_not_echoed(tmp_path, fake_provider_script):
+    """The verdict binds to the REAL resolved HEAD of the candidate worktree — not a caller-supplied
+    value, and distinct from the base sha (a gate that binds to base or echoes an argument fails).
+
+    technical (contract): ContractReview.head_sha == scen.candidate_sha (the real git HEAD),
+    != scen.base_sha, and the manifest contract_review block records that same head_sha.
+    """
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [{"out": ["APPROVE"], "correspondence": True}],
+        scen=scen,
+        dest=dest,
+    )
+    review = _review(run, scen, reviewer=reviewer, dest=dest)
+    assert review.head_sha == scen.candidate_sha != scen.base_sha
+    assert store.RunStore().read(run)["contract_review"]["head_sha"] == scen.candidate_sha
+
+
+@pytest.mark.parametrize(
+    "name, manifest, head, expected",
+    [
+        ("current", {"contract_review": {"verdict": "done", "head_sha": "h"}}, "h", True),
+        ("stale_head", {"contract_review": {"verdict": "done", "head_sha": "old"}}, "new", False),
+        ("blocking", {"contract_review": {"verdict": "blocking:1", "head_sha": "h"}}, "h", False),
+        ("no_block", {}, "h", False),
+        ("malformed", {"contract_review": {"head_sha": "h"}}, "h", False),
+    ],
+)
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_currency_predicate_only_current_done_matching_head(name, manifest, head, expected):
+    """``red_evidence_current`` is True ONLY for a ``done`` verdict whose recorded head equals the
+    current head; a stale head, a non-``done`` verdict, an absent block, or a malformed block is False.
+
+    technical (contract): red_evidence_current(manifest, head) matches the parametrized expectation
+    across current / stale-head / blocking / missing-block / malformed manifests.
+    """
+    from issueforge import contract
+
+    assert contract.red_evidence_current(manifest, head) is expected
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_require_current_evidence_refuses_stale(tmp_path):
+    """S11 owns a currency CONSUMER guard a downstream gate (S12 freeze) calls: it refuses stale or
+    non-current evidence, so a stale red proof can never be reused. (S12's freeze itself is out of
+    scope here; this is the guard it will call.)
+
+    technical (contract): require_current_evidence(manifest, head) returns None for a current done
+    manifest and RAISES (ValueError/StaleEvidenceError) for a stale-head, blocking, or missing block.
+    """
+    from issueforge import contract
+
+    current = {"contract_review": {"verdict": "done", "head_sha": "h"}}
+    assert contract.require_current_evidence(current, "h") is None
+    for bad in (
+        {"contract_review": {"verdict": "done", "head_sha": "old"}},
+        {"contract_review": {"verdict": "blocking:1", "head_sha": "h"}},
+        {},
+    ):
+        with pytest.raises((ValueError, Exception)):
+            contract.require_current_evidence(bad, "h")
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_test_change_reproves_and_rebinds_c1_stale_c2_current(tmp_path, fake_provider_script):
+    """A change to a test RE-RUNS the full S10 predicate set and mints NEW sha-bound red evidence, in
+    the RIGHT order: prove (C1) precedes review (C1); a mutation advances to C2; a real re-prove (C2)
+    precedes the review (C2). C1's review is no longer current at C2, C2's is, and the currency guard
+    refuses the stale C1 evidence.
+
+    technical (contract): run1 = prove_red(C1) accepted, then review -> head_sha == sha(C1). Mutate the
+    test file + commit (C2). run2 = prove_red(C2) accepted, then review -> head_sha == sha(C2) != sha(C1).
+    red_evidence_current(C1_manifest, sha(C2)) is False; red_evidence_current(C2_manifest, sha(C2)) is
+    True; require_current_evidence(C1_manifest, sha(C2)) raises.
+    """
+    from issueforge import contract
+
+    scen = _red_scenario(tmp_path, "rerun")
+    # C1: PROVE then REVIEW on the same run (proof precedes review).
+    run1 = _mk_run("run-c1")
+    assert _prove(run1, scen, targeted_ids=(_NEW_X,)).accepted
+    d1 = tmp_path / "c1"
+    rev1 = _make_reviewer(
+        fake_provider_script,
+        run1,
+        [{"out": ["APPROVE"], "correspondence": True}],
+        scen=scen,
+        dest=d1,
+    )
+    r1 = _review(run1, scen, reviewer=rev1, dest=d1)
+    assert r1.head_sha == scen.candidate_sha
+
+    # Mutate the authored test -> a NEW candidate head (the contract was rewritten).
+    (scen.candidate_worktree / "tests/test_new.py").write_text("def test_x():\n    assert 3 == 4\n")
+    _git(scen.candidate_worktree, "add", "-A")
+    _git(scen.candidate_worktree, "commit", "-qm", "mutate test_x")
+    c2 = _git(scen.candidate_worktree, "rev-parse", "HEAD").stdout.strip()
+    assert c2 != scen.candidate_sha
+    scen2 = SimpleNamespace(
+        candidate_worktree=scen.candidate_worktree,
+        base_checkout=scen.base_checkout,
+        base_sha=scen.base_sha,
+        candidate_sha=c2,
+    )
+    # C2: RE-PROVE (the full S10 predicate set) then REVIEW on run2.
+    run2 = _mk_run("run-c2")
+    assert _prove(run2, scen2, targeted_ids=(_NEW_X,)).accepted
+    d2 = tmp_path / "c2"
+    rev2 = _make_reviewer(
+        fake_provider_script,
+        run2,
+        [{"out": ["APPROVE"], "correspondence": True}],
+        scen=scen2,
+        dest=d2,
+    )
+    r2 = _review(run2, scen2, reviewer=rev2, dest=d2)
+    assert r2.head_sha == c2 != scen.candidate_sha
+
+    c1_manifest = store.RunStore().read(run1)
+    c2_manifest = store.RunStore().read(run2)
+    assert contract.red_evidence_current(c1_manifest, c2) is False
+    assert contract.red_evidence_current(c2_manifest, c2) is True
+    with pytest.raises((ValueError, Exception)):
+        contract.require_current_evidence(c1_manifest, c2)
+
+
+# -------------------------------------------------------------- Q. Batched round protocol + counter
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_blocking_then_reproved_confirmation_is_done(tmp_path, fake_provider_script):
+    """The batched contract: a blocking first pass, then a FIX -> RE-PROVE (new head) -> confirmation
+    that consumes the REVISED evidence -> ``done``, two rounds. The confirmation reviews the NEW head
+    with the reproved red evidence, never the stale one.
+
+    technical (contract): round 1 blocks; the injected ``fixer`` mutates + commits the worktree (new
+    head) and ``reprove`` (asserted to have been CALLED) returns fresh red_evidence; round 2 is clean
+    -> verdict "done", accepted True, rounds == 2; the round-2 packet's head_sha differs from round 1's
+    AND its materialized red_evidence equals the reproved evidence.
+    """
+    scen = _red_scenario(tmp_path, "conf")
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    reproved_evidence = "tests/test_new.py::test_x call-phase FAILED after fix (reproved)\n"
+    calls = {"fix": 0, "reprove": 0}
+
+    def fixer():
+        calls["fix"] += 1
+        (scen.candidate_worktree / "tests/test_new.py").write_text(
+            "def test_x():\n    assert 5 == 6\n"
+        )
+        _git(scen.candidate_worktree, "add", "-A")
+        _git(scen.candidate_worktree, "commit", "-qm", "fix round")
+
+    def reprove(head_sha):
+        calls["reprove"] += 1
+        return reproved_evidence
+
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [
+            {"out": ["REJECT"], "correspondence": False, "findings": ("a", "b")},
+            {"out": ["APPROVE"], "correspondence": True, "findings": ()},
+        ],
+        scen=scen,
+        dest=dest,
+        require_exhaustive=True,
+    )
+    review = _review(
+        run, scen, reviewer=reviewer, dest=dest, max_rounds=2, fixer=fixer, reprove=reprove
+    )
+    assert review.verdict == "done" and review.accepted is True
+    assert review.rounds == 2
+    assert calls["fix"] == 1 and calls["reprove"] == 1, "fix/reprove seam not driven between rounds"
+    assert reviewer.packets[1]["head_sha"] != reviewer.packets[0]["head_sha"]
+    assert Path(reviewer.packets[1]["inputs"]["red_evidence"]).read_text() == reproved_evidence
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_first_pass_exhaustive_all_findings_ordered_in_packet(tmp_path, fake_provider_script):
+    """The first pass carries the exhaustive-enumeration instruction and records ALL findings in order
+    (it does not stop at the first). Without that instruction the reviewer truncates — so the gate is
+    obligated to send it.
+
+    technical (contract): a single blocking round carrying three findings, max_rounds=1 with the
+    reviewer requiring the exhaustive instruction -> verdict "blocking:3", the persisted
+    contract_review ``findings`` == the exact ordered list, and the audit packet echoes the response.
+    """
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [
+            {
+                "out": ["REJECT one two three"],
+                "correspondence": False,
+                "findings": ("f1", "f2", "f3"),
+            }
+        ],
+        scen=scen,
+        dest=dest,
+        require_exhaustive=True,
+    )
+    review = _review(run, scen, reviewer=reviewer, dest=dest, max_rounds=1)
+    assert review.verdict == "blocking:3"
+    assert list(store.RunStore().read(run)["contract_review"]["findings"]) == ["f1", "f2", "f3"]
+    assert "REJECT one two three" in Path(review.packet_path).read_text()
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_persistent_blocking_stops_at_default_two_rounds_counted(tmp_path, fake_provider_script):
+    """``contract_review_rounds`` defaults to 2: a persistently-blocking reviewer is invoked EXACTLY
+    twice (two distinct fresh sessions, two review events), the counter persists 2, and the run pauses
+    — never a fabricated count from a single call.
+
+    technical (contract): a reviewer that blocks every round, a fixer/reprove supplied, max_rounds=None
+    -> the reviewer callback ran exactly 2 times with 2 distinct session ids, 2 ``review`` events,
+    manifest ``contract_review_rounds`` == 2, ContractReview.rounds == 2, verdict starts "blocking:",
+    run status "paused".
+    """
+    scen = _red_scenario(tmp_path, "persist")
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+
+    def fixer():
+        (scen.candidate_worktree / "tests/test_new.py").write_text(
+            "def test_x():\n    assert 7 == 8\n"
+        )
+        _git(scen.candidate_worktree, "add", "-A")
+        _git(scen.candidate_worktree, "commit", "-qm", "fix")
+
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [{"out": ["REJECT"], "correspondence": False, "findings": ("x",)}],
+        scen=scen,
+        dest=dest,
+    )
+    review = _review(
+        run,
+        scen,
+        reviewer=reviewer,
+        dest=dest,
+        max_rounds=None,
+        fixer=fixer,
+        reprove=lambda h: _RED_A,
+    )
+    assert len(reviewer.results) == 2
+    assert len({r.session_id for r in reviewer.results}) == 2
+    assert len(_events(run, "review")) == 2
+    record = store.RunStore().read(run)
+    assert record["contract_review_rounds"] == 2 and review.rounds == 2
+    assert review.verdict.startswith("blocking:") and record["status"] == "paused"
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_reopen_only_on_new_blocking_finding(tmp_path, fake_provider_script):
+    """Above the default bound, a confirmation round REOPENS the review only when it introduces a NEW
+    blocking finding; a confirmation that repeats the SAME finding does not reopen — it terminates
+    blocked (paused, exactly two rounds recorded), never a fabricated ``done``.
+
+    technical (contract): with max_rounds=4 and a reviewer whose rounds repeat the SAME finding "a",
+    the review stops after round 2 (no new finding): exactly 2 calls, verdict starts "blocking:", run
+    paused, 2 review events. With rounds [block("a"), block("b"), clean] it reopens on the new "b" and
+    reaches done at round 3.
+    """
+    scen = _red_scenario(tmp_path, "reopen")
+
+    def mk_fixer(sc):
+        def fixer():
+            p = sc.candidate_worktree / "tests/test_new.py"
+            p.write_text(p.read_text() + "\n# touch\n")
+            _git(sc.candidate_worktree, "add", "-A")
+            _git(sc.candidate_worktree, "commit", "-qm", "fix")
+
+        return fixer
+
+    same_run = _review_run(scen, "same")
+    same_rev = _make_reviewer(
+        fake_provider_script,
+        same_run,
+        [{"out": ["REJECT"], "correspondence": False, "findings": ("a",)}],
+        scen=scen,
+        dest=tmp_path / "same",
+    )
+    same = _review(
+        same_run,
+        scen,
+        reviewer=same_rev,
+        dest=tmp_path / "same",
+        max_rounds=4,
+        fixer=mk_fixer(scen),
+        reprove=lambda h: _RED_A,
+    )
+    assert len(same_rev.results) == 2, (
+        "a repeated finding must not reopen past the confirmation round"
+    )
+    assert same.verdict.startswith("blocking:")
+    assert store.RunStore().read(same_run)["status"] == "paused"
+    assert len(_events(same_run, "review")) == 2
+
+    scen2 = _red_scenario(tmp_path, "reopen2")
+    new_run = _review_run(scen2, "newf")
+    new_rev = _make_reviewer(
+        fake_provider_script,
+        new_run,
+        [
+            {"out": ["REJECT"], "correspondence": False, "findings": ("a",)},
+            {"out": ["REJECT"], "correspondence": False, "findings": ("b",)},
+            {"out": ["APPROVE"], "correspondence": True, "findings": ()},
+        ],
+        scen=scen2,
+        dest=tmp_path / "newf",
+    )
+    review = _review(
+        new_run,
+        scen2,
+        reviewer=new_rev,
+        dest=tmp_path / "newf",
+        max_rounds=4,
+        fixer=mk_fixer(scen2),
+        reprove=lambda h: _RED_A,
+    )
+    assert review.verdict == "done" and review.rounds == 3
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_counter_incremented_through_store_apply_and_isolated(
+    tmp_path, fake_provider_script, monkeypatch
+):
+    """The round counter is incremented CUMULATIVELY, one-per-round, THROUGH ``RunStore.apply`` (the
+    under-lock write primitive) — a lock-free write or a constant assignment is caught — and the gate
+    does NOT touch ``review_rounds`` / ``repair_attempts`` (US-6 counters owned by S14, downstream).
+
+    technical (contract): seed contract_review_rounds=10, review_rounds=5, repair_attempts=7; a spy on
+    RunStore.apply counts how many apply calls RAISED contract_review_rounds by exactly 1. A two-round
+    review -> exactly 2 such counter-incrementing apply calls, final counter == 12 (cumulative, not
+    reset to 2) and an int; review_rounds still 5 and repair_attempts still 7 (untouched).
+    """
+    from issueforge import store as store_mod
+
+    scen = _red_scenario(tmp_path, "counter")
+    run = _review_run(scen)
+    store.RunStore().apply(
+        run, lambda _r: {"contract_review_rounds": 10, "review_rounds": 5, "repair_attempts": 7}
+    )
+    real_apply = store_mod.RunStore.apply
+    seen = {"prev": 10}
+    inc = {"n": 0}
+
+    def spy(self, run_id, transform, **kwargs):
+        merged = real_apply(self, run_id, transform, **kwargs)
+        cur = merged.get("contract_review_rounds")
+        if isinstance(cur, int) and cur == seen["prev"] + 1:
+            inc["n"] += 1
+        if isinstance(cur, int):
+            seen["prev"] = cur
+        return merged
+
+    monkeypatch.setattr(store_mod.RunStore, "apply", spy)
+
+    def fixer():
+        (scen.candidate_worktree / "tests/test_new.py").write_text(
+            "def test_x():\n    assert 9 == 10\n"
+        )
+        _git(scen.candidate_worktree, "add", "-A")
+        _git(scen.candidate_worktree, "commit", "-qm", "fix")
+
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [{"out": ["REJECT"], "correspondence": False, "findings": ("x",)}],
+        scen=scen,
+        dest=tmp_path / "pkt",
+    )
+    _review(
+        run,
+        scen,
+        reviewer=reviewer,
+        dest=tmp_path / "pkt",
+        max_rounds=2,
+        fixer=fixer,
+        reprove=lambda h: _RED_A,
+    )
+    record = store.RunStore().read(run)
+    assert type(record["contract_review_rounds"]) is int
+    assert record["contract_review_rounds"] == 12  # cumulative from the seeded 10, not reset to 2
+    assert inc["n"] == 2, "counter must be incremented once per round through the under-lock apply"
+    assert record["review_rounds"] == 5 and record["repair_attempts"] == 7
+
+
+# ------------------------------------------------------- R. Override + verdict vocabulary (US-5.4)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_override_records_full_provenance_and_updates_outcome(tmp_path, fake_provider_script):
+    """A failed review may be explicitly overridden; the override RECORDS who/why/when (a PARSEABLE
+    timestamp), the NEW verdict, the verdict it OVERRODE, the reviewed head, and the reviewer
+    session/provider/method — and updates the manifest outcome. An override is REFUSED when there is no
+    failed review to override (no review block, or an already-successful ``done`` review).
+
+    technical (contract): after a blocking review, override_contract_review(run, by="matt",
+    reason="verified by hand", verdict="done", method="human") records an ``override`` event carrying
+    by/reason/verdict plus overrode=="blocking:1", head_sha==candidate head, reviewer_session_id (the
+    real reviewer session), provider=="reviewer-cli", method=="human", and a datetime.fromisoformat-
+    parseable ``when``; the manifest contract_review outcome becomes "done". Overriding a run with no
+    failed review, or one whose review already succeeded, raises ValueError.
+    """
+    from datetime import datetime
+
+    from issueforge import contract
+
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [{"out": ["REJECT"], "correspondence": False, "findings": ("a",)}],
+        scen=scen,
+        dest=dest,
+    )
+    _review(run, scen, reviewer=reviewer, dest=dest, max_rounds=1)
+    contract.override_contract_review(
+        run, by="matt", reason="verified by hand", verdict="done", method="human"
+    )
+    ev = _events(run, "override")[-1]
+    assert ev["by"] == "matt" and ev["reason"] == "verified by hand" and ev["verdict"] == "done"
+    assert ev["overrode"] == "blocking:1"
+    assert ev["head_sha"] == scen.candidate_sha
+    assert ev["reviewer_session_id"] == reviewer.results[-1].session_id
+    assert ev["provider"] == "reviewer-cli" and ev["method"] == "human"
+    datetime.fromisoformat(ev["when"])  # parseable timestamp, not a truthy token
+    assert store.RunStore().read(run)["contract_review"]["outcome"] == "done"
+
+    # No failed review to override -> refused.
+    clean = _review_run(scen, "no-failed")
+    with pytest.raises(ValueError):
+        contract.override_contract_review(
+            clean, by="matt", reason="x", verdict="done", method="human"
+        )
+    # An already-successful review -> nothing to override -> refused.
+    ok_run = _review_run(scen, "already-done")
+    ok_rev = _make_reviewer(
+        fake_provider_script,
+        ok_run,
+        [{"out": ["APPROVE"], "correspondence": True}],
+        scen=scen,
+        dest=tmp_path / "okd",
+    )
+    _review(ok_run, scen, reviewer=ok_rev, dest=tmp_path / "okd")
+    with pytest.raises(ValueError):
+        contract.override_contract_review(
+            ok_run, by="matt", reason="x", verdict="done", method="human"
+        )
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_override_is_not_a_silent_retry(tmp_path, fake_provider_script):
+    """An override is a first-class recorded EVENT, never a re-invocation of the reviewer: exactly one
+    new ``override`` event, and no new ``review`` event, transcript, reviewer session, or round.
+
+    technical (contract): snapshot the review-event count, transcript files, recorded reviewer session,
+    and contract_review_rounds; override_contract_review adds exactly one ``override`` event and leaves
+    the review-event count, transcript set, recorded reviewer session id, and round counter unchanged.
+    """
+    from issueforge import contract
+
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [{"out": ["REJECT"], "correspondence": False, "findings": ("a",)}],
+        scen=scen,
+        dest=dest,
+    )
+    _review(run, scen, reviewer=reviewer, dest=dest, max_rounds=1)
+    reviews_before = len(_events(run, "review"))
+    transcripts_before = {p.name for p in store.run_dir(run).glob("transcript-*")}
+    before = store.RunStore().read(run)
+    rounds_before = before["contract_review_rounds"]
+    session_before = before["contract_review"]["reviewer_session_id"]
+    contract.override_contract_review(run, by="matt", reason="ok", verdict="done", method="human")
+    after = store.RunStore().read(run)
+    assert len(_events(run, "override")) == 1
+    assert len(_events(run, "review")) == reviews_before
+    assert {p.name for p in store.run_dir(run).glob("transcript-*")} == transcripts_before
+    assert after["contract_review_rounds"] == rounds_before
+    assert after["contract_review"]["reviewer_session_id"] == session_before
+
+
+@pytest.mark.parametrize(
+    "verdict, legal",
+    [
+        ("done", True),
+        ("blocking:2", True),
+        ("skipped:provider-unavailable", True),
+        ("blocking", False),  # count required
+        ("blocking:0", False),  # count must be positive
+        ("blocking:-1", False),  # non-negative decimal only
+        ("blocking:1x", False),  # trailing junk
+        ("skipped", False),  # reason required
+        ("skipped:   ", False),  # whitespace-only reason
+        ("skipped:line1\nline2", False),  # one-line reason only
+        ("approved", False),  # out of vocabulary
+        ("", False),
+    ],
+)
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_valid_contract_verdict_boundaries(verdict, legal):
+    """The verdict vocabulary is exactly ``done`` / ``blocking:<positive int>`` / ``skipped:<non-empty
+    one-line reason>`` — a zero/negative/junk count, a bare keyword, a whitespace-only or multi-line
+    skip reason, or an unknown token is rejected (ported from ``_validate_cross_review``).
+
+    technical (contract): valid_contract_verdict(v) matches the parametrized legality across the
+    boundary cases.
+    """
+    from issueforge import contract
+
+    assert contract.valid_contract_verdict(verdict) is legal
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_terminal_verdict_enforced_on_terminal_write(tmp_path):
+    """The vocabulary is ENFORCED when the review is finalized at TERMINAL status — not merely a
+    standalone predicate. Finalizing with an out-of-vocabulary or malformed verdict is refused and
+    leaves the run non-terminal; a valid verdict finalizes.
+
+    technical (contract): finalize_review(run, "done") drives the run to a terminal status with the
+    recorded verdict; finalize_review(run, "approved") and finalize_review(run, "blocking:0") each raise
+    ValueError, write no terminal verdict, and leave the run status non-terminal.
+    """
+    from issueforge import contract
+    from issueforge.state import TERMINAL
+
+    terminal_values = {s.value for s in TERMINAL}
+    run = _mk_run()
+    for bad in ("approved", "blocking:0"):
+        with pytest.raises(ValueError):
+            contract.finalize_review(run, bad)
+    assert store.RunStore().read(run)["status"] not in terminal_values
+    contract.finalize_review(run, "done")
+    record = store.RunStore().read(run)
+    assert record["status"] in terminal_values
+    assert record["contract_review"]["verdict"] == "done"
+
+
+# ------------------------------------------------------------ S. Audit packet + redaction canary
+
+
+@pytest.mark.parametrize("path_kind", ["success", "failure"])
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_full_review_packet_structured_and_retained(tmp_path, fake_provider_script, path_kind):
+    """The full review packet is retained as a STRUCTURED auditable artifact — every named field of the
+    round is reconstructible — on BOTH the success and the failure path (a FAILED review still persists
+    its packet).
+
+    technical (contract): after a review, ContractReview.packet_path exists under the run dir and its
+    text contains the reviewed head sha, the literal proof command, the reviewer provider name, the
+    reviewer session id, the invocation status, the reviewer stdout AND stderr, the verdict, and every
+    materialized input name — for a completed (status OK) AND a failed (non-zero) invocation. Not a
+    one-token ledger field.
+    """
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    exit_code = 0 if path_kind == "success" else 1
+    out_marker, err_marker = "PACKET-OUT-42", "PACKET-ERR-42"
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [
+            {
+                "out": [f"APPROVE {out_marker}"],
+                "err": [err_marker],
+                "exit": exit_code,
+                "correspondence": True,
+            }
+        ],
+        scen=scen,
+        dest=dest,
+    )
+    review = _review(run, scen, reviewer=reviewer, dest=dest, max_rounds=1)
+    packet = Path(review.packet_path)
+    assert packet.exists() and packet.parent == store.run_dir(run)
+    body = packet.read_text()
+    real = reviewer.results[-1]
+    for token in (
+        scen.candidate_sha,
+        _PROOF_CMD,
+        "reviewer-cli",
+        real.session_id,
+        out_marker,
+        err_marker,
+        review.verdict,
+        "diff",
+        "contract",
+        "manifest",
+        "red_evidence",
+    ):
+        assert token in body, f"packet missing {token!r}"
+
+
+@pytest.mark.parametrize(
+    "path_kind", ["success", "failure_nonzero", "failure_empty", "failure_timeout"]
+)
+@pytest.mark.xfail(strict=True, reason="PENDING (#17)")
+def test_redaction_canary_copied_into_packet_then_redacted(
+    tmp_path, fake_provider_script, path_kind
+):
+    """A synthetic secret seeded into each review-packet field (reviewer response, ECHOED input,
+    captured stderr) is copied INTO the S11 packet and then redacted — the field MARKER proves the
+    field was copied in, the ``[REDACTED]`` marker proves it was scrubbed, and the raw canary appears
+    in ZERO persisted artifacts. Holds on the success path AND every failure branch (where the raw
+    stderr is exactly where a leak hides).
+
+    technical (contract): with a canary+marker in stdout, the red_evidence input, and stderr, and all
+    three canaries declared secrets: the S11 packet exists; NO file under the state root contains any
+    raw canary; and the packet contains each field marker (RESPFIELD/INPUTFIELD/STDERRFIELD) — proving
+    the fields were copied in — alongside ``[REDACTED]`` — proving they were scrubbed — for a completed
+    review AND non-zero / empty-output / timeout failures.
+    """
+    scen = _red_scenario(tmp_path)
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    resp = f"{_MARK_RESPONSE} {_CANARY_RESPONSE}"
+    err = f"{_MARK_STDERR} {_CANARY_STDERR}"
+    spec = {
+        "success": {"out": [resp], "err": [err], "exit": 0},
+        "failure_nonzero": {"out": [resp], "err": [err], "exit": 1},
+        "failure_empty": {"out": [], "err": [err], "exit": 0},
+        "failure_timeout": {"out": [resp], "err": [err], "sleep": 5.0, "timeout": 0.3},
+    }[path_kind]
+    spec["correspondence"] = True
+    secrets = frozenset({_CANARY_RESPONSE, _CANARY_INPUT, _CANARY_STDERR})
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [spec],
+        scen=scen,
+        dest=dest,
+        secrets=secrets,
+    )
+    inputs = _default_inputs(f"{_MARK_INPUT} call-phase FAILED: {_CANARY_INPUT}\n")
+    review = _review(
+        run, scen, reviewer=reviewer, dest=dest, secrets=secrets, max_rounds=1, inputs=inputs
+    )
+    packet = Path(review.packet_path)
+    assert packet.exists()
+    for path in _state_files():
+        text = path.read_text(errors="ignore")
+        for canary in (_CANARY_RESPONSE, _CANARY_INPUT, _CANARY_STDERR):
+            assert canary not in text, f"{canary} leaked into {path} on the {path_kind} path"
+    body = packet.read_text()
+    assert "[REDACTED]" in body, "packet never carried the redacted fields"
+    # The input field is copied into the packet on every path; response/stderr on paths that produced them.
+    assert _MARK_INPUT in body, "input field not copied into the packet"
+    if path_kind != "failure_empty":
+        assert _MARK_RESPONSE in body, "response field not copied into the packet"
+    assert _MARK_STDERR in body, "stderr field not copied into the packet"
