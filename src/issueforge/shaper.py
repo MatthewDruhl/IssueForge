@@ -102,6 +102,45 @@ def amend(
     )
 
 
+# --- S20 (#14): propose the in-place revision for a buildable run --------------------------------
+
+
+def propose_revision(run_id: str, issue: dict, *, reviser: Callable[[dict, dict], str]) -> dict:
+    """Propose (never write) the in-place revision for a buildable, approved run (US-3.1).
+
+    Reads the run's PERSISTED buildable ``shape`` and hands it, with the issue, to ``reviser`` — which
+    returns the AI-authored new body — then returns ``{"plan": [<update_body op>]}`` carrying a
+    repo-qualified ``update_body`` op for the run's issue. NO GitHub write occurs here (planning only).
+    Raises ``ValueError`` for a run that is missing, or not cleared ``buildable`` by S9 (blocked,
+    oversized, paused): the in-place revision is offered ONLY for a buildable, human-approved run.
+    """
+    try:
+        record = store.RunStore().read(run_id)
+    except KeyError as error:
+        raise ValueError(f"cannot revise unknown run {run_id!r}") from error
+
+    shape = record.get("shape")
+    buildable = (
+        record.get("status") == State.RUNNING.value
+        and isinstance(shape, dict)
+        and shape.get("classification") == "buildable"
+    )
+    if not buildable:
+        raise ValueError(f"cannot revise {run_id!r}: only a buildable, approved run can be revised")
+
+    new_body = reviser(issue, shape)
+    owner, _, repo = issue["slug"].partition("/")
+    plan = [
+        {
+            "op": "update_body",
+            "id": f"{run_id}-revision-body",
+            "issue": (owner, repo, issue["number"]),
+            "body": new_body,
+        }
+    ]
+    return {"plan": plan}
+
+
 # --- the shared S9 pipeline (the record already exists) ------------------------------------------
 
 

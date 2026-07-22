@@ -157,7 +157,6 @@ def _full_plan():
     ]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 def test_apply_dispatches_each_op_to_the_matching_gateway_method():
     """A mutation plan applies each op to its matching gateway method, in order, carrying the repo-qualified target and payload.
 
@@ -179,7 +178,6 @@ def test_apply_dispatches_each_op_to_the_matching_gateway_method():
     assert ledger == {"op-1", "op-2", "op-3", "op-4"}
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 @pytest.mark.parametrize(
     "bad_op",
     [
@@ -207,7 +205,6 @@ def test_every_op_target_must_be_repo_qualified(bad_op):
     assert ledger == set()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 def test_whole_plan_is_validated_before_any_write():
     """The entire plan is validated before the first mutation, so one malformed op late in the plan does not leave earlier ops half-applied.
 
@@ -234,7 +231,6 @@ def test_whole_plan_is_validated_before_any_write():
     assert ledger == set()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 def test_idempotency_is_keyed_on_op_ids_not_titles():
     """Idempotency is keyed on persisted operation IDs, never on content: re-applying a plan skips the ops already recorded done, while two create-issue ops that share a title but differ by id BOTH execute.
 
@@ -260,7 +256,6 @@ def test_idempotency_is_keyed_on_op_ids_not_titles():
     assert sum(1 for m, _ in gw2.calls if m == "create_issue") == 2
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#14)")
 def test_a_completed_op_is_never_re_dispatched_on_resume():
     """After a mid-plan failure the completed ops are recorded and, on resume, are NEVER dispatched to the gateway again — the failed op and the rest run exactly once, so a resumed write never duplicates a landed one.
 
