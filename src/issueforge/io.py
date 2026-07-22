@@ -13,6 +13,7 @@ write-surface lint exempts.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -200,6 +201,25 @@ class WriteSeam:
         with open(target, "a", encoding=encoding) as handle:
             handle.write(data)
         return target
+
+    def remove_scratch(self, target: Path) -> Path:
+        """Remove a run-owned scratch subtree — the SANCTIONED removal primitive.
+
+        ``io.py`` is the only module the write-surface lint permits ``shutil.rmtree`` in, so every
+        deletion of materialized working material routes through here. Removal is permitted ONLY when
+        ``target`` resolves within a REGISTERED SCRATCH root (a key of ``self._roots`` whose value is
+        ``None`` AND is not the state root — i.e. a root registered via ``allow_scratch``): the scratch
+        root itself or a descendant of it. The state root, a registered worktree, or any arbitrary path
+        raises ``BoundaryViolation`` — this never ``rmtree``s a checkout or persisted run state.
+        """
+        root = Path(target).resolve()
+        state = Path(state_root()).resolve()
+        for registered, registered_repo in self._roots.items():
+            if registered_repo is None and registered != state:
+                if root == registered or registered in root.parents:
+                    shutil.rmtree(root, ignore_errors=False)
+                    return root
+        raise BoundaryViolation(f"remove of {root} is outside any registered scratch root")
 
     def open_lock(self, path: Path) -> int:
         """Open (creating if needed) an advisory-lock file under an allowed root; return its fd.

@@ -447,6 +447,37 @@ def test_write_text_atomic_seam_exists_and_is_atomic(isolated_state_home):
     assert lint.returncode == 0, lint.stderr
 
 
+def test_remove_scratch_seam_removes_registered_scratch_and_refuses_outside(
+    isolated_state_home, tmp_path
+):
+    """io.WriteSeam.remove_scratch removes a run-owned subtree under a REGISTERED scratch root and
+    refuses (BoundaryViolation) any path outside one — the sanctioned deletion primitive (#82 item 2).
+
+    technical (contract): after allow_scratch(dest), a materialized dest/sub subtree is removed by
+    remove_scratch(dest/sub) and no longer exists; remove_scratch of a path under NO registered
+    scratch root raises BoundaryViolation and leaves that path intact.
+    """
+    from issueforge.io import BoundaryViolation, WriteSeam
+
+    seam = WriteSeam()
+    dest = tmp_path / "pkt"
+    seam.allow_scratch(dest)
+    sub = dest / "review-abc"
+    seam.write_text(sub / "diff.txt", "d")
+    assert sub.is_dir()
+
+    assert seam.remove_scratch(sub) == sub.resolve()
+    assert not sub.exists()
+    assert dest.exists() and list(dest.rglob("*")) == []
+
+    outside = tmp_path / "unregistered"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("k")
+    with pytest.raises(BoundaryViolation):
+        seam.remove_scratch(outside)
+    assert (outside / "keep.txt").exists()
+
+
 # --------------------------------------------------------------------------- append-only events
 
 
