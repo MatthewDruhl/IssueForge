@@ -489,39 +489,48 @@ def test_provision_environment_delegates_to_the_provisioner_seam(tmp_path):
 
 
 # ===== #58 defect #10 =====
-@pytest.mark.xfail(strict=True, reason="PENDING (#58)")
 def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
     """The authoritative baseline RUN executes with OS-level network denial (a container with
     ``--network none``), enforced by the executor — not merely recorded on the handle, NOT fakeable
-    by an in-interpreter ``socket`` stub, and NOT satisfiable by a merely-broken environment.
+    by an in-interpreter ``socket`` stub, NOT satisfiable by a merely-broken environment, and NOT
+    able to pass VACUOUSLY when outbound DNS/port 53 happens to be blocked.
 
-    Attribution is pinned by TWO baseline tests: ``test_local_compute`` spawns a ``-S`` child that
-    does pure local work (must PASS — it proves the interpreter + subprocess machinery work inside
-    the authoritative run), and ``test_child_egress`` spawns a ``-S`` child that attempts real
-    outbound egress (must FAIL only because the OS denied it). The ``-S`` flag (site disabled) means
-    an injected ``sitecustomize`` / in-interpreter ``socket`` monkeypatch cannot reach either child.
-    A broken env (invalid interpreter, patched ``subprocess.run``, missing stdlib) fails BOTH
-    children, so the compute node stops passing and the assertion fails — a broken environment can
-    never masquerade as network denial. Only real OS-level denial makes egress fail while compute
-    still passes.
+    Denial is proven DETERMINISTICALLY against a HOST TCP listener this test owns — never an external
+    address that might be firewalled (a firewalled external target would make the egress probe fail
+    for the WRONG reason and let the gate pass without ``--network none`` denying anything). The
+    listener binds an ephemeral port on the host and is advertised at the host's ROUTABLE IP (not
+    ``127.0.0.1``: under ``--network none`` the container keeps its OWN loopback, so a loopback target
+    would fail even WITH a network and prove nothing — the routable host IP is reachable from the
+    host-run control but unreachable from the OS-denied container).
 
-    Documented limitation (an honest skip, never a weakened assertion): OS-level denial can only be
-    verified where the mechanism exists, so the test skips when the docker daemon is unreachable or
-    when this host has no outbound egress at all (denial would be indistinguishable from an
-    already-down network). IssueForge CI runs on ubuntu-latest, which has both, so the gate is
-    enforced there; a no-docker dev box cannot verify this OS property and skips.
+    Attribution is pinned by TWO baseline tests, each spawning a ``-S`` child (site disabled, so an
+    injected ``sitecustomize`` / in-interpreter ``socket`` monkeypatch cannot reach either child):
+    ``test_local_compute`` does pure local work (must PASS — proves the interpreter + subprocess
+    machinery run inside the authoritative run) and ``test_child_egress`` connects to the host
+    listener (must FAIL only because the OS denied egress). A broken env (invalid interpreter, patched
+    ``subprocess.run``, missing stdlib) fails BOTH children, so the compute node stops passing and the
+    assertion fails — a broken environment can never masquerade as network denial. Only real OS-level
+    denial makes egress fail while compute still passes.
 
-    technical (contract): the target has two tests, each spawning a ``-S`` child — ``test_local_compute``
-    runs ``print(2 + 2)`` and asserts stdout "4"; ``test_child_egress`` runs
-    ``socket.create_connection(('1.1.1.1', 53), timeout=5).close()`` and asserts returncode 0. Under
-    ``_allowed_provisioner`` (network=True, host interpreter) run_baseline -> BaselineStatus.GREEN
-    (both pass). Under ``provisioner=None`` (the REAL default authoritative path) run_baseline ->
-    BaselineStatus.BEHAVIORAL_RED, executed == 2, the ``test_local_compute`` call node PASSED and the
-    ``test_child_egress`` call node FAILED. Today the default path applies no OS-level denial, egress
-    connects, and the authoritative run is GREEN — the reproduction.
+    The POSITIVE CONTROL is a hard ASSERTION, never a skip: the host-run baseline (network on) MUST
+    reach the listener (GREEN). That establishes the listener is live and the probe connects, so the
+    later egress FAILURE can only be the OS denial — not a dead port. The ONLY sanctioned skip is a
+    genuinely absent docker daemon; a blocked port can no longer masquerade as a silent skip-pass.
+    IssueForge CI (ubuntu-latest) has docker, so the gate RUNS and is enforced there.
+
+    technical (contract): the target has two ``-S``-child tests — ``test_local_compute`` runs
+    ``print(2 + 2)`` and asserts stdout "4"; ``test_child_egress`` runs
+    ``socket.create_connection((HOST_IP, PORT), timeout=5).close()`` against the host listener and
+    asserts returncode 0. Under ``_allowed_provisioner`` (network=True, host interpreter) run_baseline
+    -> BaselineStatus.GREEN (both pass, listener reached). Under ``provisioner=None`` (the REAL default
+    authoritative path, docker ``--network none``) run_baseline -> BaselineStatus.BEHAVIORAL_RED,
+    executed == 2, the ``test_local_compute`` call node PASSED and the ``test_child_egress`` call node
+    FAILED (the container cannot reach the routable host IP).
     """
     import os
+    import socket
     import subprocess
+    import threading
     from pathlib import Path
     from types import SimpleNamespace
 
@@ -529,7 +538,9 @@ def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
     from issueforge.adapters.base import BaselineStatus, Outcome
     from issueforge.adapters.pytest_adapter import PytestAdapter
 
-    # Documented skip #1: the docker daemon is unreachable, so OS-level denial cannot be enforced.
+    # The ONLY sanctioned skip: the docker daemon is genuinely unreachable, so the OS-level denial
+    # mechanism does not exist here. A blocked port is NOT a reason to skip — denial is proven against
+    # a host listener we control, so there is no external-egress dependency to skip on.
     try:
         info = subprocess.run(["docker", "info"], capture_output=True, timeout=60)
     except (OSError, subprocess.TimeoutExpired):
@@ -539,71 +550,117 @@ def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
             "docker daemon unreachable; OS-level network denial cannot be enforced/verified"
         )
 
-    # Two -S children (no site, no sitecustomize): a local-compute probe that must PASS and an
-    # egress probe that must FAIL. Their divergence is what proves DENIAL rather than a broken env.
-    repo = tmp_path / "netdeny"
-    (repo / "tests").mkdir(parents=True)
-    (repo / "tests" / "test_target.py").write_text(
-        textwrap.dedent(
+    # The host's ROUTABLE outbound IP (the interface the kernel would egress on). A UDP "connect"
+    # sends no packet; it just selects the local address. This is the address the container is denied.
+    _probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        _probe.connect(("8.8.8.8", 80))
+        host_ip = _probe.getsockname()[0]
+    finally:
+        _probe.close()
+
+    # A real host TCP listener on an ephemeral port, accepting for the duration of BOTH runs.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("0.0.0.0", 0))
+    listener.listen(16)
+    port = listener.getsockname()[1]
+    accepting = True
+
+    def _serve():
+        while accepting:
+            try:
+                conn, _ = listener.accept()
+                conn.close()
+            except OSError:
+                break
+
+    server = threading.Thread(target=_serve, daemon=True)
+    server.start()
+    try:
+        # Two -S children: a local-compute probe that must PASS and an egress probe (to the host
+        # listener) that must FAIL under denial. HOST/PORT are baked in as literals and handed to the
+        # egress child via its environment (kept out of the -c source, robust to quoting).
+        repo = tmp_path / "netdeny"
+        (repo / "tests").mkdir(parents=True)
+        target_src = f"HOST = {host_ip!r}\nPORT = {port}\n" + textwrap.dedent(
             """
-            import subprocess
-            import sys
+                import os
+                import subprocess
+                import sys
 
-            def test_local_compute():
-                # Pure local work in a -S child: proves the interpreter + subprocess machinery run.
-                # A broken authoritative env fails THIS too, so denial cannot be confused with it.
-                result = subprocess.run(
-                    [sys.executable, "-S", "-c", "print(2 + 2)"],
-                    capture_output=True,
-                    text=True,
-                )
-                assert result.returncode == 0 and result.stdout.strip() == "4"
+                def test_local_compute():
+                    # Pure local work in a -S child: proves the interpreter + subprocess machinery
+                    # run. A broken authoritative env fails THIS too, so denial cannot be confused
+                    # with it.
+                    result = subprocess.run(
+                        [sys.executable, "-S", "-c", "print(2 + 2)"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    assert result.returncode == 0 and result.stdout.strip() == "4"
 
-            def test_child_egress():
-                # Real outbound egress in a -S child: only OS-level denial makes THIS fail while
-                # test_local_compute still passes.
-                probe = (
-                    "import socket; "
-                    "socket.create_connection(('1.1.1.1', 53), timeout=5).close()"
-                )
-                result = subprocess.run([sys.executable, "-S", "-c", probe])
-                assert result.returncode == 0
-            """
+                def test_child_egress():
+                    # Connect to the HOST listener in a -S child: reachable from the host-run control,
+                    # unreachable from the --network none container. Only OS-level denial makes THIS
+                    # fail while test_local_compute still passes.
+                    probe = (
+                        "import os, socket; "
+                        "socket.create_connection("
+                        "(os.environ['NETDENY_HOST'], int(os.environ['NETDENY_PORT'])), "
+                        "timeout=5).close()"
+                    )
+                    result = subprocess.run(
+                        [sys.executable, "-S", "-c", probe],
+                        env={**os.environ, "NETDENY_HOST": HOST, "NETDENY_PORT": str(PORT)},
+                    )
+                    assert result.returncode == 0
+                """
         )
-    )
-    baseline = ["-m", "pytest"]
-    adapter = PytestAdapter()
+        (repo / "tests" / "test_target.py").write_text(target_src)
+        baseline = ["-m", "pytest"]
+        adapter = PytestAdapter()
 
-    def _allowed_provisioner(worktree, frozen_deps=None):
-        env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
-        return SimpleNamespace(
-            interpreter=sys.executable,
-            env=env,
-            artifact_dir=Path(worktree).parent / "if-allowed",
-            network=True,
+        def _allowed_provisioner(worktree, frozen_deps=None):
+            env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "")}
+            return SimpleNamespace(
+                interpreter=sys.executable,
+                env=env,
+                artifact_dir=Path(worktree).parent / "if-allowed",
+                network=True,
+            )
+
+        # POSITIVE CONTROL (a hard assertion, never a skip): the host-run baseline (network on) MUST
+        # reach the host listener — both children pass, so the run is GREEN. This proves the listener
+        # is live and the probe connects, so a later egress FAILURE can only be OS-level denial, not a
+        # dead port. If this ever fails, the environment cannot attribute denial and the test FAILS
+        # loudly rather than passing vacuously.
+        control = verify.run_baseline(
+            repo, baseline, adapter=adapter, provisioner=_allowed_provisioner, timeout=120
+        )
+        assert control.status is BaselineStatus.GREEN, (
+            f"host-run control could not reach the host listener at {host_ip}:{port} "
+            f"(status={control.status!r}); cannot attribute the denied run to OS-level denial"
         )
 
-    # Allowed-network control proves BOTH children run and egress is reachable here; if not, denial
-    # is indistinguishable from an already-down network. Documented skip #2 — never weakened.
-    control = verify.run_baseline(
-        repo, baseline, adapter=adapter, provisioner=_allowed_provisioner, timeout=120
-    )
-    if control.status is not BaselineStatus.GREEN:
-        pytest.skip("outbound egress not reachable in this environment; cannot prove denial")
-
-    # The REAL default authoritative path must deny egress at the OS level. Requiring the compute
-    # node PASSED and the egress node FAILED (not merely "not GREEN") means a broken environment —
-    # which fails compute too — can never masquerade as network denial.
-    authoritative = verify.run_baseline(
-        repo, baseline, adapter=adapter, provisioner=None, timeout=600
-    )
-    assert authoritative.status is BaselineStatus.BEHAVIORAL_RED
-    assert authoritative.executed == 2
-    calls = {n.nodeid: n for n in authoritative.nodes if n.phase == "call"}
-    compute = next((n for nid, n in calls.items() if "test_local_compute" in nid), None)
-    egress = next((n for nid, n in calls.items() if "test_child_egress" in nid), None)
-    assert compute is not None and compute.outcome is Outcome.PASSED
-    assert egress is not None and egress.outcome is Outcome.FAILED
+        # THE DENIAL: the REAL default authoritative path runs under docker --network none, so the
+        # SAME egress probe cannot reach the routable host listener while local compute still succeeds.
+        # Requiring the compute node PASSED and the egress node FAILED (not merely "not GREEN") means a
+        # broken environment — which fails compute too — can never masquerade as network denial.
+        authoritative = verify.run_baseline(
+            repo, baseline, adapter=adapter, provisioner=None, timeout=600
+        )
+        assert authoritative.status is BaselineStatus.BEHAVIORAL_RED
+        assert authoritative.executed == 2
+        calls = {n.nodeid: n for n in authoritative.nodes if n.phase == "call"}
+        compute = next((n for nid, n in calls.items() if "test_local_compute" in nid), None)
+        egress = next((n for nid, n in calls.items() if "test_child_egress" in nid), None)
+        assert compute is not None and compute.outcome is Outcome.PASSED
+        assert egress is not None and egress.outcome is Outcome.FAILED
+    finally:
+        accepting = False
+        listener.close()
+        server.join(timeout=5)
 
 
 # ===== #58 defect #11 =====

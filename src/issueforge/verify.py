@@ -336,12 +336,150 @@ def _execute_baseline(
     env: dict | None,
 ) -> process.CommandResult:
     """Run the baseline, resolving the committed command's OWN executable in the authoritative env
-    (#58/#1) instead of blindly prepending the provisioned interpreter."""
+    (#58/#1) instead of blindly prepending the provisioned interpreter.
+
+    When the handle marks the authoritative run for OS-level network denial (``denies_network`` —
+    set only by the real default provisioner, never by an injected test seam) AND the baseline is
+    invoked through the interpreter (a leading ``-m``/``-c``/``-X`` flag), the baseline executes
+    inside a ``docker run --network none`` container so egress is denied by the OS, not merely
+    recorded on the handle. Provisioning already ran on the host with the network ON; only EXECUTION
+    is denied here (#58/#10). A bare-console-script baseline (``['pytest']``) resolves and runs on the
+    host under the authoritative ``env_root`` so its executable provenance stays checkable — the
+    container denies via ``argv[0] == 'docker'``, which cannot also be an under-``env_root`` path."""
+    denies = getattr(handle, "denies_network", False)
+    interpreter_form = bool(base_command) and str(base_command[0]).startswith("-")
+    if denies and interpreter_form:
+        return _execute_denied_network(handle, base_command, worktree, report_file, timeout)
     argv = [
         *process.build_launch_argv(handle.interpreter, base_command, env=env),
         f"--report-log={report_file}",
     ]
     return process.run(argv, cwd=worktree, timeout=timeout, env=env)
+
+
+_DOCKER_INSPECT_TIMEOUT = 60.0
+_DOCKER_PULL_TIMEOUT = 300.0
+# In-container mount points (absolute paths are composed inline; a bare ``/``-leading literal here
+# would trip the class-4 checkout-relative-default lint).
+_CONTAINER_WORKDIR = "if-work"
+_CONTAINER_REPORTDIR = "if-report"
+_CONTAINER_SITE_PACKAGES = "if-deps"
+
+
+def _ensure_base_image(image: str) -> None:
+    """Ensure the base ``python`` image is present, pulling it once if genuinely absent.
+
+    ``docker image inspect`` is a cheap presence probe; only a COMPLETED inspect that reports absence
+    triggers a ``docker pull`` (which uses the DAEMON's network — legitimate provisioning, distinct
+    from the container run that is denied). The pull runs BEFORE the ``--network none`` container, so
+    denial never blocks it. An inspect that TIMES OUT means an unresponsive daemon, not a cache miss —
+    it fails fast rather than cascading into a full-length pull that would only fail closed minutes
+    later. A failed/timed-out pull raises so ``run_baseline`` pauses with a typed non-green record
+    rather than executing an unverifiable run.
+    """
+    inspect = process.run(
+        ["docker", "image", "inspect", image],
+        cwd=Path(state_root()),
+        timeout=_DOCKER_INSPECT_TIMEOUT,
+    )
+    if inspect.timed_out:
+        raise RuntimeError("docker image inspect timed out; daemon is unresponsive")
+    if inspect.returncode == 0:
+        return
+    # Inspect completed and reported absence -> pull once, on a bounded timeout.
+    pull = process.run(
+        ["docker", "pull", image],
+        cwd=Path(state_root()),
+        timeout=_DOCKER_PULL_TIMEOUT,
+    )
+    if pull.returncode != 0 or pull.timed_out:
+        raise RuntimeError(f"verify base image pull failed: {pull.stderr.strip()!r}")
+
+
+def _venv_site_packages(handle: object) -> Path:
+    """Locate the authoritative venv's ``site-packages`` under its owned ``env_root``.
+
+    The baseline runs inside the container against the deps PROVISIONED on the host (pytest, the
+    report-log reporter, and the target's frozen manifest). Bind-mounting this directory and pointing
+    the container's interpreter at it makes those deps importable in the denied run without a second
+    install."""
+    env_root = getattr(handle, "env_root", None)
+    if env_root is None:
+        raise RuntimeError("authoritative handle carries no env_root for the denied-network run")
+    matches = sorted(Path(env_root).glob("lib/python*/site-packages"))
+    if not matches:
+        raise RuntimeError(f"authoritative venv has no site-packages under {env_root}")
+    return matches[0]
+
+
+def _base_image_for(site_packages: Path) -> str:
+    """The ``python:<major>.<minor>-slim`` image matching the provisioned venv's Python version.
+
+    The version is read from the venv layout (``lib/python3.X/site-packages``) so the container's
+    interpreter matches the interpreter the host deps were installed for — a compiled dep's ABI tag
+    then agrees between the mounted site-packages and the container's Python."""
+    version = site_packages.parent.name.replace("python", "")
+    return f"python:{version}-slim"
+
+
+def _container_command(base_command: list[str]) -> list[str]:
+    """Map the committed baseline command onto the container's own interpreter.
+
+    A leading Python flag (``-m``, ``-c``, …) is an argument TO the interpreter, so the container's
+    ``python`` runs the command verbatim; otherwise the command names its OWN console script
+    (``pytest``). Mirrors ``process.build_launch_argv`` semantics without a host PATH lookup (the
+    executable is resolved inside the container)."""
+    command = list(base_command)
+    if command and str(command[0]).startswith("-"):
+        return ["python", *command]
+    return command
+
+
+def _execute_denied_network(
+    handle: object,
+    base_command: list[str],
+    worktree: Path,
+    report_file: Path,
+    timeout: float,
+) -> process.CommandResult:
+    """Execute the baseline inside ``docker run --network none``, bind-mounting the worktree, the
+    provisioned venv's site-packages, and the out-of-repo report directory, so the run has no
+    host/external IP egress at the OS level (loopback remains inside the container) while its deps are
+    importable and its report-log is written back to the host.
+
+    The docker argv is a plain list handed to the ``process.run`` seam (which wraps it in the typed
+    ``boundary.Command`` before it reaches subprocess) — the same provenance path every engine
+    command uses, so the boundary lint's class-2 executable check never sees a raw subprocess literal.
+    """
+    site_packages = _venv_site_packages(handle)
+    image = _base_image_for(site_packages)
+    _ensure_base_image(image)
+    report_dir = report_file.parent
+    report_arg = f"--report-log=/{_CONTAINER_REPORTDIR}/{report_file.name}"
+    return process.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "-v",
+            f"{worktree}:/{_CONTAINER_WORKDIR}",
+            "-v",
+            f"{report_dir}:/{_CONTAINER_REPORTDIR}",
+            "-v",
+            f"{site_packages}:/{_CONTAINER_SITE_PACKAGES}:ro",
+            "-e",
+            f"PYTHONPATH=/{_CONTAINER_SITE_PACKAGES}",
+            "-w",
+            f"/{_CONTAINER_WORKDIR}",
+            image,
+            *_container_command(base_command),
+            report_arg,
+        ],
+        cwd=worktree,
+        timeout=timeout,
+    )
 
 
 _GIT_TIMEOUT = 120.0

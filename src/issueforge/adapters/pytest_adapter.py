@@ -125,6 +125,12 @@ def _provision_default(worktree: object, frozen_deps: object) -> SimpleNamespace
         artifact_dir=artifact_dir,
         env_root=env_root,
         network=False,
+        # An explicit executor marker (NOT ``network``/``provisioner is None``): the authoritative
+        # RUN for this handle must execute under OS-level network denial (a ``--network none``
+        # container). Only the real default-provisioned handle carries it, so an injected test
+        # provisioner (which never sets it) keeps running on the host — the shared default-path
+        # tests stay host-run and green while the authoritative run is genuinely denied.
+        denies_network=True,
     )
 
 
