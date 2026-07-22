@@ -946,3 +946,33 @@ def test_class6_clean_seam_amid_unrelated_code_is_exempt(tmp_path: Path) -> None
         "    seam.write_text(target, payload)\n"
     )
     assert lint(tmp_path, code) == []
+
+
+# --- issue #40 (round 5): exhaustive walrus collection from the Codex round-4 confirmation -----
+# Walrus collection is now exhaustive by construction (every ast.NamedExpr evaluated in the scope,
+# any position), so no expression slot can be missed. These pin two positions the position-by-
+# position scan skipped: an assignment-TARGET subscript, and a class BASE.
+
+
+def test_class6_walrus_in_assignment_target_seam_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard, round 5) A walrus in an assignment TARGET (`d[(seam := path)] = 1`) binds seam — disqualifying."""
+    code = (
+        "def emit(target, path):\n"
+        "    d = {}\n"
+        "    d[(seam := path)] = 1\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))
+
+
+def test_class6_walrus_in_class_base_rebinds_seam_flagged_guard(tmp_path: Path) -> None:
+    """(#40 guard, round 5) A walrus in a class BASE rebinds a trusted seam → record [True, False] → untrusted."""
+    code = (
+        "from issueforge.io import WriteSeam\n"
+        "def emit(target, path):\n"
+        "    seam = WriteSeam()\n"
+        "    class C((seam := path)):\n"
+        "        pass\n"
+        "    seam.write_text(target, 'x')\n"
+    )
+    assert any(_WRITE_TEXT_RULE in x for x in lint(tmp_path, code))

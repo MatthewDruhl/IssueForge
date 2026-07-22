@@ -347,11 +347,19 @@ class _Linter(ast.NodeVisitor):
         """
         records: dict[str, list[bool]] = {name: [False] for name in params}
         for statement in body:
+            # Two independent passes over each top-level statement: structural bindings (assign
+            # targets, imports, for/with/except/match captures, def/class names, ...) via _scan_stmt,
+            # and EVERY walrus evaluated in this scope via _collect_walruses (exhaustive, so no
+            # walrus position — assignment target, subscript, class base — can be missed) (#40).
             self._scan_stmt(statement, 0, records)
+            self._collect_walruses(statement, records)
         return frozenset(name for name, flags in records.items() if flags == [True])
 
     def _scan_stmt(self, stmt: ast.stmt, depth: int, records: dict[str, list[bool]]) -> None:
-        """Record every name ``stmt`` binds in this scope, then recurse (depth>0 = conditional)."""
+        """Record every NON-walrus name ``stmt`` binds in this scope, then recurse (depth>0 = conditional).
+
+        Walrus bindings are handled exhaustively by ``_collect_walruses``, not here.
+        """
 
         def record(name: str, clean: bool) -> None:
             records.setdefault(name, []).append(clean)
@@ -363,31 +371,22 @@ class _Linter(ast.NodeVisitor):
                 else:
                     for name in self._bound_names(target):
                         record(name, False)
-            self._scan_expr(stmt.value, records)
         elif isinstance(stmt, ast.AnnAssign):
-            if stmt.value is not None:
-                if isinstance(stmt.target, ast.Name):
-                    record(
-                        stmt.target.id, depth == 0 and self._is_writeseam_construction(stmt.value)
-                    )
-                self._scan_expr(stmt.value, records)
+            if stmt.value is not None and isinstance(stmt.target, ast.Name):
+                record(stmt.target.id, depth == 0 and self._is_writeseam_construction(stmt.value))
         elif isinstance(stmt, ast.AugAssign):
             if isinstance(stmt.target, ast.Name):
                 record(stmt.target.id, False)
-            self._scan_expr(stmt.value, records)
         elif isinstance(stmt, (ast.For, ast.AsyncFor)):
             for name in self._bound_names(stmt.target):
                 record(name, False)
-            self._scan_expr(stmt.iter, records)
             self._scan_body(stmt.body, depth + 1, records)
             self._scan_body(stmt.orelse, depth + 1, records)
         elif isinstance(stmt, (ast.While, ast.If)):
-            self._scan_expr(stmt.test, records)
             self._scan_body(stmt.body, depth + 1, records)
             self._scan_body(stmt.orelse, depth + 1, records)
         elif isinstance(stmt, (ast.With, ast.AsyncWith)):
             for item in stmt.items:
-                self._scan_expr(item.context_expr, records)
                 if item.optional_vars is not None:
                     for name in self._bound_names(item.optional_vars):
                         record(name, False)
@@ -397,18 +396,13 @@ class _Linter(ast.NodeVisitor):
             for handler in stmt.handlers:
                 if handler.name:
                     record(handler.name, False)
-                if handler.type is not None:
-                    self._scan_expr(handler.type, records)
                 self._scan_body(handler.body, depth + 1, records)
             self._scan_body(stmt.orelse, depth + 1, records)
             self._scan_body(stmt.finalbody, depth + 1, records)
         elif isinstance(stmt, ast.Match):
-            self._scan_expr(stmt.subject, records)
             for case in stmt.cases:
                 for name in self._match_capture_names(case.pattern):
                     record(name, False)
-                if case.guard is not None:
-                    self._scan_expr(case.guard, records)
                 self._scan_body(case.body, depth + 1, records)
         elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
             for alias in stmt.names:
@@ -422,50 +416,50 @@ class _Linter(ast.NodeVisitor):
                     record(name, False)
         elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             # The def/class NAME binds in THIS scope; its body is a SEPARATE scope (do not descend).
-            # Decorators and (for functions) argument defaults DO evaluate here (PEP 572 walruses).
             record(stmt.name, False)
-            for decorator in stmt.decorator_list:
-                self._scan_expr(decorator, records)
-            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for default in (*stmt.args.defaults, *stmt.args.kw_defaults):
-                    if default is not None:
-                        self._scan_expr(default, records)
-        else:
-            # Return / Expr / Raise / Assert / ...: no binding, but scan for walruses.
-            for child in ast.iter_child_nodes(stmt):
-                if isinstance(child, ast.expr):
-                    self._scan_expr(child, records)
 
     def _scan_body(self, body: list[ast.stmt], depth: int, records: dict[str, list[bool]]) -> None:
         for statement in body:
             self._scan_stmt(statement, depth, records)
 
-    def _scan_expr(self, node: ast.expr, records: dict[str, list[bool]]) -> None:
-        """Record every walrus binding reachable in THIS scope's evaluation of ``node``.
+    def _collect_walruses(self, node: ast.AST, records: dict[str, list[bool]]) -> None:
+        """Record EVERY walrus (``:=``) target that evaluates in THIS scope, at any position.
 
-        A walrus (``:=``) binds the enclosing scope even inside a comprehension, so scan a
-        comprehension's element/key/value/ifs/iters but NOT its ``for`` targets. A nested lambda
-        BODY is a separate scope, so only its argument defaults are scanned here.
+        Recurse through all child nodes so no expression position is ever missed (assignment
+        targets, subscripts, class bases, defaults, annotations, ...). The only sub-trees NOT part
+        of this scope: a nested function/lambda BODY and a nested class BODY. A nested function/
+        lambda still contributes its decorators + argument defaults/annotations (+ return
+        annotation), and a nested class its bases/keywords/decorators — those all evaluate here
+        (PEP 572). A walrus anywhere in a comprehension binds THIS scope, so comprehensions get the
+        default full recursion (their ``for`` targets are plain names and cannot contain a walrus).
         """
         if isinstance(node, ast.NamedExpr):
             if isinstance(node.target, ast.Name):
                 records.setdefault(node.target.id, []).append(False)
-            self._scan_expr(node.value, records)
-        elif isinstance(node, ast.Lambda):
-            for default in (*node.args.defaults, *node.args.kw_defaults):
-                if default is not None:
-                    self._scan_expr(default, records)
-        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
-            parts = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
-            for generator in node.generators:
-                parts.append(generator.iter)
-                parts.extend(generator.ifs)
-            for part in parts:
-                self._scan_expr(part, records)
+            self._collect_walruses(node.value, records)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            for decorator in getattr(node, "decorator_list", ()):
+                self._collect_walruses(decorator, records)
+            self._collect_arg_walruses(node.args, records)
+            returns = getattr(node, "returns", None)
+            if returns is not None:
+                self._collect_walruses(returns, records)
+        elif isinstance(node, ast.ClassDef):
+            for child in (*node.bases, *node.keywords, *node.decorator_list):
+                self._collect_walruses(child, records)
         else:
             for child in ast.iter_child_nodes(node):
-                if isinstance(child, ast.expr):
-                    self._scan_expr(child, records)
+                self._collect_walruses(child, records)
+
+    def _collect_arg_walruses(self, args: ast.arguments, records: dict[str, list[bool]]) -> None:
+        """Scan a nested function/lambda's defaults and argument annotations (they evaluate here)."""
+        for default in (*args.defaults, *args.kw_defaults):
+            if default is not None:
+                self._collect_walruses(default, records)
+        every_arg = (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg)
+        for arg in every_arg:
+            if arg is not None and arg.annotation is not None:
+                self._collect_walruses(arg.annotation, records)
 
     def _bound_names(self, target: ast.AST | None):
         """Yield every name a binder target binds (Name, Starred, and nested Tuple/List)."""
