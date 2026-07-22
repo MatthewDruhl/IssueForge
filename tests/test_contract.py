@@ -1196,6 +1196,8 @@ def _make_reviewer(
 
     packets: list = []
     results: list = []
+    captures: list = []
+    captured_dirs: list = []
     box = {"i": 0}
 
     def reviewer(packet):
@@ -1218,8 +1220,29 @@ def _make_reviewer(
                 path = Path(inputs[key])
                 assert path.exists(), f"{key} not materialized before review"
                 if dest is not None:
-                    assert path.parent == Path(dest), f"{key} not under dest"
+                    # Bounded to exactly two layouts (direct child OR one run-owned subdir of dest);
+                    # rejects arbitrary nesting and lexical traversal like ``dest/../outside``. The
+                    # strong per-run-subdir pin lives in the #82 item-2 tests, not this shared helper.
+                    assert path.parent == Path(dest) or path.parent.parent == Path(dest), (
+                        f"{key} not directly under dest or a run-owned subdir of dest"
+                    )
                 assert path.read_bytes() == value.encode(), f"{key} bytes not exact"
+        # Snapshot the materialized input bytes AT CALL TIME so tests can assert content even after the
+        # gate removes the run-owned inputs on return (item-2 cleanup); one dict per round.
+        captures.append({name: Path(p).read_bytes() for name, p in inputs.items()})
+        # Snapshot the LIVE directory facts (symlink-ness, resolved parent) while the dir still exists,
+        # so the item-2 tests can reject a symlinked run dir that escapes dest (a lexical post-return
+        # check cannot see it once removed). ``parents`` is the set of every input's parent directory.
+        dir_parents = {Path(p).parent for p in inputs.values()}
+        one_parent = Path(inputs["diff"]).parent
+        captured_dirs.append(
+            {
+                "parents": dir_parents,
+                "owned": one_parent,
+                "is_symlink": one_parent.is_symlink(),
+                "resolved": one_parent.resolve(),
+            }
+        )
         exhaustive = _EXHAUSTIVE in packet.get("instruction", "")
         if require_exhaustive and box["i"] == 0:
             assert exhaustive, "first pass did not carry the exhaustive-enumeration instruction"
@@ -1248,6 +1271,8 @@ def _make_reviewer(
 
     reviewer.packets = packets
     reviewer.results = results
+    reviewer.captured = captures
+    reviewer.captured_dirs = captured_dirs
     reviewer.calls = box
     return reviewer
 
@@ -1369,31 +1394,63 @@ def test_equal_reviewer_session_rejected_fail_loud(tmp_path, fake_provider_scrip
 # ------------------------------------------------- M. Execution capability: materialize + verbatim cmd
 
 
-def test_inputs_materialized_exact_bytes_under_dest_before_review(tmp_path, fake_provider_script):
-    """EVERY review input is written to local disk under ``materialize_dest`` with EXACT BYTES BEFORE
-    the reviewer runs (S7, no network) — proven inside the reviewer callback, not merely afterward.
+@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
+def test_inputs_materialized_in_run_owned_subdir_then_removed(tmp_path, fake_provider_script):
+    """EVERY review input is written with EXACT BYTES BEFORE the reviewer runs (S7, no network), inside a
+    RUN-OWNED temp subdir UNDER ``materialize_dest`` (not dest directly) — proven inside the reviewer
+    callback — and after ``review_red_contract`` returns, every materialized input file is REMOVED, so no
+    secret-bearing input lingers on disk (#82 item 2).
 
-    technical (contract): the reviewer (via ``expect_inputs``) asserts, at call time, that each of
-    diff/contract/manifest/red_evidence exists under dest with byte-exact content, that proof_command
-    and head_sha are also materialized, and that the key set is exactly those six; head_sha's file
-    equals the real candidate HEAD.
+    technical (contract): the reviewer (via ``expect_inputs``) asserts each input exists byte-exact under
+    dest or a run-owned subdir; the test then asserts ALL six inputs share ONE common parent directory
+    whose parent is dest and which is not dest itself, the captured head_sha equals the real candidate
+    HEAD, that whole run-owned dir no longer exists after the gate returns (no advertised OR stray file
+    survives), and a SECOND review gets a DISTINCT run-owned dir (a fixed shared dir would collide).
     """
     scen = _red_scenario(tmp_path)
-    run = _review_run(scen)
     dest = tmp_path / "pkt"
     inputs = _default_inputs()
-    reviewer = _make_reviewer(
-        fake_provider_script,
-        run,
-        [{"out": ["APPROVE"]}],
-        scen=scen,
-        dest=dest,
-        expect_inputs=inputs,
-    )
-    _review(run, scen, reviewer=reviewer, dest=dest, inputs=inputs)
-    got = reviewer.packets[0]["inputs"]
-    assert Path(got["proof_command"]).read_bytes() == _PROOF_CMD.encode()
-    assert Path(got["head_sha"]).read_text().strip() == scen.candidate_sha
+
+    def run_once(run_id):
+        run = _review_run(scen, run_id)
+        reviewer = _make_reviewer(
+            fake_provider_script,
+            run,
+            [{"out": ["APPROVE"]}],
+            scen=scen,
+            dest=dest,
+            expect_inputs=inputs,
+        )
+        _review(run, scen, reviewer=reviewer, dest=dest, inputs=inputs)
+        return reviewer
+
+    rev1 = run_once("run-1")
+    got1 = rev1.packets[0]["inputs"]
+    # ALL six inputs share ONE run-owned parent directory, directly under dest and never dest itself.
+    parents = {Path(p).parent for p in got1.values()}
+    assert len(parents) == 1, "inputs scattered across multiple directories"
+    owned = parents.pop()
+    assert owned.parent == dest and owned != dest, "inputs not in a single run-owned subdir of dest"
+    # The run dir is a REAL, non-symlink directory whose RESOLVED parent is dest (captured live — a
+    # ``dest/run -> /outside`` symlink would pass the lexical checks above while leaking outside dest).
+    dfacts = rev1.captured_dirs[0]
+    assert dfacts["parents"] == {owned}, "inputs not all under one live parent during the review"
+    assert dfacts["is_symlink"] is False, "run dir is a symlink (possible escape from dest)"
+    assert dfacts["resolved"].parent == dest.resolve(), "run dir resolves outside dest"
+    # Byte-exact content captured DURING the callback (files are gone by now).
+    assert rev1.captured[0]["proof_command"] == _PROOF_CMD.encode()
+    assert rev1.captured[0]["head_sha"].decode().strip() == scen.candidate_sha
+    # The whole run-owned dir is removed on return — no advertised file OR stray backup survives.
+    assert not owned.exists(), "run-owned input dir lingered after the review"
+    for name, path in got1.items():
+        assert not Path(path).exists(), f"{name} lingered on disk after the review"
+    # No stray path survives ANYWHERE under dest (a leaked ``dest/backup/red_evidence`` would be caught).
+    assert list(dest.rglob("*")) == [], "the review left stray paths under dest"
+    # A SECOND review gets a DISTINCT run-owned dir (a fixed shared dir would collide across runs).
+    rev2 = run_once("run-2")
+    owned2 = Path(rev2.packets[0]["inputs"]["diff"]).parent
+    assert owned2 != owned, "materialization dir not distinct per review (fixed shared dir)"
+    assert not owned2.exists(), "second run-owned input dir lingered after the review"
 
 
 def test_proof_command_byte_exact_never_normalized(tmp_path, fake_provider_script):
@@ -1417,10 +1474,8 @@ def test_proof_command_byte_exact_never_normalized(tmp_path, fake_provider_scrip
     )
     _review(run, scen, reviewer=reviewer, dest=dest, proof_command=_PROOF_CMD_FRAGILE)
     assert reviewer.packets[0]["proof_command"].encode() == _PROOF_CMD_FRAGILE.encode()
-    assert (
-        Path(reviewer.packets[0]["inputs"]["proof_command"]).read_bytes()
-        == _PROOF_CMD_FRAGILE.encode()
-    )
+    # Captured at review time (the materialized input is removed on return, #82 item 2).
+    assert reviewer.captured[0]["proof_command"] == _PROOF_CMD_FRAGILE.encode()
 
 
 def test_review_runs_against_real_worktree_with_network_off_marker(tmp_path, fake_provider_script):
@@ -1731,21 +1786,27 @@ def test_test_change_reproves_and_rebinds_c1_stale_c2_current(tmp_path, fake_pro
 # -------------------------------------------------------------- Q. Batched round protocol + counter
 
 
+@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
 def test_blocking_then_reproved_confirmation_is_done(tmp_path, fake_provider_script):
     """The batched contract: a blocking first pass, then a FIX -> RE-PROVE (new head) -> confirmation
-    that consumes the REVISED evidence -> ``done``, two rounds. The confirmation reviews the NEW head
-    with the reproved red evidence, never the stale one.
+    that consumes evidence DERIVED FROM A RE-VERIFIED PROOF -> ``done``, two rounds. Between rounds the
+    ``reprove`` seam returns an ACCEPTED ``RedProof`` bound to the ADVANCED head (never a bare string);
+    the confirmation reviews the NEW head with evidence rendered from that proof, never the stale one
+    (#82 item 1).
 
     technical (contract): round 1 blocks; the injected ``fixer`` mutates + commits the worktree (new
-    head) and ``reprove`` (asserted to have been CALLED) returns fresh red_evidence; round 2 is clean
-    -> verdict "done", accepted True, rounds == 2; the round-2 packet's head_sha differs from round 1's
-    AND its materialized red_evidence equals the reproved evidence.
+    head); ``reprove`` (asserted CALLED once with the new head) returns RedProof(accepted=True,
+    reason "behavioral_red", base_sha == review base_sha, head_sha == the new head); round 2 is clean
+    -> verdict "done", accepted True, rounds == 2; the round-2 packet's head_sha == the new head and
+    differs from round 1's, AND its materialized red_evidence == the proof's one record rendered as
+    "<nodeid> <type>: <message>" (an independent literal golden, pinned separately by the renderer test).
     """
+    from issueforge import contract
+
     scen = _red_scenario(tmp_path, "conf")
     run = _review_run(scen)
     dest = tmp_path / "pkt"
-    reproved_evidence = "tests/test_new.py::test_x call-phase FAILED after fix (reproved)\n"
-    calls = {"fix": 0, "reprove": 0}
+    calls = {"fix": 0, "reprove": 0, "reprove_head": None}
 
     def fixer():
         calls["fix"] += 1
@@ -1757,7 +1818,23 @@ def test_blocking_then_reproved_confirmation_is_done(tmp_path, fake_provider_scr
 
     def reprove(head_sha):
         calls["reprove"] += 1
-        return reproved_evidence
+        calls["reprove_head"] = head_sha
+        proof = contract.RedProof(
+            accepted=True,
+            reason="behavioral_red",
+            records=(
+                contract.RedRecord(
+                    nodeid=_NEW_X,
+                    exception_type="AssertionError",
+                    assertion_line=2,
+                    message="assert 5 == 6",
+                ),
+            ),
+            base_sha=scen.base_sha,
+            added_ids=(_NEW_X,),
+            head_sha=head_sha,
+        )
+        return proof
 
     reviewer = _make_reviewer(
         fake_provider_script,
@@ -1776,8 +1853,242 @@ def test_blocking_then_reproved_confirmation_is_done(tmp_path, fake_provider_scr
     assert review.verdict == "done" and review.accepted is True
     assert review.rounds == 2
     assert calls["fix"] == 1 and calls["reprove"] == 1, "fix/reprove seam not driven between rounds"
-    assert reviewer.packets[1]["head_sha"] != reviewer.packets[0]["head_sha"]
-    assert Path(reviewer.packets[1]["inputs"]["red_evidence"]).read_text() == reproved_evidence
+    new_head = _git(scen.candidate_worktree, "rev-parse", "HEAD").stdout.strip()
+    assert calls["reprove_head"] == new_head, "reprove must be called with the advanced head"
+    assert reviewer.packets[1]["head_sha"] == new_head != reviewer.packets[0]["head_sha"]
+    # Independent golden (NOT via the production seam): the confirmation red_evidence is rendered from
+    # the verified proof's one record as "<nodeid> <type>: <message>" (see the dedicated renderer test).
+    assert (
+        reviewer.captured[1]["red_evidence"] == f"{_NEW_X} AssertionError: assert 5 == 6".encode()
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
+def test_red_evidence_from_proof_renders_records_independently():
+    """``contract.red_evidence_from_proof`` renders a verified proof's records to the confirmation
+    red_evidence text, pinned to a LITERAL expected string (not the seam itself), so the reproved-
+    confirmation contract cannot be satisfied by a renderer that returns "" or a constant (#82 item 1).
+
+    technical (contract): a RedProof with two records renders each as "<nodeid> <type>: <message>",
+    newline-joined, byte-for-byte — with the exact literal expected value.
+    """
+    from issueforge import contract
+
+    proof = contract.RedProof(
+        accepted=True,
+        reason="behavioral_red",
+        records=(
+            contract.RedRecord(
+                nodeid="tests/test_a.py::test_one",
+                exception_type="AssertionError",
+                assertion_line=3,
+                message="assert 1 == 2",
+            ),
+            contract.RedRecord(
+                nodeid="tests/test_b.py::test_two",
+                exception_type="ValueError",
+                assertion_line=None,
+                message="boom",
+            ),
+        ),
+        base_sha="b" * 40,
+        added_ids=("tests/test_a.py::test_one",),
+        head_sha="h" * 40,
+    )
+    assert contract.red_evidence_from_proof(proof) == (
+        "tests/test_a.py::test_one AssertionError: assert 1 == 2\n"
+        "tests/test_b.py::test_two ValueError: boom"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
+@pytest.mark.parametrize(
+    "defect",
+    ["not_accepted", "bound_to_old_head", "wrong_base_sha", "wrong_reason", "bare_string"],
+)
+def test_reprove_unverified_or_misbound_proof_is_fail_loud(tmp_path, fake_provider_script, defect):
+    """Between rounds the gate REQUIRES a re-verified accepted ``RedProof`` bound to the ADVANCED head. A
+    reprove that returns an unaccepted proof, a proof bound to the OLD head, a wrong base_sha, a wrong
+    reason (not ``behavioral_red``), or a BARE STRING (not a ``RedProof``) is FAIL-LOUD. The gate must
+    STILL have advanced the head and CALLED reprove against that advanced head (the #82 exploit surface:
+    fabricated evidence at a genuinely advanced candidate head), then REJECT it: the run pauses with a
+    persisted ``blocking`` contract_review that is never accepted/done, and the CONFIRMATION reviewer is
+    never invoked (reviewer ran exactly once) (#82 item 1).
+
+    technical (contract): round 1 blocks (finding "a"); the fixer advances the head; ``reprove`` is
+    called exactly once with the NEW head (calls prove reprove ran at head != old_head) and returns the
+    parametrized defective value -> ``review_red_contract`` returns accepted False / verdict startswith
+    "blocking:" OR raises, but NEVER reaches a second reviewer call (len(reviewer.packets) == 1);
+    afterward run status == "paused", the persisted contract_review verdict startswith "blocking", and
+    its accepted flag is not True.
+    """
+    from issueforge import contract
+
+    scen = _red_scenario(tmp_path, "badreprove")
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    old_head = scen.candidate_sha
+    calls = {"fix": 0, "reprove": 0, "reprove_head": None}
+
+    def fixer():
+        calls["fix"] += 1
+        (scen.candidate_worktree / "tests/test_new.py").write_text(
+            "def test_x():\n    assert 5 == 6\n"
+        )
+        _git(scen.candidate_worktree, "add", "-A")
+        _git(scen.candidate_worktree, "commit", "-qm", "fix")
+
+    def reprove(head_sha):
+        calls["reprove"] += 1
+        calls["reprove_head"] = head_sha
+        if defect == "bare_string":
+            return "fabricated red evidence not backed by any proof\n"
+        return contract.RedProof(
+            accepted=(defect != "not_accepted"),
+            reason=("import_error" if defect == "wrong_reason" else "behavioral_red"),
+            records=(
+                contract.RedRecord(
+                    nodeid=_NEW_X,
+                    exception_type="AssertionError",
+                    assertion_line=2,
+                    message="assert 5 == 6",
+                ),
+            ),
+            base_sha=("0" * 40 if defect == "wrong_base_sha" else scen.base_sha),
+            added_ids=(_NEW_X,),
+            head_sha=(old_head if defect == "bound_to_old_head" else head_sha),
+        )
+
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        [
+            {"out": ["REJECT"], "correspondence": False, "findings": ("a",)},
+            {"out": ["APPROVE"], "correspondence": True, "findings": ()},  # must NOT be reached
+        ],
+        scen=scen,
+        dest=dest,
+        require_exhaustive=True,
+    )
+    try:
+        review = _review(
+            run, scen, reviewer=reviewer, dest=dest, max_rounds=2, fixer=fixer, reprove=reprove
+        )
+        assert review.accepted is False
+        assert review.verdict.startswith("blocking:")
+    except Exception:
+        # Fail-loud MAY raise (of ANY type) instead of returning a blocking verdict; the type is not
+        # prescribed. The strong post-conditions below are the real teeth, not the exception class.
+        pass
+
+    # The gate genuinely reached AND exercised the reprove seam at the ADVANCED head before rejecting.
+    assert calls["fix"] == 1 and calls["reprove"] == 1, (
+        "gate must advance + call reprove before reject"
+    )
+    new_head = _git(scen.candidate_worktree, "rev-parse", "HEAD").stdout.strip()
+    assert calls["reprove_head"] == new_head != old_head, (
+        "reprove must run against the advanced head"
+    )
+    # The confirmation reviewer never ran — a fabricated reprove cannot reach the confirmation round.
+    assert len(reviewer.packets) == 1, "confirmation reviewer must not run on an unverified reprove"
+    # A real fail-loud block is persisted; the run is never left accepted/done.
+    record = store.RunStore().read(run)
+    assert record["status"] == "paused"
+    block = record.get("contract_review", {})
+    assert block.get("verdict", "").startswith("blocking"), "no blocking contract_review persisted"
+    assert block.get("accepted") is not True, "gate persisted accepted state on a rejected reprove"
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#82)")
+@pytest.mark.parametrize("path_kind", ["success", "fail_loud", "exception", "reviewer_raises"])
+def test_materialized_inputs_removed_on_all_exit_paths(tmp_path, fake_provider_script, path_kind):
+    """The run-owned materialized input dir is removed in a ``finally`` on EVERY exit path — each path's
+    outcome is FORCED and asserted: a clean ``done``, a fail-loud ``blocking`` return, an exception AFTER
+    the reviewer returns (shared-session raise), AND an exception raised INSIDE the reviewer callback (so
+    the cleanup provably wraps the reviewer invocation, not just result validation). On every path the
+    six inputs are proven materialized BYTE-EXACT in ONE real, non-symlink run-owned subdir of dest, and
+    afterward that dir is gone and NO stray path survives anywhere under dest (#82 item 2).
+
+    technical (contract): success -> accepted True / verdict "done"; fail_loud (empty output) -> accepted
+    False / verdict startswith "blocking:"; exception -> raises SharedSessionError; reviewer_raises ->
+    the reviewer callback raises RuntimeError after materialization. In every case the captured inputs
+    equal their expected bytes, share one live non-symlink parent whose resolved parent is dest, and
+    after the gate returns/raises that dir is absent and ``dest.rglob('*')`` is empty.
+    """
+    from issueforge import providers
+
+    scen = _red_scenario(tmp_path, "cleanup")
+    run = _review_run(scen)
+    dest = tmp_path / "pkt"
+    inputs = _default_inputs()
+    if path_kind == "fail_loud":
+        specs = [{"out": [], "correspondence": True}]  # empty output -> fail-loud blocking:1
+        shared = None
+    elif path_kind == "exception":
+        specs = [{"out": ["APPROVE"], "correspondence": True, "shared": True}]
+        shared = _AUTH_SESSION
+    else:  # success or reviewer_raises
+        specs = [{"out": ["APPROVE"], "correspondence": True}]
+        shared = None
+    reviewer = _make_reviewer(
+        fake_provider_script,
+        run,
+        specs,
+        scen=scen,
+        dest=dest,
+        shared_session=shared,
+        expect_inputs=inputs,
+    )
+
+    if path_kind == "reviewer_raises":
+        base = reviewer
+
+        def raising(packet):
+            base(packet)  # gate already materialized; record packet/captured/dirs, then raise
+            raise RuntimeError("reviewer callback boom")
+
+        raising.packets = base.packets
+        raising.captured = base.captured
+        raising.captured_dirs = base.captured_dirs
+        reviewer = raising
+
+    if path_kind == "exception":
+        with pytest.raises(providers.SharedSessionError):
+            _review(run, scen, reviewer=reviewer, dest=dest, inputs=inputs, max_rounds=1)
+    elif path_kind == "reviewer_raises":
+        with pytest.raises(RuntimeError):
+            _review(run, scen, reviewer=reviewer, dest=dest, inputs=inputs, max_rounds=1)
+    else:
+        review = _review(run, scen, reviewer=reviewer, dest=dest, inputs=inputs, max_rounds=1)
+        if path_kind == "success":
+            assert review.accepted is True and review.verdict == "done"
+        else:  # fail_loud
+            assert review.accepted is False and review.verdict.startswith("blocking:")
+
+    # Non-vacuous: all six inputs were materialized BYTE-EXACT (captured at call time) on THIS path.
+    assert reviewer.captured, "reviewer never received materialized inputs"
+    got_bytes = dict(reviewer.captured[0])
+    assert got_bytes.pop("head_sha").decode().strip() == scen.candidate_sha
+    assert got_bytes == {
+        "diff": inputs["diff"].encode(),
+        "contract": inputs["contract"].encode(),
+        "manifest": inputs["manifest"].encode(),
+        "red_evidence": inputs["red_evidence"].encode(),
+        "proof_command": _PROOF_CMD.encode(),
+    }, "inputs not materialized byte-exact on this exit path"
+
+    got = reviewer.packets[0]["inputs"]
+    parents = {Path(p).parent for p in got.values()}
+    assert len(parents) == 1, "inputs scattered across multiple directories"
+    owned = parents.pop()
+    assert owned.parent == dest and owned != dest, "inputs not in a single run-owned subdir of dest"
+    # Live directory facts captured during the callback: a real, non-symlink dir resolving inside dest.
+    dfacts = reviewer.captured_dirs[0]
+    assert dfacts["is_symlink"] is False, "run dir is a symlink (possible escape from dest)"
+    assert dfacts["resolved"].parent == dest.resolve(), "run dir resolves outside dest"
+    # The whole run-owned dir is removed on THIS exit path; NO stray path survives anywhere under dest.
+    assert not owned.exists(), f"run-owned input dir lingered after the {path_kind} path"
+    assert list(dest.rglob("*")) == [], f"stray paths under dest after the {path_kind} path"
 
 
 def test_first_pass_exhaustive_all_findings_ordered_in_packet(tmp_path, fake_provider_script):
