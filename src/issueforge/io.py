@@ -37,6 +37,50 @@ class WriteSeam:
         self._validate_worktree(root, registered_repo)
         self._roots[root] = registered_repo
 
+    def allow_scratch(self, root: Path) -> None:
+        """Permit writes under a caller-owned EPHEMERAL scratch directory (transient working
+        material, e.g. the review inputs materialized for a fresh reviewer session), which is
+        neither the state root nor a registered worktree.
+
+        Hardened against a broad or sensitive root (a caller passing ``/``, an ancestor of the state
+        root or a registered worktree, an existing checkout it could clobber, or a populated home/
+        user directory): the scratch dir must be plain, caller-owned working space — never a
+        filesystem root, never an ancestor of a protected root, never inside a Git worktree, and, if
+        it already exists, a FLAT directory of regular files only (no sub-directories or symlinks, so
+        a populated tree such as ``$HOME`` or a checkout is refused while a re-used review-input dir
+        of materialized ``*.txt`` files is fine). No registered repo is recorded — scratch is NOT
+        persisted run state.
+        """
+        root = Path(root).resolve()
+        if root == Path(root.anchor):
+            raise BoundaryViolation(f"scratch root {root} is a filesystem root")
+        protected = {Path(state_root()).resolve(), *self._roots}
+        for guarded in protected:
+            if root == guarded or root in guarded.parents:
+                raise BoundaryViolation(
+                    f"scratch root {root} is, or is an ancestor of, a protected root {guarded}"
+                )
+        # Check the nearest EXISTING ancestor for Git-worktree membership: for a not-yet-created
+        # scratch dir, ``git -C <nonexistent>`` cannot discover its parent worktree, so probing
+        # ``root`` alone would authorize ``<checkout>/new-scratch`` and let it be created inside a
+        # real checkout. Walk up to the first directory that exists and probe THAT.
+        anchor = root
+        while not anchor.exists() and anchor != anchor.parent:
+            anchor = anchor.parent
+        if self._git_facts(anchor) is not None:
+            raise BoundaryViolation(
+                f"scratch root {root} is inside a Git worktree (via existing ancestor {anchor})"
+            )
+        if root.exists():
+            if not root.is_dir() or root.is_symlink():
+                raise BoundaryViolation(f"scratch root {root} is not a plain directory")
+            for entry in root.iterdir():
+                if entry.is_dir() or entry.is_symlink():
+                    raise BoundaryViolation(
+                        f"scratch root {root} is a populated tree, not flat scratch space"
+                    )
+        self._roots[root] = None
+
     def _validate_worktree(self, root: Path, registered_repo: Path) -> None:
         worktree = self._git_facts(root)
         repository = self._git_facts(registered_repo)
