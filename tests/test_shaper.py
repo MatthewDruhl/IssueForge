@@ -224,7 +224,6 @@ def _last_shape_event(run_id):
 # ================================================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_buildability_contract_emits_in_order_before_any_authoring(isolated_state_home):
     """A buildable run emits a COMPLETE buildability contract — reviewer-confirmed and human-approved, in the order assess -> review -> approve — before any acceptance test is authored.
 
@@ -279,7 +278,6 @@ def test_buildability_contract_emits_in_order_before_any_authoring(isolated_stat
     assert _events("run-1", "authoring") == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 @pytest.mark.parametrize(
     "field",
     [
@@ -318,7 +316,6 @@ def test_missing_top_level_field_refuses_without_minting(isolated_state_home, fi
         engine.enter_authoring("run-1", revision_applied=True)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_missing_nested_observability_justification_refuses(isolated_state_home):
     """A missing NESTED field — the observability justification — is refused just like a missing top-level field.
 
@@ -348,7 +345,6 @@ def test_missing_nested_observability_justification_refuses(isolated_state_home)
     assert _shape("run-1") is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 @pytest.mark.parametrize(
     "override",
     [
@@ -381,7 +377,6 @@ def test_classification_and_blocked_reason_must_be_consistent(isolated_state_hom
     assert _shape("run-1") is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_missing_observability_verdict_is_a_hard_refusal_not_a_default(isolated_state_home):
     """A missing observability verdict is a hard refusal; the run never leaves S9 with a defaulted verdict.
 
@@ -409,7 +404,6 @@ def test_missing_observability_verdict_is_a_hard_refusal_not_a_default(isolated_
         engine.enter_authoring("run-1", revision_applied=True)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_unjustified_not_applicable_refuses_but_justified_is_accepted(isolated_state_home):
     """An observability verdict of `not applicable` with no justification is refused; the same verdict WITH a real justification (and a matching confirmation) is accepted.
 
@@ -459,7 +453,6 @@ def test_unjustified_not_applicable_refuses_but_justified_is_accepted(isolated_s
     assert _shape("run-2")["observability"]["verdict"] == "not applicable"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 @pytest.mark.parametrize("verdict", ["required", "existing coverage sufficient", "not applicable"])
 def test_each_legal_observability_verdict_is_accepted(isolated_state_home, verdict):
     """Each of the three legal observability verdicts is accepted on its happy path.
@@ -498,7 +491,6 @@ def test_each_legal_observability_verdict_is_accepted(isolated_state_home, verdi
     assert _shape("run-1")["observability"]["verdict"] == verdict
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_unknown_observability_verdict_is_refused(isolated_state_home):
     """An observability verdict outside the closed set of three is refused.
 
@@ -527,7 +519,6 @@ def test_unknown_observability_verdict_is_refused(isolated_state_home):
     assert _last_shape_event("run-1")["outcome"] == "refused"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 @pytest.mark.parametrize("drop", ["events", "prohibited_sensitive_fields"])
 def test_required_verdict_needs_events_and_sensitive_fields(isolated_state_home, drop):
     """When observability is `required`, the contract must carry the important events AND the prohibited sensitive fields; either empty is a refusal.
@@ -556,7 +547,6 @@ def test_required_verdict_needs_events_and_sensitive_fields(isolated_state_home,
     assert _last_shape_event("run-1")["outcome"] == "refused"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 @pytest.mark.parametrize(
     "entry",
     [
@@ -596,7 +586,6 @@ def test_all_four_path_operations_are_accepted(isolated_state_home, entry):
         assert stored["destination_path"] == entry["destination_path"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_unknown_path_operation_is_refused(isolated_state_home):
     """A write-scope entry with an operation outside {add,modify,delete,rename} is refused.
 
@@ -618,7 +607,6 @@ def test_unknown_path_operation_is_refused(isolated_state_home):
     assert _last_shape_event("run-1")["outcome"] == "refused"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_rename_requires_both_source_and_destination(isolated_state_home):
     """A rename must name both operands; a rename missing its destination cannot be distinguished from an unapproved delete and is refused.
 
@@ -641,7 +629,6 @@ def test_rename_requires_both_source_and_destination(isolated_state_home):
     assert _last_shape_event("run-1")["outcome"] == "refused"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 @pytest.mark.parametrize(
     "scope",
     [
@@ -673,7 +660,6 @@ def test_scope_entry_validation_rejects_bad_entries(isolated_state_home, scope):
     assert _last_shape_event("run-1")["outcome"] == "refused"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_empty_footprint_is_refused(isolated_state_home):
     """A buildable contract with an empty footprint (zero paths) is refused outright — distinct from an UNKNOWN footprint, which pauses.
 
@@ -695,7 +681,6 @@ def test_empty_footprint_is_refused(isolated_state_home):
     assert _shape("run-1") is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 @pytest.mark.parametrize("bad_path", ["tests/test_shaper.py", "tests/anything.py"])
 def test_scope_may_not_include_a_frozen_contract_file(isolated_state_home, bad_path):
     """The implementation write scope may never include an acceptance-contract file (D5: a path is a frozen contract input OR an implementation target, never both).
@@ -725,7 +710,6 @@ def test_scope_may_not_include_a_frozen_contract_file(isolated_state_home, bad_p
     assert approver.calls == []  # rejected before the human approval
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_reviewer_structurally_confirms_the_exact_verdict_and_records_it_session_bound(
     isolated_state_home,
 ):
@@ -753,7 +737,6 @@ def test_reviewer_structurally_confirms_the_exact_verdict_and_records_it_session
     assert review["confirmed"] is True
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 @pytest.mark.parametrize(
     "review",
     [
@@ -785,7 +768,6 @@ def test_a_non_confirming_review_is_not_a_confirmation(isolated_state_home, revi
     assert _shape("run-1") is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_a_reviewer_session_equal_to_the_authoring_session_is_rejected(isolated_state_home):
     """A review session identical to the authoring session is rejected (independence is required).
 
@@ -807,7 +789,6 @@ def test_a_reviewer_session_equal_to_the_authoring_session_is_rejected(isolated_
     assert _status("run-1") != "running"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_reviewer_failure_is_recorded_and_retried_with_a_fresh_session(isolated_state_home):
     """A failed review is recorded and retried with ANOTHER fresh session; a later fresh confirmation lets the run proceed, and both attempts are audited.
 
@@ -832,7 +813,6 @@ def test_reviewer_failure_is_recorded_and_retried_with_a_fresh_session(isolated_
     assert _shape("run-1")["observability"]["review"]["reviewer_session_id"] == "review-b"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_confirmation_is_non_overridable_by_human_approval(isolated_state_home):
     """When no fresh secondary review ever confirms, there is no path that proceeds — not even a True human approval overrides the missing confirmation.
 
@@ -858,7 +838,6 @@ def test_confirmation_is_non_overridable_by_human_approval(isolated_state_home):
     assert _shape("run-1") is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_dedup_searches_open_issues_and_only_open_duplicates_pause(isolated_state_home):
     """Dedup runs against OPEN issues before anything is minted; open duplicate work pauses the run, closed matches do not.
 
@@ -893,7 +872,6 @@ def test_dedup_searches_open_issues_and_only_open_duplicates_pause(isolated_stat
     assert _status("run-2") == "running"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 @pytest.mark.parametrize(
     "override,reason",
     [
@@ -926,7 +904,6 @@ def test_pause_conditions_halt_before_mint_with_a_named_reason(
     assert _shape("run-1") is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_human_rejection_pauses_without_minting_an_approved_artifact(isolated_state_home):
     """A human who rejects the buildability contract pauses the run; no approved artifact is minted and authoring stays unreachable.
 
@@ -951,7 +928,6 @@ def test_human_rejection_pauses_without_minting_an_approved_artifact(isolated_st
         engine.enter_authoring("run-1", revision_applied=True)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_oversized_stops_at_decomposition_and_cannot_author(isolated_state_home):
     """An oversized issue stops at decomposition and never proceeds to acceptance-test authoring; the halt is enforced by the transition table.
 
@@ -975,7 +951,6 @@ def test_oversized_stops_at_decomposition_and_cannot_author(isolated_state_home)
     assert _events("run-1", "authoring") == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_not_testable_issue_is_blocked_with_reason_not_testable(isolated_state_home):
     """A pure-refactor / docs / research issue lands blocked with blocked_reason `not_testable`, and cannot author.
 
@@ -1000,7 +975,6 @@ def test_not_testable_issue_is_blocked_with_reason_not_testable(isolated_state_h
         engine.enter_authoring("run-1", revision_applied=True)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_unreachable_code_requires_a_named_seam_in_the_contract(isolated_state_home):
     """When the code under test is not reachable in isolation, the contract must name the seam that makes it testable; an unnamed seam is refused.
 
@@ -1034,7 +1008,6 @@ def test_unreachable_code_requires_a_named_seam_in_the_contract(isolated_state_h
     assert _last_shape_event("run-2")["outcome"] == "refused"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_authoring_is_gated_on_the_applied_revision_via_the_transition_table(isolated_state_home):
     """A buildable run cannot enter acceptance-test authoring until the S20 in-place revision is applied; the transition table enforces it and records no progression on the illegal path.
 
@@ -1061,7 +1034,6 @@ def test_authoring_is_gated_on_the_applied_revision_via_the_transition_table(iso
     assert len(_events("run-1", "authoring")) == 1
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_readiness_enforces_the_stored_scope_never_recomputing_from_the_diff(isolated_state_home):
     """The scope enforced at readiness is exactly the approved scope stored at shaping, never recomputed from the resulting diff — a change touching an out-of-scope file is rejected.
 
@@ -1094,7 +1066,6 @@ def test_readiness_enforces_the_stored_scope_never_recomputing_from_the_diff(iso
     assert _shape("run-1")["write_scope"] == scope
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 def test_amendment_recomputes_a_new_version_with_fresh_confirmation_and_renewed_approval(
     isolated_state_home,
 ):
@@ -1149,7 +1120,6 @@ def test_amendment_recomputes_a_new_version_with_fresh_confirmation_and_renewed_
     assert v1_event["observability"]["justification"] == _JUST  # prior version unchanged
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#13)")
 @pytest.mark.parametrize("branch", ["buildable", "pause", "oversized", "blocked", "amendment"])
 def test_no_github_write_occurs_on_any_shaping_branch(isolated_state_home, branch):
     """No GitHub write of any kind happens on ANY shaping branch — buildable, pause, oversized, blocked, or amendment — proven by a read-only seam whose every non-search access fails.

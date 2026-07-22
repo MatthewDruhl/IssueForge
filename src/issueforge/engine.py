@@ -396,6 +396,69 @@ def reorder(run_id: str, index: int) -> list[str]:
         return list(order)
 
 
+# ---------------------------------------------------------------------------
+# S9 authoring gate + write-scope readiness enforcement (issue #13)
+# ---------------------------------------------------------------------------
+
+
+def enter_authoring(run_id: str, *, revision_applied: bool) -> dict:
+    """The real authoring-entry path: a documented guard over the run's approved ``shape``.
+
+    Raises :class:`state.IllegalTransition` unless the run is BUILDABLE (a ``running`` record whose
+    ``shape`` classifies ``buildable``) AND ``revision_applied`` is True, recording NO progression
+    event on the illegal path. On the legal path it records exactly one ``authoring`` event. The
+    guard is explicit (the shape carries the classification the ``state`` table does not), so the
+    transition table is left untouched.
+    """
+    s = store.RunStore()
+    record = s.read(run_id)
+    shape = record.get("shape")
+    buildable = (
+        record.get("status") == State.RUNNING.value
+        and isinstance(shape, dict)
+        and shape.get("classification") == "buildable"
+    )
+    if not (buildable and revision_applied is True):
+        raise IllegalTransition(
+            f"cannot enter authoring for {run_id!r}: buildable+revision_applied required"
+        )
+    s.append_event(run_id, {"transition": "authoring"})
+    return s.read(run_id)
+
+
+def enforce_write_scope(run_id: str, diff_text: str) -> list[str]:
+    """Return the paths changed in ``diff_text`` that fall OUTSIDE the stored approved write scope.
+
+    The enforced scope is exactly the approved ``write_scope`` persisted at shaping — READ from the
+    record, NEVER recomputed from the diff. ``[]`` means every changed path is within scope.
+    """
+    record = store.RunStore().read(run_id)
+    shape = record.get("shape") or {}
+    allowed: set[str] = set()
+    for entry in shape.get("write_scope") or []:
+        if entry.get("op") == "rename":
+            for key in ("source_path", "destination_path"):
+                if entry.get(key):
+                    allowed.add(entry[key])
+        elif entry.get("path"):
+            allowed.add(entry["path"])
+    return [path for path in _diff_paths(diff_text) if path not in allowed]
+
+
+def _diff_paths(diff_text: str) -> list[str]:
+    """The distinct changed file paths named by a unified diff, in first-seen order."""
+    paths: list[str] = []
+    seen: set[str] = set()
+    for line in diff_text.splitlines():
+        for prefix in ("+++ b/", "--- a/"):
+            if line.startswith(prefix):
+                path = line[len(prefix) :].strip()
+                if path and path != "/dev/null" and path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+    return paths
+
+
 def _reconcile(record: dict, github_facts: Callable[[str], dict]) -> None:
     """Reconcile the record against GitHub-authoritative PR facts; raise on divergence, never heal.
 
