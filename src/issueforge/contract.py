@@ -1236,8 +1236,15 @@ def review_red_contract(
                 )
             review_inputs["red_evidence"] = red_evidence_from_proof(proof)
     finally:
+        # Best-effort cleanup: attempt EVERY tracked subdir even if one removal fails (e.g. a
+        # partial-write or an intervening delete left a subdir missing, so ``remove_scratch``'s
+        # ``rmtree`` raises), and never let a cleanup failure mask an in-flight exception from the
+        # try body. A single failed removal must not leak the remaining materialized subdirs.
         for subdir in materialized_subdirs:
-            seam.remove_scratch(subdir)
+            try:
+                seam.remove_scratch(subdir)
+            except Exception:
+                pass
 
 
 # --------------------------------------------------------------------------- override + finalize
