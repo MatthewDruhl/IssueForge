@@ -2807,10 +2807,6 @@ def _pin_set(manifest):
     return {(str(d), str(v)) for d, v in raw}
 
 
-def _pin_dists(manifest):
-    return {d for d, _ in _pin_set(manifest)}
-
-
 def _collect_ids_cmd(worktree, command):
     """The sorted/dedup canonical node-id set of ``worktree`` collected with an EXPLICIT command —
     the oracle for 'what a hardcoded ``-m pytest`` would collect' vs the configured baseline."""
@@ -3397,13 +3393,16 @@ def test_freeze_pins_externally_autoloaded_plugin_from_provisioned_env(tmp_path)
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_pins_external_to_external_transitive_deps_from_provisioned_env(tmp_path):
-    """External dependency edges are followed transitively: a conftest importing an external dist pins
-    that dist AND its own external dependencies (external->external), resolved from the provisioned env.
+    """External dependency edges are followed transitively AND versioned from the provisioned env: a
+    conftest importing an external dist pins that dist AND its own external dependencies
+    (external->external), each at the EXACT version present in the provisioned interpreter.
 
     technical: conftest imports ``markdown_it`` (markdown-it-py) frozen at 3.0.0, which really depends
-    on ``mdurl`` -> external_pins carries BOTH 'markdown-it-py' and 'mdurl'. A resolver that stops at
-    the directly-imported dist, or a fixed packages_distributions patch, omits the transitive 'mdurl'
-    and fails.
+    on ``mdurl`` (pinned 0.1.2 in the provisioned venv) -> external_pins restricted to the dists under
+    test == {('markdown-it-py','3.0.0'), ('mdurl','0.1.2')} EXACTLY. A resolver that stops at the
+    directly-imported dist (or a fixed packages_distributions patch) omits the transitive 'mdurl'; an
+    impl that records mdurl's version from the parent interpreter or a stale/arbitrary value fails the
+    exact (dist, version) assertion.
     """
     scen = _fscen(
         tmp_path,
@@ -3411,21 +3410,26 @@ def test_freeze_pins_external_to_external_transitive_deps_from_provisioned_env(t
         extra={"tests/conftest.py": "import markdown_it  # noqa: F401\n"},
     )
     run = _freeze_run(scen)
-    res = _freeze_prov(run, scen, _real_pin_provisioner({"markdown-it-py": "3.0.0"}))
-    dists = _pin_dists(res.manifest)
-    assert "markdown-it-py" in dists
-    assert "mdurl" in dists  # followed the real external->external edge
+    res = _freeze_prov(
+        run, scen, _real_pin_provisioner({"markdown-it-py": "3.0.0", "mdurl": "0.1.2"})
+    )
+    pins = _pin_set(res.manifest)
+    under_test = {(d, v) for (d, v) in pins if d in {"markdown-it-py", "mdurl"}}
+    assert under_test == {("markdown-it-py", "3.0.0"), ("mdurl", "0.1.2")}
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_pins_every_owner_of_a_multi_dist_namespace(tmp_path):
     """When one namespace package is provided by MORE THAN ONE distribution, every distinct owning
-    distribution is pinned — a namespace-maps-to-one-dist assumption is wrong.
+    distribution is pinned at its EXACT provisioned version — a namespace-maps-to-one-dist assumption
+    is wrong, and versions come from the provisioned env.
 
     technical: sphinxcontrib.applehelp and sphinxcontrib.devhelp are two DIFFERENT dists sharing the
-    PEP420 ``sphinxcontrib`` namespace; a conftest importing both -> external_pins names BOTH
-    'sphinxcontrib-applehelp' and 'sphinxcontrib-devhelp'. Mapping the namespace to a single owner drops
-    one and fails.
+    PEP420 ``sphinxcontrib`` namespace, pinned 1.0.8 and 1.0.6 in the provisioned venv; a conftest
+    importing both -> external_pins restricted to those owners ==
+    {('sphinxcontrib-applehelp','1.0.8'), ('sphinxcontrib-devhelp','1.0.6')} EXACTLY. Mapping the
+    namespace to a single owner drops one; an impl recording a version from the parent interpreter or a
+    stale/arbitrary value fails the exact (dist, version) assertion.
     """
     scen = _fscen(
         tmp_path,
@@ -3445,9 +3449,14 @@ def test_freeze_pins_every_owner_of_a_multi_dist_namespace(tmp_path):
             {"sphinxcontrib-applehelp": "1.0.8", "sphinxcontrib-devhelp": "1.0.6"}
         ),
     )
-    dists = _pin_dists(res.manifest)
-    assert "sphinxcontrib-applehelp" in dists
-    assert "sphinxcontrib-devhelp" in dists
+    pins = _pin_set(res.manifest)
+    under_test = {
+        (d, v) for (d, v) in pins if d in {"sphinxcontrib-applehelp", "sphinxcontrib-devhelp"}
+    }
+    assert under_test == {
+        ("sphinxcontrib-applehelp", "1.0.8"),
+        ("sphinxcontrib-devhelp", "1.0.6"),
+    }
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
@@ -3456,11 +3465,13 @@ def test_freeze_handles_mixed_in_repo_and_external_namespace_package(tmp_path):
     provenance: the in-repo part is protected as a file (fixture_closure) and the external part is
     pinned.
 
-    technical: in-repo sphinxcontrib/local_ns.py + external sphinxcontrib.applehelp under the PEP420
-    ``sphinxcontrib`` namespace; a conftest importing both -> 'sphinxcontrib/local_ns.py' in
-    contract_paths (in-repo, protected) AND 'sphinxcontrib-applehelp' in external_pins (external,
-    pinned). Treating the whole namespace as external drops the in-repo file; treating it all as in-repo
-    misses the pin — either failure is caught here.
+    technical: in-repo sphinxcontrib/local_ns.py + external sphinxcontrib.applehelp (pinned 1.0.8 in the
+    provisioned venv) under the PEP420 ``sphinxcontrib`` namespace; a conftest importing both ->
+    'sphinxcontrib/local_ns.py' in contract_paths (in-repo, protected) AND the external_pins restricted
+    to that dist == {('sphinxcontrib-applehelp','1.0.8')} EXACTLY. Treating the whole namespace as
+    external drops the in-repo file; treating it all as in-repo misses the pin; an impl recording the
+    version from the parent interpreter or a stale/arbitrary value fails the exact (dist, version)
+    assertion.
     """
     scen = _fscen(
         tmp_path,
@@ -3476,7 +3487,9 @@ def test_freeze_handles_mixed_in_repo_and_external_namespace_package(tmp_path):
     run = _freeze_run(scen)
     res = _freeze_prov(run, scen, _real_pin_provisioner({"sphinxcontrib-applehelp": "1.0.8"}))
     assert "sphinxcontrib/local_ns.py" in set(res.manifest["contract_paths"])
-    assert "sphinxcontrib-applehelp" in _pin_dists(res.manifest)
+    pins = _pin_set(res.manifest)
+    under_test = {(d, v) for (d, v) in pins if d == "sphinxcontrib-applehelp"}
+    assert under_test == {("sphinxcontrib-applehelp", "1.0.8")}
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
