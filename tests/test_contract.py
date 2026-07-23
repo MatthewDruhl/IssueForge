@@ -3992,30 +3992,57 @@ def test_symlink_boundary_behavior(tmp_path, case):
 # once the fix lands. Do not add xfail markers.
 
 
-def test_freeze_rename_operand_enters_write_scope_collision_check(tmp_path):
-    """R1 (Codex gap): a RENAME write-scope operand naming a protected fixture-closure path is a
-    contradiction the freeze must catch — the collision check reads rename source/destination, not only
-    ``entry["path"]``.
+@pytest.mark.parametrize("operand", ["source_path", "destination_path"])
+def test_freeze_rename_operand_enters_write_scope_collision_check(tmp_path, operand):
+    """R1 (Codex gap, strengthened): EACH rename write-scope operand — ``source_path`` AND
+    ``destination_path``, independently — is read by the freeze collision check, so either one naming a
+    protected fixture-closure path is a contradiction the freeze must catch. An impl that includes
+    rename SOURCES but DROPS destinations passes the ``source_path`` case and FAILS the
+    ``destination_path`` case; an impl reading only ``entry["path"]`` fails both.
 
     technical: tests/conftest.py imports tests/helpers.py (so helpers.py is genuinely in fixture_closure
-    and protected); the approved write_scope is a single ``op=rename`` entry whose ``source_path`` is
-    tests/helpers.py. Freeze must refuse, naming helpers.py, exactly like the edit-operand contradiction
-    tests. The current impl builds ``write_scope_paths`` from ``entry["path"]`` only, so the rename
-    operand (which carries source_path/destination_path, no "path" key) is dropped and the freeze wrongly
-    SUCCEEDS — protecting helpers.py while it is effectively in scope.
+    and protected); the approved write_scope is a single ``op=rename`` entry whose tested operand is
+    tests/helpers.py while the OTHER operand names a harmless orphan. Freeze must refuse, naming
+    helpers.py, exactly like the edit-operand contradiction tests, for BOTH operand positions.
     """
     scen = _fscen(
         tmp_path,
-        name="rename-operand",
+        name=f"rename-operand-{operand}",
         extra={
             "tests/conftest.py": "from helpers import H  # noqa: F401\n",
             "tests/helpers.py": "H = 1\n",
         },
     )
     run = _freeze_run(scen)
-    # Replace the approved write scope with a RENAME operand whose source is the protected helper —
-    # engine.enforce_write_scope already reads source_path/destination_path for rename ops (engine.py
-    # ~:440); the freeze collision check must too.
+    # A rename entry (carries source_path/destination_path, no "path" key). Put the protected helper in
+    # the operand under test and a harmless orphan in the other — engine.enforce_write_scope already
+    # reads BOTH rename operands (engine.py ~:440); the freeze collision check must too.
+    entry = {
+        "op": "rename",
+        "source_path": "app/orphan_a.py",
+        "destination_path": "app/orphan_b.py",
+        "justification": "sut",
+    }
+    entry[operand] = "tests/helpers.py"
+    store.RunStore().apply(
+        run,
+        lambda r: {"shape": {**r["shape"], "write_scope": [entry]}},
+    )
+    with pytest.raises(ValueError) as excinfo:
+        _freeze(run, scen)
+    assert "helpers.py" in str(excinfo.value)
+    assert _no_freeze_writes(run)
+
+
+def test_freeze_successful_rename_surfaces_both_operands_in_manifest(tmp_path):
+    """R1 (Codex gap, strengthened): a successful (non-colliding) rename surfaces BOTH operands in
+    manifest['write_scope'] — an impl that dropped the destination operand would record only the source.
+
+    technical: the approved write_scope is one ``op=rename`` over two orphan (non-contract) paths, so the
+    freeze succeeds; manifest['write_scope'] must contain BOTH app/old_impl.py AND app/new_impl.py.
+    """
+    scen = _fscen(tmp_path, name="rename-both-ok")
+    run = _freeze_run(scen)
     store.RunStore().apply(
         run,
         lambda r: {
@@ -4024,18 +4051,18 @@ def test_freeze_rename_operand_enters_write_scope_collision_check(tmp_path):
                 "write_scope": [
                     {
                         "op": "rename",
-                        "source_path": "tests/helpers.py",
-                        "destination_path": "tests/renamed_helper.py",
+                        "source_path": "app/old_impl.py",
+                        "destination_path": "app/new_impl.py",
                         "justification": "sut",
                     }
                 ],
             }
         },
     )
-    with pytest.raises(ValueError) as excinfo:
-        _freeze(run, scen)
-    assert "helpers.py" in str(excinfo.value)
-    assert _no_freeze_writes(run)
+    res = _freeze(run, scen)
+    write_scope = set(res.manifest["write_scope"])
+    assert "app/old_impl.py" in write_scope
+    assert "app/new_impl.py" in write_scope
 
 
 def test_freeze_unions_configured_additive_contract_paths(tmp_path):
@@ -4105,3 +4132,68 @@ def test_freeze_permanent_manifest_retained_on_repeated_differing_freeze(tmp_pat
     after_bytes = _manifest_artifact_path(run).read_bytes()
     assert after_bytes == first_bytes  # first manifest not clobbered
     assert _sha256(after_bytes) == res1.manifest_hash
+
+
+def test_freeze_configured_directory_expands_to_per_file_committed_hashes(tmp_path):
+    """G1 (Codex round-2 gap): a configured ``contract_paths`` entry naming a committed DIRECTORY must
+    expand to its committed descendant FILE paths, each hashed by its own committed bytes — never
+    inserted verbatim and hashed as ``git show <commit>:src/`` (a tree LISTING), which leaves a
+    content-only edit to a descendant undetected and records no per-file hash.
+
+    technical: ``.issueforge.toml`` sets ``contract_paths = ["src/"]`` with a committed src/mod.py. The
+    frozen manifest must contain src/mod.py (NOT the bare "src/") in contract_paths AND dep_hashes with
+    the sha256 of src/mod.py's committed BYTES — so a content-only edit to src/mod.py would change
+    dep_hashes. The current impl inserts "src/" verbatim and hashes the tree listing.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="configured-dir",
+        extra={
+            "src/mod.py": "MOD = 1\n",
+            ".issueforge.toml": (
+                'baseline = ["-m", "pytest"]\nframework = "pytest"\ncontract_paths = ["src/"]\n'
+            ),
+        },
+    )
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    paths = set(res.manifest["contract_paths"])
+    assert "src/mod.py" in paths
+    assert "src/" not in paths and "src" not in paths  # the bare directory is never a contract path
+    oracle = _sha256(_committed_blob(scen.candidate_worktree, f"{scen.candidate_sha}:src/mod.py"))
+    assert res.manifest["dep_hashes"]["src/mod.py"] == oracle
+    # a content-only edit to the descendant would change its recorded per-file hash
+    assert res.manifest["dep_hashes"]["src/mod.py"] != _sha256(b"MOD = 999\n")
+
+
+def test_freeze_identical_retry_retained_manifest_survives_append_failure(tmp_path, monkeypatch):
+    """G2 (Codex round-2 gap): an IDENTICAL re-freeze whose ``append_event`` FAILS must NOT delete the
+    manifest the first successful freeze retained — only files THIS invocation created may roll back. The
+    first freeze's bytes + event stay addressable.
+
+    technical: freeze run-1 successfully (manifest retained, freeze event recorded, hash H). Inject an
+    ``append_event`` failure, then re-freeze the SAME run with IDENTICAL inputs (same canonical bytes).
+    The retry must leave the on-disk manifest == the first bytes and still hashing to H — the first
+    event's manifest_hash is never stranded. The current impl re-writes the fixed artifact then, on the
+    append failure, UNCONDITIONALLY removes it, DESTROYING the retained manifest.
+    """
+    scen = _fscen(tmp_path, name="retry-retained")
+    run = _freeze_run(scen)
+    res1 = _freeze(run, scen)
+    first_bytes = _manifest_artifact_path(run).read_bytes()
+    assert _sha256(first_bytes) == res1.manifest_hash
+    assert list(_freeze_events(run))  # first freeze recorded an event
+
+    # Inject an append_event failure for the SECOND (identical) freeze.
+    def _boom(self, run_id, event):
+        raise RuntimeError("injected append_event failure")
+
+    monkeypatch.setattr(store.RunStore, "append_event", _boom)
+    with pytest.raises(RuntimeError):
+        _freeze(run, scen)
+
+    # The first manifest is still retained and still addressable by the first freeze event's hash.
+    after = _manifest_artifact_path(run)
+    assert after.exists()  # NOT deleted by the failed identical retry
+    assert after.read_bytes() == first_bytes
+    assert _sha256(after.read_bytes()) == res1.manifest_hash

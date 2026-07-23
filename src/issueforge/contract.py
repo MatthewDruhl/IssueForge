@@ -1581,6 +1581,32 @@ def _write_scope_operands(entries: object) -> list[str]:
     return paths
 
 
+def _expand_added_paths(added_paths: tuple[str, ...], committed: set[str]) -> list[str]:
+    """Expand each additive contract path into committed FILE paths before the collision check and
+    hashing. A path naming a committed file is kept verbatim; a path naming a committed DIRECTORY is
+    expanded to every committed descendant file (so each descendant gets its OWN per-file content hash
+    and a content-only edit to it is detected — never hashed as a bare ``git show <commit>:src/`` tree
+    LISTING); a path that names neither a committed file nor a committed directory is an UNSUPPORTED
+    form and fails the freeze CLOSED by name, never silently mis-hashed."""
+    committed_norm = {_normalize(c) for c in committed}
+    expanded: list[str] = []
+    for raw in added_paths:
+        norm = _normalize(raw)
+        if norm in committed_norm:
+            expanded.append(raw)
+            continue
+        prefix = norm + os.sep
+        descendants = sorted(c for c in committed if _normalize(c).startswith(prefix))
+        if descendants:
+            expanded.extend(descendants)
+            continue
+        raise ValueError(
+            f"freeze refused: additive contract path {raw!r} names neither a committed file nor a "
+            "committed directory"
+        )
+    return expanded
+
+
 def freeze_contract(
     run_id: str,
     *,
@@ -1632,8 +1658,13 @@ def freeze_contract(
     # the committed ``.issueforge.toml`` ``contract_paths``. User config can ADD a committed file
     # discovery never reaches (never shrink the boundary), so a path it names is frozen into
     # ``contract_paths`` + ``dep_hashes`` exactly like an explicit user-added path — unioned BEFORE
-    # normalization, the collision check, committed-blob validation, and hashing.
-    added_paths = user_added + tuple(cfg.contract_paths or ())
+    # normalization, the collision check, committed-blob validation, and hashing. A configured entry
+    # naming a committed DIRECTORY is expanded here into its committed descendant files (each hashed by
+    # its own bytes), so a content-only edit to a descendant is detected and never mis-hashed as a
+    # ``git show <commit>:src/`` tree listing; an unsupported form fails closed by name.
+    added_paths = tuple(
+        _expand_added_paths(user_added + tuple(cfg.contract_paths or ()), committed)
+    )
 
     # (4) Provenance discovery over the real collection (a DiscoveryError propagates as a named
     # refusal); the collection also supplies the frozen collected-id set and external pins. The
@@ -1814,28 +1845,38 @@ def freeze_contract(
     # (13a) The permanent contract manifest is SINGLE-ASSIGNMENT per run: if a manifest is already
     # retained for this run and the newly approved canonical bytes DIFFER, fail closed and leave the
     # first manifest untouched — so the first freeze event's ``manifest_hash`` keeps addressing the
-    # retained bytes and no prior manifest is ever clobbered. Identical bytes are an idempotent retry.
+    # retained bytes and no prior manifest is ever clobbered. IDENTICAL bytes are an idempotent retry
+    # of an already-COMPLETED freeze: the retained artifact is reused, NOT rewritten — a rewrite plus a
+    # later ``append_event`` failure would roll the artifact back and DESTROY the first freeze's
+    # retained manifest, stranding its event hash.
     existing_manifest = run_dir(run_id) / _MANIFEST_ARTIFACT
-    if existing_manifest.exists() and existing_manifest.read_bytes() != canonical:
+    manifest_preexisted = existing_manifest.exists()
+    if manifest_preexisted and existing_manifest.read_bytes() != canonical:
         raise ValueError(
             "freeze refused: a permanent contract manifest is already retained for this run with "
             "differing bytes; the first manifest is not clobbered"
         )
-    artifact_path = st.write_artifact(
-        run_id, _MANIFEST_ARTIFACT, canonical.decode("utf-8"), secrets=secrets
-    )
-    persisted = artifact_path.read_bytes()
-    if persisted != canonical:
-        WriteSeam().remove_file(artifact_path)
-        raise ValueError(
-            "freeze refused: persisted manifest bytes diverged from the approved canonical bytes"
+    if manifest_preexisted:
+        artifact_path = existing_manifest
+    else:
+        artifact_path = st.write_artifact(
+            run_id, _MANIFEST_ARTIFACT, canonical.decode("utf-8"), secrets=secrets
         )
+        persisted = artifact_path.read_bytes()
+        if persisted != canonical:
+            WriteSeam().remove_file(artifact_path)
+            raise ValueError(
+                "freeze refused: persisted manifest bytes diverged from the approved canonical bytes"
+            )
     try:
         st.append_event(
             run_id, {"transition": "freeze", "approved": True, "manifest_hash": manifest_hash}
         )
     except BaseException:
-        WriteSeam().remove_file(artifact_path)
+        # Roll back ONLY a manifest THIS invocation created; an idempotent retry over a PRE-EXISTING
+        # retained manifest never deletes it (that manifest belongs to the first successful freeze).
+        if not manifest_preexisted:
+            WriteSeam().remove_file(artifact_path)
         raise
     return FreezeResult(
         approved=True,
