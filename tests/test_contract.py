@@ -3983,3 +3983,125 @@ def test_symlink_boundary_behavior(tmp_path, case):
     with pytest.raises(ValueError):
         _freeze(run, scen)
     assert _no_freeze_writes(run)
+
+
+# =============================================================== #18 S12 regression (Codex gaps)
+#
+# Five real (NOT xfail) regression tests pinning behavior #18 contracts but the committed suite left
+# uncovered. Each FAILS red against the current build-branch impl (that is the point) and turns green
+# once the fix lands. Do not add xfail markers.
+
+
+def test_freeze_rename_operand_enters_write_scope_collision_check(tmp_path):
+    """R1 (Codex gap): a RENAME write-scope operand naming a protected fixture-closure path is a
+    contradiction the freeze must catch — the collision check reads rename source/destination, not only
+    ``entry["path"]``.
+
+    technical: tests/conftest.py imports tests/helpers.py (so helpers.py is genuinely in fixture_closure
+    and protected); the approved write_scope is a single ``op=rename`` entry whose ``source_path`` is
+    tests/helpers.py. Freeze must refuse, naming helpers.py, exactly like the edit-operand contradiction
+    tests. The current impl builds ``write_scope_paths`` from ``entry["path"]`` only, so the rename
+    operand (which carries source_path/destination_path, no "path" key) is dropped and the freeze wrongly
+    SUCCEEDS — protecting helpers.py while it is effectively in scope.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="rename-operand",
+        extra={
+            "tests/conftest.py": "from helpers import H  # noqa: F401\n",
+            "tests/helpers.py": "H = 1\n",
+        },
+    )
+    run = _freeze_run(scen)
+    # Replace the approved write scope with a RENAME operand whose source is the protected helper —
+    # engine.enforce_write_scope already reads source_path/destination_path for rename ops (engine.py
+    # ~:440); the freeze collision check must too.
+    store.RunStore().apply(
+        run,
+        lambda r: {
+            "shape": {
+                **r["shape"],
+                "write_scope": [
+                    {
+                        "op": "rename",
+                        "source_path": "tests/helpers.py",
+                        "destination_path": "tests/renamed_helper.py",
+                        "justification": "sut",
+                    }
+                ],
+            }
+        },
+    )
+    with pytest.raises(ValueError) as excinfo:
+        _freeze(run, scen)
+    assert "helpers.py" in str(excinfo.value)
+    assert _no_freeze_writes(run)
+
+
+def test_freeze_unions_configured_additive_contract_paths(tmp_path):
+    """R4 (Codex gap): a committed file the user names under ``.issueforge.toml`` ``contract_paths`` is
+    UNIONED into the protected boundary — user config can ADD a path discovery never reaches, never only
+    shrink.
+
+    technical: lib/extra_contract.py is committed but reached by no collection route (not a test, not in
+    the fixture graph, not a test-body import, not a .py sibling of a collected test), so discovery does
+    NOT find it. The config lists it under ``contract_paths``. It must appear in
+    manifest['contract_paths'] AND manifest['dep_hashes'] (its committed bytes frozen). The current impl
+    unions only ``user_added_paths`` and ignores ``cfg.contract_paths``, so the file is ABSENT.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="additive-config",
+        extra={
+            "lib/extra_contract.py": "EXTRA = 1\n",
+            ".issueforge.toml": (
+                'baseline = ["-m", "pytest"]\nframework = "pytest"\n'
+                'contract_paths = ["lib/extra_contract.py"]\n'
+            ),
+        },
+    )
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    assert "lib/extra_contract.py" in res.manifest["contract_paths"]
+    assert "lib/extra_contract.py" in res.manifest["dep_hashes"]
+    oracle = _sha256(
+        _committed_blob(scen.candidate_worktree, f"{scen.candidate_sha}:lib/extra_contract.py")
+    )
+    assert res.manifest["dep_hashes"]["lib/extra_contract.py"] == oracle
+
+
+def test_freeze_permanent_manifest_retained_on_repeated_differing_freeze(tmp_path):
+    """R5 (Codex gap): the permanent contract manifest is single-assignment per run — a SECOND freeze of
+    the same run producing DIFFERENT bytes must be REFUSED and the first manifest retained unchanged, so
+    the first freeze event's manifest_hash keeps addressing the retained bytes.
+
+    technical: freeze run-1, capture its artifact bytes + hash. Change an input (the approved write
+    scope) so a re-freeze would yield DIFFERENT canonical bytes, then re-freeze the SAME run. Because the
+    manifest is a permanent artifact written under one fixed run-dir name, the differing re-freeze must
+    fail closed (ValueError) rather than clobber the first; the on-disk bytes still equal the first
+    manifest and still hash to res1.manifest_hash. The current impl re-writes the fixed artifact name
+    unconditionally, DESTROYING the first manifest and stranding its event hash — so the re-freeze
+    wrongly succeeds and the bytes change.
+    """
+    scen = _fscen(tmp_path, name="retention")
+    run = _freeze_run(scen)
+    res1 = _freeze(run, scen)
+    first_bytes = _manifest_artifact_path(run).read_bytes()
+    assert _sha256(first_bytes) == res1.manifest_hash
+    # Change an input so a re-freeze would produce DIFFERENT manifest bytes (a new write-scope path flows
+    # into manifest['write_scope']). app/impl.py is an orphan SUT path, not a contract input, so the
+    # re-freeze is otherwise valid — only the permanence rule should stop it.
+    store.RunStore().apply(
+        run,
+        lambda r: {
+            "shape": {
+                **r["shape"],
+                "write_scope": [{"op": "edit", "path": "app/impl.py", "justification": "sut"}],
+            }
+        },
+    )
+    with pytest.raises(ValueError):
+        _freeze(run, scen)
+    after_bytes = _manifest_artifact_path(run).read_bytes()
+    assert after_bytes == first_bytes  # first manifest not clobbered
+    assert _sha256(after_bytes) == res1.manifest_hash

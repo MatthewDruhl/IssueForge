@@ -1397,3 +1397,97 @@ def test_discover_all_tuples_sorted_dedup_deterministic(tmp_path):
         one = getattr(first, field)
         assert one == getattr(second, field)
         assert one == tuple(sorted(set(one)))
+
+
+# =============================================================== #18 S12 regression (Codex gaps)
+#
+# Two real (NOT xfail) regression tests pinning #18 discovery contracts the committed suite left
+# uncovered. Each FAILS red against the current build-branch impl and turns green once the fix lands.
+
+
+def _s12_discover_cmd(repo, command):
+    """Discover over ``repo`` collected with an EXPLICIT ``command`` (host interpreter, autoload off) —
+    the configured baseline path, so the instrumented recorder must honor the SAME command, not a
+    hardcoded bare ``-m pytest``."""
+    from types import SimpleNamespace
+
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    adapter = PytestAdapter()
+    invocation = SimpleNamespace(
+        worktree=Path(repo),
+        interpreter=sys.executable,
+        command=list(command),
+        env=_s12_env(),
+    )
+    return adapter.discover_contract_dependencies(adapter.canonical_collect(invocation))
+
+
+def test_discover_closure_uses_configured_collection_command_not_bare_pytest(tmp_path):
+    """R2 (Codex gap): the discovered CLOSURE is computed from the CONFIGURED collection command, not a
+    hardcoded ``-m pytest``. A baseline that path-filters collection to ``tests`` must NOT pull a
+    root-level extra test (or its imports) into the closure.
+
+    technical: baseline collects only ``tests``; extra_tests/test_extra.py imports extra_tests/outsider_mod.py
+    and is collected by a bare ``-m pytest`` but NOT by ``-m pytest tests``. Neither extra_tests/test_extra.py
+    nor extra_tests/outsider_mod.py may appear in fixture_closure or test_body_imports. The current impl's
+    instrumented recorder runs bare ``pytest --collect-only`` (pytest_adapter.py ~:309), so it imports the
+    root-level extra test and both files leak into fixture_closure — the closure protects modules the
+    configured baseline excludes.
+    """
+    repo = _s12_write_repo(
+        tmp_path / "reg-configured",
+        {
+            "tests/test_main.py": "def test_main():\n    assert True\n",
+            "extra_tests/test_extra.py": "import outsider_mod  # noqa: F401\n\n\ndef test_extra():\n    assert True\n",
+            "extra_tests/outsider_mod.py": "OUTSIDER = 1\n",
+        },
+    )
+    # Sanity: a bare -m pytest DOES collect the root-level extra test; the configured baseline does not.
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    ids_bare = _s12_discover_cmd(repo, ["-m", "pytest"]).test_files
+    assert "extra_tests/test_extra.py" in ids_bare  # bare pytest reaches it
+    closure = _s12_discover_cmd(repo, ["-m", "pytest", "tests"])
+    assert "extra_tests/test_extra.py" not in closure.test_files  # configured baseline excludes it
+    leaked = set(closure.fixture_closure) | set(closure.test_body_imports)
+    assert "extra_tests/test_extra.py" not in leaked
+    assert "extra_tests/outsider_mod.py" not in leaked
+    # (keep PytestAdapter referenced so an unused-import lint never masks the real assertions)
+    assert PytestAdapter().framework == "pytest"
+
+
+def test_discover_fails_closed_on_nonzero_instrumented_collect_rc(tmp_path, monkeypatch):
+    """R3 (Codex gap): a FAILED instrumented collection must fail the discovery CLOSED, never yield a
+    partial closure the freeze approves.
+
+    technical: the instrumented collector reports a non-zero, non-empty exit (collect_rc=2, a hard
+    pytest collection error) with an otherwise-valid but PARTIAL graph. discover_contract_dependencies
+    must refuse rather than build a closure from the truncated graph. The current impl consumes ``graph``
+    without checking ``graph['collect_rc']`` (pytest_adapter.py ~:916), so it silently returns a partial
+    ContractClosure.
+    """
+    from types import SimpleNamespace
+
+    from issueforge.adapters import pytest_adapter
+    from issueforge.adapters.pytest_adapter import DiscoveryError, PytestAdapter
+
+    partial_graph = {
+        "edges": [],
+        "module_files": {},
+        "module_paths": {},
+        "external": [],
+        "unresolvable": [],  # nothing unresolvable — the ONLY defect is the failed collection
+        "collect_rc": 2,  # pytest exit 2: a hard collection/internal error -> partial, must fail closed
+    }
+    monkeypatch.setattr(
+        pytest_adapter, "_run_discovery_collector", lambda *a, **k: partial_graph
+    )
+    collection = SimpleNamespace(
+        worktree=Path(tmp_path),
+        interpreter=sys.executable,
+        env=None,
+        ids=("tests/test_x.py::test_x",),
+    )
+    with pytest.raises((DiscoveryError, RuntimeError, ValueError)):
+        PytestAdapter().discover_contract_dependencies(collection)
