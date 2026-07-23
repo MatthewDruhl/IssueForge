@@ -3381,14 +3381,21 @@ def test_freeze_pins_externally_autoloaded_plugin_from_provisioned_env(tmp_path)
     test file imports it.
 
     technical: pytest-timeout==2.3.1 installed in a REAL separate venv; discovery loads it via its
-    entry point -> ('pytest-timeout','2.3.1') in external_pins. A provisioner that sets
-    PYTEST_DISABLE_PLUGIN_AUTOLOAD (like the host _provisioner) — or a parent-process resolver — never
-    loads it and omits the pin, so it fails this.
+    entry point -> ('pytest-timeout','2.3.1') in external_pins. An UNRELATED decoy dist (wcwidth) is
+    also installed in the venv but is not imported, not a plugin, and not a transitive of the closure,
+    so its name is ABSENT from external_pins. A provisioner that sets PYTEST_DISABLE_PLUGIN_AUTOLOAD
+    (like the host _provisioner) — or a parent-process resolver — never loads the plugin and omits the
+    pin; an impl that inventories the whole provisioned environment (not the plugin closure) includes
+    the decoy 'wcwidth' and fails the absence assertion.
     """
     scen = _fscen(tmp_path, name="ext-plugin")
     run = _freeze_run(scen)
-    res = _freeze_prov(run, scen, _real_pin_provisioner({"pytest-timeout": "2.3.1"}))
-    assert ("pytest-timeout", "2.3.1") in _pin_set(res.manifest)
+    res = _freeze_prov(
+        run, scen, _real_pin_provisioner({"pytest-timeout": "2.3.1", "wcwidth": "0.8.2"})
+    )
+    pins = _pin_set(res.manifest)
+    assert ("pytest-timeout", "2.3.1") in pins
+    assert "wcwidth" not in {d for d, _ in pins}  # decoy: installed but unreached -> not in closure
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
@@ -3399,10 +3406,13 @@ def test_freeze_pins_external_to_external_transitive_deps_from_provisioned_env(t
 
     technical: conftest imports ``markdown_it`` (markdown-it-py) frozen at 3.0.0, which really depends
     on ``mdurl`` (pinned 0.1.2 in the provisioned venv) -> external_pins restricted to the dists under
-    test == {('markdown-it-py','3.0.0'), ('mdurl','0.1.2')} EXACTLY. A resolver that stops at the
-    directly-imported dist (or a fixed packages_distributions patch) omits the transitive 'mdurl'; an
-    impl that records mdurl's version from the parent interpreter or a stale/arbitrary value fails the
-    exact (dist, version) assertion.
+    test == {('markdown-it-py','3.0.0'), ('mdurl','0.1.2')} EXACTLY, and an UNRELATED decoy dist
+    (wcwidth, installed but not imported and not a transitive of markdown-it-py/mdurl) is ABSENT. A
+    resolver that stops at the directly-imported dist (or a fixed packages_distributions patch) omits
+    the transitive 'mdurl'; an impl that records mdurl's version from the parent interpreter or a
+    stale/arbitrary value fails the exact (dist, version) assertion; an impl that inventories the whole
+    provisioned environment (not the import closure) includes the decoy 'wcwidth' and fails the absence
+    assertion.
     """
     scen = _fscen(
         tmp_path,
@@ -3411,11 +3421,14 @@ def test_freeze_pins_external_to_external_transitive_deps_from_provisioned_env(t
     )
     run = _freeze_run(scen)
     res = _freeze_prov(
-        run, scen, _real_pin_provisioner({"markdown-it-py": "3.0.0", "mdurl": "0.1.2"})
+        run,
+        scen,
+        _real_pin_provisioner({"markdown-it-py": "3.0.0", "mdurl": "0.1.2", "wcwidth": "0.8.2"}),
     )
     pins = _pin_set(res.manifest)
     under_test = {(d, v) for (d, v) in pins if d in {"markdown-it-py", "mdurl"}}
     assert under_test == {("markdown-it-py", "3.0.0"), ("mdurl", "0.1.2")}
+    assert "wcwidth" not in {d for d, _ in pins}  # decoy: installed but unreached -> not in closure
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
@@ -3427,9 +3440,12 @@ def test_freeze_pins_every_owner_of_a_multi_dist_namespace(tmp_path):
     technical: sphinxcontrib.applehelp and sphinxcontrib.devhelp are two DIFFERENT dists sharing the
     PEP420 ``sphinxcontrib`` namespace, pinned 1.0.8 and 1.0.6 in the provisioned venv; a conftest
     importing both -> external_pins restricted to those owners ==
-    {('sphinxcontrib-applehelp','1.0.8'), ('sphinxcontrib-devhelp','1.0.6')} EXACTLY. Mapping the
-    namespace to a single owner drops one; an impl recording a version from the parent interpreter or a
-    stale/arbitrary value fails the exact (dist, version) assertion.
+    {('sphinxcontrib-applehelp','1.0.8'), ('sphinxcontrib-devhelp','1.0.6')} EXACTLY, and an UNRELATED
+    decoy dist (wcwidth, installed but not imported and not a transitive of either owner) is ABSENT.
+    Mapping the namespace to a single owner drops one; an impl recording a version from the parent
+    interpreter or a stale/arbitrary value fails the exact (dist, version) assertion; an impl that
+    inventories the whole provisioned environment (not the import closure) includes the decoy 'wcwidth'
+    and fails the absence assertion.
     """
     scen = _fscen(
         tmp_path,
@@ -3446,7 +3462,11 @@ def test_freeze_pins_every_owner_of_a_multi_dist_namespace(tmp_path):
         run,
         scen,
         _real_pin_provisioner(
-            {"sphinxcontrib-applehelp": "1.0.8", "sphinxcontrib-devhelp": "1.0.6"}
+            {
+                "sphinxcontrib-applehelp": "1.0.8",
+                "sphinxcontrib-devhelp": "1.0.6",
+                "wcwidth": "0.8.2",
+            }
         ),
     )
     pins = _pin_set(res.manifest)
@@ -3457,6 +3477,7 @@ def test_freeze_pins_every_owner_of_a_multi_dist_namespace(tmp_path):
         ("sphinxcontrib-applehelp", "1.0.8"),
         ("sphinxcontrib-devhelp", "1.0.6"),
     }
+    assert "wcwidth" not in {d for d, _ in pins}  # decoy: installed but unreached -> not in closure
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
@@ -3468,10 +3489,12 @@ def test_freeze_handles_mixed_in_repo_and_external_namespace_package(tmp_path):
     technical: in-repo sphinxcontrib/local_ns.py + external sphinxcontrib.applehelp (pinned 1.0.8 in the
     provisioned venv) under the PEP420 ``sphinxcontrib`` namespace; a conftest importing both ->
     'sphinxcontrib/local_ns.py' in contract_paths (in-repo, protected) AND the external_pins restricted
-    to that dist == {('sphinxcontrib-applehelp','1.0.8')} EXACTLY. Treating the whole namespace as
-    external drops the in-repo file; treating it all as in-repo misses the pin; an impl recording the
-    version from the parent interpreter or a stale/arbitrary value fails the exact (dist, version)
-    assertion.
+    to that dist == {('sphinxcontrib-applehelp','1.0.8')} EXACTLY, and an UNRELATED decoy dist (wcwidth,
+    installed but not imported and not a transitive of sphinxcontrib-applehelp) is ABSENT. Treating the
+    whole namespace as external drops the in-repo file; treating it all as in-repo misses the pin; an
+    impl recording the version from the parent interpreter or a stale/arbitrary value fails the exact
+    (dist, version) assertion; an impl that inventories the whole provisioned environment (not the
+    import closure) includes the decoy 'wcwidth' and fails the absence assertion.
     """
     scen = _fscen(
         tmp_path,
@@ -3485,11 +3508,14 @@ def test_freeze_handles_mixed_in_repo_and_external_namespace_package(tmp_path):
         },
     )
     run = _freeze_run(scen)
-    res = _freeze_prov(run, scen, _real_pin_provisioner({"sphinxcontrib-applehelp": "1.0.8"}))
+    res = _freeze_prov(
+        run, scen, _real_pin_provisioner({"sphinxcontrib-applehelp": "1.0.8", "wcwidth": "0.8.2"})
+    )
     assert "sphinxcontrib/local_ns.py" in set(res.manifest["contract_paths"])
     pins = _pin_set(res.manifest)
     under_test = {(d, v) for (d, v) in pins if d == "sphinxcontrib-applehelp"}
     assert under_test == {("sphinxcontrib-applehelp", "1.0.8")}
+    assert "wcwidth" not in {d for d, _ in pins}  # decoy: installed but unreached -> not in closure
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
