@@ -59,7 +59,6 @@ def test_verification_adapter_protocol_declares_six_signatures():
     assert sig.parameters["frozen_deps"].default is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_pytest_adapter_defers_only_the_s12_s13_operations(tmp_path):
     """probe is implemented; ONLY validate_invocation (S13) remains deferred — S12 lands discover.
 
@@ -934,7 +933,6 @@ def _s12_discover_prov(repo, pins):
 # --------------------------------------------------------------------- fixture-closure provenance
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_includes_conftest_transitive_deps_helpers_bypass(tmp_path):
     """A conftest that imports a fixture helper puts the helper INSIDE the boundary (the edit-only-
     helpers bypass is closed).
@@ -958,7 +956,6 @@ def test_discover_includes_conftest_transitive_deps_helpers_bypass(tmp_path):
     assert "tests/helpers.py" in closure.fixture_closure
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_visits_all_conftests_on_collection_path_multilevel(tmp_path):
     """BOTH a root conftest and a subdir conftest are visited with BOTH their transitive closures —
     not just the nearest conftest.
@@ -986,7 +983,6 @@ def test_discover_visits_all_conftests_on_collection_path_multilevel(tmp_path):
     } <= set(closure.fixture_closure)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_includes_package_init_executed_on_import(tmp_path):
     """A fixture import that triggers a package ``__init__`` — which imports a bootstrap module —
     protects BOTH the ``__init__`` and the bootstrap it runs.
@@ -1008,7 +1004,6 @@ def test_discover_includes_package_init_executed_on_import(tmp_path):
     assert {"tests/__init__.py", "tests/bootstrap.py"} <= set(closure.fixture_closure)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_terminates_and_includes_both_sides_of_a_cycle(tmp_path):
     """A cyclic fixture-side import terminates and protects BOTH modules — no hang, no truncation.
 
@@ -1028,7 +1023,6 @@ def test_discover_terminates_and_includes_both_sides_of_a_cycle(tmp_path):
     assert {"tests/helpers.py", "tests/fixture_util.py"} <= set(closure.fixture_closure)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_includes_config_and_pytest_plugin_modules_transitively(tmp_path):
     """A local pytest plugin loaded via config (not a ``pytest_plugins`` literal) and a helper it
     imports are both protected, transitively.
@@ -1049,7 +1043,6 @@ def test_discover_includes_config_and_pytest_plugin_modules_transitively(tmp_pat
     assert {"plug.py", "plug_util.py"} <= set(closure.fixture_closure)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_protects_dynamically_imported_collection_dep(tmp_path):
     """A conftest that dynamically ``importlib.import_module``s a module at collection protects it —
     discovery observes REAL collection deps, not AST-only.
@@ -1073,7 +1066,6 @@ def test_discover_protects_dynamically_imported_collection_dep(tmp_path):
 # ------------------------------------------------------------------- external identity + fail-closed
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_pins_external_identity_not_module_name(tmp_path):
     """An external import is pinned by its DISTRIBUTION identity + version, not its module name.
 
@@ -1093,7 +1085,6 @@ def test_discover_pins_external_identity_not_module_name(tmp_path):
     assert all(dist != "markdown_it" for dist, _ in closure.external)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_pins_external_transitive_deps_exactly_no_extras(tmp_path):
     """An external dist plus the second distribution it pulls into collection are BOTH pinned at their
     EXACT provisioned versions, and NO unrelated installed distribution is pinned.
@@ -1119,7 +1110,6 @@ def test_discover_pins_external_transitive_deps_exactly_no_extras(tmp_path):
     assert all(dist != "wcwidth" for dist, _ in closure.external)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_external_pin_is_version_sensitive(tmp_path):
     """The same external import provisioned under two distribution versions yields two distinct pins.
 
@@ -1143,7 +1133,6 @@ def test_discover_external_pin_is_version_sensitive(tmp_path):
     assert ("platformdirs", "4.9.1") not in first.external
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 @pytest.mark.parametrize(
     "module, expect_raise",
     [("pathlib", False), ("nonexistent_pkg_xyz", True)],
@@ -1173,7 +1162,6 @@ def test_discover_stdlib_is_exempt_unowned_thirdparty_fails_closed(tmp_path, mod
         assert all(dist != "pathlib" for dist, _ in closure.external)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 @pytest.mark.parametrize("route", ["conftest", "test", "plugin", "transitive"])
 def test_discover_fails_closed_on_unresolvable_across_every_provenance_route(tmp_path, route):
     """An unresolvable import from a conftest, a test module, a plugin, or a transitive helper each
@@ -1210,7 +1198,6 @@ def test_discover_fails_closed_on_unresolvable_across_every_provenance_route(tmp
 # ------------------------------------------------------------------- test-body provenance tagging
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_tags_test_body_import_distinct_from_fixture_and_excludes_decoys(tmp_path):
     """A production module imported in a TEST BODY is a candidate SUT, reported SEPARATELY from a
     fixture-reached helper; an unimported repo module is in NO set.
@@ -1242,7 +1229,6 @@ def test_discover_tags_test_body_import_distinct_from_fixture_and_excludes_decoy
     assert "app/unused.py" not in everything
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_fixture_provenance_wins_on_collision(tmp_path):
     """A path reached BOTH via a test body and via conftest is classified as fixture_closure
     (protected), never test_body_imports.
@@ -1263,7 +1249,6 @@ def test_discover_fixture_provenance_wins_on_collision(tmp_path):
     assert "tests/shared.py" not in closure.test_body_imports
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_follows_test_body_import_transitively(tmp_path):
     """A test-body import chain protects EVERY module on the chain.
 
@@ -1282,7 +1267,6 @@ def test_discover_follows_test_body_import_transitively(tmp_path):
     assert {"app/calc.py", "app/math_core.py"} <= set(closure.test_body_imports)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_shadowing_is_not_an_escape_same_module(tmp_path):
     """An import plus a later same-name LOCAL rebinding in the same module (the MARVIN bug form) still
     keeps the real import inside the boundary.
@@ -1309,7 +1293,6 @@ def test_discover_shadowing_is_not_an_escape_same_module(tmp_path):
 # ------------------------------------------------------------------- adapter-supplied, not shrinkable
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_is_adapter_supplied_never_configured_or_shrinkable(tmp_path):
     """Discovery computes from real imports; its signature takes only ``collection`` and a narrower
     configured contract-path list cannot shrink the fixture closure.
@@ -1341,7 +1324,6 @@ def test_discover_is_adapter_supplied_never_configured_or_shrinkable(tmp_path):
     assert "tests/helpers.py" in closure.fixture_closure
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_test_files_is_exact_sorted_dedup_set(tmp_path):
     """``test_files`` equals the COMPLETE collected test-module set, sorted and duplicate-free.
 
@@ -1364,7 +1346,6 @@ def test_discover_test_files_is_exact_sorted_dedup_set(tmp_path):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_namespace_package_pins_owning_distribution_only(tmp_path):
     """For a module whose shared namespace maps to several distributions, discovery pins ONLY the
     distribution that actually PROVIDES the imported module, not every namespace sibling.
@@ -1395,7 +1376,6 @@ def test_discover_namespace_package_pins_owning_distribution_only(tmp_path):
     assert all(dist != "sphinxcontrib-devhelp" for dist, _ in closure.external)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_discover_all_tuples_sorted_dedup_deterministic(tmp_path):
     """Every ContractClosure tuple is sorted, duplicate-free, and identical across two runs.
 
@@ -1417,3 +1397,95 @@ def test_discover_all_tuples_sorted_dedup_deterministic(tmp_path):
         one = getattr(first, field)
         assert one == getattr(second, field)
         assert one == tuple(sorted(set(one)))
+
+
+# =============================================================== #18 S12 regression (Codex gaps)
+#
+# Two real (NOT xfail) regression tests pinning #18 discovery contracts the committed suite left
+# uncovered. Each FAILS red against the current build-branch impl and turns green once the fix lands.
+
+
+def _s12_discover_cmd(repo, command):
+    """Discover over ``repo`` collected with an EXPLICIT ``command`` (host interpreter, autoload off) —
+    the configured baseline path, so the instrumented recorder must honor the SAME command, not a
+    hardcoded bare ``-m pytest``."""
+    from types import SimpleNamespace
+
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    adapter = PytestAdapter()
+    invocation = SimpleNamespace(
+        worktree=Path(repo),
+        interpreter=sys.executable,
+        command=list(command),
+        env=_s12_env(),
+    )
+    return adapter.discover_contract_dependencies(adapter.canonical_collect(invocation))
+
+
+def test_discover_closure_uses_configured_collection_command_not_bare_pytest(tmp_path):
+    """R2 (Codex gap): the discovered CLOSURE is computed from the CONFIGURED collection command, not a
+    hardcoded ``-m pytest``. A baseline that path-filters collection to ``tests`` must NOT pull a
+    root-level extra test (or its imports) into the closure.
+
+    technical: baseline collects only ``tests``; extra_tests/test_extra.py imports extra_tests/outsider_mod.py
+    and is collected by a bare ``-m pytest`` but NOT by ``-m pytest tests``. Neither extra_tests/test_extra.py
+    nor extra_tests/outsider_mod.py may appear in fixture_closure or test_body_imports. The current impl's
+    instrumented recorder runs bare ``pytest --collect-only`` (pytest_adapter.py ~:309), so it imports the
+    root-level extra test and both files leak into fixture_closure — the closure protects modules the
+    configured baseline excludes.
+    """
+    repo = _s12_write_repo(
+        tmp_path / "reg-configured",
+        {
+            "tests/test_main.py": "def test_main():\n    assert True\n",
+            "extra_tests/test_extra.py": "import outsider_mod  # noqa: F401\n\n\ndef test_extra():\n    assert True\n",
+            "extra_tests/outsider_mod.py": "OUTSIDER = 1\n",
+        },
+    )
+    # Sanity: a bare -m pytest DOES collect the root-level extra test; the configured baseline does not.
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    ids_bare = _s12_discover_cmd(repo, ["-m", "pytest"]).test_files
+    assert "extra_tests/test_extra.py" in ids_bare  # bare pytest reaches it
+    closure = _s12_discover_cmd(repo, ["-m", "pytest", "tests"])
+    assert "extra_tests/test_extra.py" not in closure.test_files  # configured baseline excludes it
+    leaked = set(closure.fixture_closure) | set(closure.test_body_imports)
+    assert "extra_tests/test_extra.py" not in leaked
+    assert "extra_tests/outsider_mod.py" not in leaked
+    # (keep PytestAdapter referenced so an unused-import lint never masks the real assertions)
+    assert PytestAdapter().framework == "pytest"
+
+
+def test_discover_fails_closed_on_nonzero_instrumented_collect_rc(tmp_path, monkeypatch):
+    """R3 (Codex gap): a FAILED instrumented collection must fail the discovery CLOSED, never yield a
+    partial closure the freeze approves.
+
+    technical: the instrumented collector reports a non-zero, non-empty exit (collect_rc=2, a hard
+    pytest collection error) with an otherwise-valid but PARTIAL graph. discover_contract_dependencies
+    must refuse rather than build a closure from the truncated graph. The current impl consumes ``graph``
+    without checking ``graph['collect_rc']`` (pytest_adapter.py ~:916), so it silently returns a partial
+    ContractClosure.
+    """
+    from types import SimpleNamespace
+
+    from issueforge.adapters import pytest_adapter
+    from issueforge.adapters.pytest_adapter import DiscoveryError, PytestAdapter
+
+    partial_graph = {
+        "edges": [],
+        "module_files": {},
+        "module_paths": {},
+        "external": [],
+        "unresolvable": [],  # nothing unresolvable — the ONLY defect is the failed collection
+        "collect_rc": 2,  # pytest exit 2: a hard collection/internal error -> partial, must fail closed
+    }
+    monkeypatch.setattr(pytest_adapter, "_run_discovery_collector", lambda *a, **k: partial_graph)
+    collection = SimpleNamespace(
+        worktree=Path(tmp_path),
+        interpreter=sys.executable,
+        env=None,
+        ids=("tests/test_x.py::test_x",),
+    )
+    with pytest.raises((DiscoveryError, RuntimeError, ValueError)):
+        PytestAdapter().discover_contract_dependencies(collection)

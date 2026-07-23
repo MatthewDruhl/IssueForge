@@ -21,3 +21,13 @@ def state_root() -> Path:
     if override:
         return Path(override)
     return Path.home() / ".local" / "state" / "issueforge"
+
+
+def run_dir(run_id: str) -> Path:
+    """The directory holding one run's persisted manifest, events, and artifacts.
+
+    Mirrors ``store.run_dir`` (the store writes here); exposed on the roots module so a reader can
+    address a run's permanent artifacts (e.g. the frozen contract manifest) without importing the
+    store's write path.
+    """
+    return Path(state_root()).resolve() / "runs" / run_id

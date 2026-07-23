@@ -221,6 +221,18 @@ class WriteSeam:
                     return root
         raise BoundaryViolation(f"remove of {root} is outside any registered scratch root")
 
+    def remove_file(self, path: Path) -> Path:
+        """Remove a single file under an allowed root — the sanctioned rollback primitive.
+
+        ``io.py`` is the only module the write-surface lint permits ``os.unlink`` in. The target must
+        resolve under a registered root (the same check every write passes); a missing file is a
+        no-op so a double rollback is safe. Never removes a directory tree (that is ``remove_scratch``).
+        """
+        target = self._checked(path)
+        if target.exists():
+            os.unlink(target)
+        return target
+
     def open_lock(self, path: Path) -> int:
         """Open (creating if needed) an advisory-lock file under an allowed root; return its fd.
 

@@ -2839,7 +2839,6 @@ def _no_freeze_writes(run):
 # =============================================================== Group B — freeze / manifest
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_manifest_records_every_frozen_field_populated(tmp_path):
     """On approval the manifest freezes EVERY schema field, each populated from the scenario — the
     contract commit, per-file hashes, the discovered closure, config, command arrays, collected ids,
@@ -2871,7 +2870,6 @@ def test_freeze_manifest_records_every_frozen_field_populated(tmp_path):
     assert m["collected_ids"] and m["red_evidence"] and m["contract_review"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 @pytest.mark.parametrize(
     "mutate",
     ["verdict_not_accepted", "stale_head", "missing_review_block", "stale_red", "chain_mismatch"],
@@ -2907,7 +2905,6 @@ def test_freeze_refuses_noncurrent_review_evidence(tmp_path, mutate):
     assert store.RunStore().read(run)["status"] == before
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_binds_contract_commit_ancestor_of_implementation_independent_oracle(tmp_path):
     """The frozen contract commit is the real committed HEAD — an ancestor of a later implementation
     commit — verified against an independent git oracle, and it is distinct from the base sha.
@@ -2940,7 +2937,6 @@ def test_freeze_binds_contract_commit_ancestor_of_implementation_independent_ora
     assert anc.returncode == 0
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_rejects_dirty_protected_file_never_freezes_uncommitted_bytes(tmp_path):
     """An uncommitted change to a protected file makes the freeze refuse — bytes are frozen from the
     committed blob, never the dirty worktree.
@@ -2959,7 +2955,6 @@ def test_freeze_rejects_dirty_protected_file_never_freezes_uncommitted_bytes(tmp
     assert _no_freeze_writes(run)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_dep_hashes_domain_equals_contract_paths_exact_blob_hashes(tmp_path):
     """Every protected in-repo file has an exact committed-blob sha256, and the hash-map domain equals
     contract_paths exactly.
@@ -2978,7 +2973,6 @@ def test_freeze_dep_hashes_domain_equals_contract_paths_exact_blob_hashes(tmp_pa
         assert digest == oracle, f"hash mismatch for {path}"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_two_sets_disjoint_after_normalization_alias_collision_named(tmp_path):
     """The contract set and write scope share no path after normalization; a path ALIAS is caught, not
     passed as distinct.
@@ -2994,7 +2988,6 @@ def test_freeze_two_sets_disjoint_after_normalization_alias_collision_named(tmp_
     assert _no_freeze_writes(run)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 @pytest.mark.parametrize(
     "category, path, extra",
     [
@@ -3026,7 +3019,6 @@ def test_freeze_fails_when_any_protected_category_is_in_write_scope(
     assert _no_freeze_writes(run)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_does_not_silently_sanitize_collisions(tmp_path):
     """The freeze never rewrites the sets to force disjointness; a real overlap fails rather than being
     edited away.
@@ -3044,7 +3036,6 @@ def test_freeze_does_not_silently_sanitize_collisions(tmp_path):
     assert ws == ["tests/helpers.py"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_excludes_in_scope_sut_surfaces_it_and_build_proceeds(tmp_path):
     """A test-body import IN the write scope is excluded from the frozen set, RECORDED as an editable
     SUT, and the build proceeds; editing it is allowed.
@@ -3070,7 +3061,6 @@ def test_freeze_excludes_in_scope_sut_surfaces_it_and_build_proceeds(tmp_path):
     assert engine.enforce_write_scope(run, diff) == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_protects_test_body_import_not_in_scope(tmp_path):
     """A test-body import NOT in the write scope stays protected (an under-scoped SUT is frozen).
 
@@ -3090,7 +3080,6 @@ def test_freeze_protects_test_body_import_not_in_scope(tmp_path):
     assert "app/other.py" in res.manifest["dep_hashes"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_protects_directly_imported_oracle_outside_scope(tmp_path):
     """An oracle imported directly in a test body but kept OUT of the write scope is protected; its edit
     is caught.
@@ -3113,7 +3102,6 @@ def test_freeze_protects_directly_imported_oracle_outside_scope(tmp_path):
     assert _sha256((scen.candidate_worktree / "tests/oracle.py").read_bytes()) != frozen
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_helpers_bypass_caught_via_frozen_hash(tmp_path):
     """After approval, mutating ONLY helpers.py is caught because its S12-frozen hash mismatches.
 
@@ -3128,7 +3116,6 @@ def test_freeze_helpers_bypass_caught_via_frozen_hash(tmp_path):
     assert _sha256((scen.candidate_worktree / "tests/helpers.py").read_bytes()) != frozen
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_write_scope_exactly_preserved(tmp_path):
     """The frozen write scope is EXACTLY the normalized approved shape["write_scope"].
 
@@ -3140,7 +3127,6 @@ def test_freeze_write_scope_exactly_preserved(tmp_path):
     assert tuple(sorted(res.manifest["write_scope"])) == ("app/impl.py", "app/impl2.py")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_contract_paths_match_composition_formula_user_can_only_add(tmp_path):
     """The protected boundary equals the composition formula. A conftest-reached helper enters via
     fixture_closure and stays protected even when the user's .issueforge.toml contract list omits it,
@@ -3174,7 +3160,6 @@ def test_freeze_contract_paths_match_composition_formula_user_can_only_add(tmp_p
     assert "tests/test_new.py" in paths
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_contract_paths_exclude_unreached_committed_files(tmp_path):
     """A committed file reached by NO collection route — not a test, not in the fixture graph, not a
     test-body import — is NOT in the protected boundary. The closure base is the discovered graph, not
@@ -3202,7 +3187,6 @@ def test_freeze_contract_paths_exclude_unreached_committed_files(tmp_path):
     assert "orphan.py" not in paths
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_collected_ids_exact_bound_to_collection(tmp_path):
     """The frozen collected-id set equals the adapter's collection exactly (sorted, dedup).
 
@@ -3215,7 +3199,6 @@ def test_freeze_collected_ids_exact_bound_to_collection(tmp_path):
     assert tuple(res.manifest["collected_ids"]) == _collect_ids(scen.candidate_worktree)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_red_evidence_is_the_exact_s10_proof(tmp_path):
     """The frozen red evidence is the EXACT S10 proof — accepted, failing, bound to base/head, with
     added_ids == the collected targeted ids — proven by running the REAL prove_red.
@@ -3236,7 +3219,6 @@ def test_freeze_red_evidence_is_the_exact_s10_proof(tmp_path):
     assert list(ev["added_ids"]) == [_NEW_X]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_command_arrays_exact_ordering_and_boundaries(tmp_path):
     """Every .issueforge.toml command array is frozen exactly, preserving order and argument
     boundaries.
@@ -3258,7 +3240,6 @@ def test_freeze_command_arrays_exact_ordering_and_boundaries(tmp_path):
     assert ("pytest", "-q", "--maxfail=1") in {tuple(c) for c in res.manifest["command"]}
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 @pytest.mark.parametrize(
     "form, files, marker",
     [
@@ -3301,7 +3282,6 @@ def test_freeze_config_four_forms_and_precedence(tmp_path, form, files, marker):
     assert marker in json.dumps(res.manifest["test_config"])
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_config_and_issueforge_toml_are_hashed_boundary_members(tmp_path):
     """The selected config file and .issueforge.toml are protected paths with content hashes; editing
     either after approval is detected.
@@ -3320,7 +3300,6 @@ def test_freeze_config_and_issueforge_toml_are_hashed_boundary_members(tmp_path)
     assert _sha256((scen.candidate_worktree / "pytest.ini").read_bytes()) != frozen
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_external_pins_resolve_from_provisioned_env_and_flow_into_hash(tmp_path):
     """External pins resolve from the PROVISIONED hermetic interpreter (D5), not the parent process,
     and they are part of the manifest hash: the SAME conftest import pinned at two DIFFERENT provisioned
@@ -3344,7 +3323,6 @@ def test_freeze_external_pins_resolve_from_provisioned_env_and_flow_into_hash(tm
     assert res1.manifest_hash != res2.manifest_hash
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_collects_via_configured_invocation_not_hardcoded_dash_m_pytest(tmp_path):
     """Freeze collects the contract via the repo's CONFIGURED .issueforge.toml baseline, not a
     hardcoded ``-m pytest``. A baseline that path-filters collection to ``tests`` must EXCLUDE a
@@ -3374,7 +3352,6 @@ def test_freeze_collects_via_configured_invocation_not_hardcoded_dash_m_pytest(t
     assert set(res.manifest["collected_ids"]) == set(configured_ids)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_pins_externally_autoloaded_plugin_from_provisioned_env(tmp_path):
     """An entry-point pytest plugin present in the PROVISIONED venv is loaded during discovery
     (autoload ON in the hermetic env) and its distribution is pinned in external_pins — even though no
@@ -3404,7 +3381,6 @@ def test_freeze_pins_externally_autoloaded_plugin_from_provisioned_env(tmp_path)
     assert "wcwidth" not in {d for d, _ in pins}  # decoy: installed but unreached -> not in closure
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_pins_external_to_external_transitive_deps_from_provisioned_env(tmp_path):
     """External dependency edges are followed transitively AND versioned from the provisioned env: a
     conftest importing an external dist pins that dist AND its own external dependencies
@@ -3437,7 +3413,6 @@ def test_freeze_pins_external_to_external_transitive_deps_from_provisioned_env(t
     assert "wcwidth" not in {d for d, _ in pins}  # decoy: installed but unreached -> not in closure
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_pins_every_owner_of_a_multi_dist_namespace(tmp_path):
     """When one namespace package is provided by MORE THAN ONE distribution, every distinct owning
     distribution is pinned at its EXACT provisioned version — a namespace-maps-to-one-dist assumption
@@ -3491,7 +3466,6 @@ def test_freeze_pins_every_owner_of_a_multi_dist_namespace(tmp_path):
     assert "wcwidth" not in {d for d, _ in pins}  # decoy: installed but unreached -> not in closure
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_handles_mixed_in_repo_and_external_namespace_package(tmp_path):
     """A namespace shared by an IN-REPO submodule and an EXTERNAL site-packages submodule splits by
     provenance: the in-repo part is protected as a file (fixture_closure) and the external part is
@@ -3535,7 +3509,6 @@ def test_freeze_handles_mixed_in_repo_and_external_namespace_package(tmp_path):
     assert "wcwidth" not in {d for d, _ in pins}  # decoy: installed but unreached -> not in closure
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_reject_writes_nothing_atomic(tmp_path):
     """On rejection nothing is written — no manifest, no event, no frozen state, no partial closure.
 
@@ -3551,7 +3524,6 @@ def test_freeze_reject_writes_nothing_atomic(tmp_path):
     assert store.RunStore().read(run)["status"] == before
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_approver_called_before_any_write(tmp_path):
     """The approver is consulted BEFORE the first store/event write.
 
@@ -3571,7 +3543,6 @@ def test_freeze_approver_called_before_any_write(tmp_path):
     assert seen["artifact"] is False
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_approver_bound_to_exact_persisted_manifest(tmp_path):
     """The exact bytes shown to the approver equal the immutable persisted artifact bytes, and the
     event's manifest hash is the sha256 of those same bytes — no show-A-persist-B.
@@ -3594,7 +3565,6 @@ def test_freeze_approver_bound_to_exact_persisted_manifest(tmp_path):
     assert event["manifest_hash"] == _sha256(persisted)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_callback_once_decision_controls_transition_no_default_path(tmp_path):
     """The callback is called exactly once for both outcomes; its boolean controls the transition;
     omission/exception cannot freeze.
@@ -3639,7 +3609,6 @@ def test_freeze_callback_once_decision_controls_transition_no_default_path(tmp_p
     assert not _freeze_events(run_r)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_event_carries_decision_and_manifest_hash(tmp_path):
     """The approval event records the approver's decision AND the exact manifest hash.
 
@@ -3654,7 +3623,6 @@ def test_freeze_event_carries_decision_and_manifest_hash(tmp_path):
     assert event["manifest_hash"] == _sha256(persisted) == res.manifest_hash
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_manifest_is_canonical_bytes_verified_from_persisted(tmp_path):
     """The persisted manifest artifact is canonical (sorted keys, UTF-8), carries NO self-referential
     hash field, and the freeze event's manifest_hash is sha256 of those exact persisted bytes.
@@ -3675,7 +3643,6 @@ def test_freeze_manifest_is_canonical_bytes_verified_from_persisted(tmp_path):
     assert event["manifest_hash"] == _sha256(persisted)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_content_hashes_exact_both_versions(tmp_path):
     """Each frozen hash is the content hash of the committed blob; two scenarios differing by one byte
     have different, independently-verified digests.
@@ -3700,7 +3667,6 @@ def test_freeze_content_hashes_exact_both_versions(tmp_path):
     assert oracle_a != oracle_b
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_manifest_is_permanent_addressable_artifact(tmp_path):
     """The manifest persists as a permanent artifact a fresh reader retrieves unchanged; a later freeze
     of a different run does not overwrite it.
@@ -3719,7 +3685,6 @@ def test_freeze_manifest_is_permanent_addressable_artifact(tmp_path):
     assert _sha256(bytes_after) == res1.manifest_hash
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_redaction_removes_only_secrets_preserves_command_structure(tmp_path):
     """Secret redaction blanks only secret material; the executable command structure survives and two
     materially-different commands do not both collapse to [REDACTED].
@@ -3758,7 +3723,6 @@ def test_freeze_redaction_removes_only_secrets_preserves_command_structure(tmp_p
     assert res1.manifest["command"] != res2.manifest["command"]  # still distinguishable
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_fails_closed_on_incomplete_discovery_atomic(tmp_path):
     """If discovery cannot resolve an import, the freeze refuses entirely, naming it — no manifest,
     event, or frozen state.
@@ -3783,7 +3747,6 @@ def test_freeze_fails_closed_on_incomplete_discovery_atomic(tmp_path):
 # =============================================================== Group C — boundary mutations
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_deleted_file_reads_as_empty_module_delta_names_every_nodeid(tmp_path):
     """A deleted contract test file reads as an empty module — the deletion delta contains EVERY
     node-id it declared, not a generic missing-file error.
@@ -3807,7 +3770,6 @@ def test_deleted_file_reads_as_empty_module_delta_names_every_nodeid(tmp_path):
     assert _no_freeze_writes(run)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_partial_deletion_of_a_node_is_detected(tmp_path):
     """Deleting ONE of two test functions is detected via collected-id loss.
 
@@ -3829,7 +3791,6 @@ def test_partial_deletion_of_a_node_is_detected(tmp_path):
     assert _no_freeze_writes(run)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 @pytest.mark.parametrize(
     "kind, path, extra",
     [
@@ -3859,7 +3820,6 @@ def test_deletion_of_nontest_protected_file_refuses(tmp_path, kind, path, extra)
     assert _no_freeze_writes(run)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_rename_detected_old_deleted_new_no_silent_identity(tmp_path):
     """Renaming a protected file shows the old path recorded and the new path does NOT silently inherit
     the old identity.
@@ -3879,7 +3839,6 @@ def test_rename_detected_old_deleted_new_no_silent_identity(tmp_path):
     assert "tests/helper_new.py" not in res.manifest["contract_paths"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_generated_file_authoritative_snapshot_is_frozen_commit_blob(tmp_path):
     """A generated helper present at collection is frozen from the COMMITTED snapshot; a later byte
     change is measured against that snapshot.
@@ -3938,7 +3897,6 @@ def _symlink_scenario(root, name, *, link_rel, target_rel, target_content=None, 
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 @pytest.mark.parametrize(
     "case", ["in_repo", "outside_repo", "broken", "cyclic", "retarget_outside"]
 )
@@ -4025,3 +3983,217 @@ def test_symlink_boundary_behavior(tmp_path, case):
     with pytest.raises(ValueError):
         _freeze(run, scen)
     assert _no_freeze_writes(run)
+
+
+# =============================================================== #18 S12 regression (Codex gaps)
+#
+# Five real (NOT xfail) regression tests pinning behavior #18 contracts but the committed suite left
+# uncovered. Each FAILS red against the current build-branch impl (that is the point) and turns green
+# once the fix lands. Do not add xfail markers.
+
+
+@pytest.mark.parametrize("operand", ["source_path", "destination_path"])
+def test_freeze_rename_operand_enters_write_scope_collision_check(tmp_path, operand):
+    """R1 (Codex gap, strengthened): EACH rename write-scope operand — ``source_path`` AND
+    ``destination_path``, independently — is read by the freeze collision check, so either one naming a
+    protected fixture-closure path is a contradiction the freeze must catch. An impl that includes
+    rename SOURCES but DROPS destinations passes the ``source_path`` case and FAILS the
+    ``destination_path`` case; an impl reading only ``entry["path"]`` fails both.
+
+    technical: tests/conftest.py imports tests/helpers.py (so helpers.py is genuinely in fixture_closure
+    and protected); the approved write_scope is a single ``op=rename`` entry whose tested operand is
+    tests/helpers.py while the OTHER operand names a harmless orphan. Freeze must refuse, naming
+    helpers.py, exactly like the edit-operand contradiction tests, for BOTH operand positions.
+    """
+    scen = _fscen(
+        tmp_path,
+        name=f"rename-operand-{operand}",
+        extra={
+            "tests/conftest.py": "from helpers import H  # noqa: F401\n",
+            "tests/helpers.py": "H = 1\n",
+        },
+    )
+    run = _freeze_run(scen)
+    # A rename entry (carries source_path/destination_path, no "path" key). Put the protected helper in
+    # the operand under test and a harmless orphan in the other — engine.enforce_write_scope already
+    # reads BOTH rename operands (engine.py ~:440); the freeze collision check must too.
+    entry = {
+        "op": "rename",
+        "source_path": "app/orphan_a.py",
+        "destination_path": "app/orphan_b.py",
+        "justification": "sut",
+    }
+    entry[operand] = "tests/helpers.py"
+    store.RunStore().apply(
+        run,
+        lambda r: {"shape": {**r["shape"], "write_scope": [entry]}},
+    )
+    with pytest.raises(ValueError) as excinfo:
+        _freeze(run, scen)
+    assert "helpers.py" in str(excinfo.value)
+    assert _no_freeze_writes(run)
+
+
+def test_freeze_successful_rename_surfaces_both_operands_in_manifest(tmp_path):
+    """R1 (Codex gap, strengthened): a successful (non-colliding) rename surfaces BOTH operands in
+    manifest['write_scope'] — an impl that dropped the destination operand would record only the source.
+
+    technical: the approved write_scope is one ``op=rename`` over two orphan (non-contract) paths, so the
+    freeze succeeds; manifest['write_scope'] must contain BOTH app/old_impl.py AND app/new_impl.py.
+    """
+    scen = _fscen(tmp_path, name="rename-both-ok")
+    run = _freeze_run(scen)
+    store.RunStore().apply(
+        run,
+        lambda r: {
+            "shape": {
+                **r["shape"],
+                "write_scope": [
+                    {
+                        "op": "rename",
+                        "source_path": "app/old_impl.py",
+                        "destination_path": "app/new_impl.py",
+                        "justification": "sut",
+                    }
+                ],
+            }
+        },
+    )
+    res = _freeze(run, scen)
+    write_scope = set(res.manifest["write_scope"])
+    assert "app/old_impl.py" in write_scope
+    assert "app/new_impl.py" in write_scope
+
+
+def test_freeze_unions_configured_additive_contract_paths(tmp_path):
+    """R4 (Codex gap): a committed file the user names under ``.issueforge.toml`` ``contract_paths`` is
+    UNIONED into the protected boundary — user config can ADD a path discovery never reaches, never only
+    shrink.
+
+    technical: lib/extra_contract.py is committed but reached by no collection route (not a test, not in
+    the fixture graph, not a test-body import, not a .py sibling of a collected test), so discovery does
+    NOT find it. The config lists it under ``contract_paths``. It must appear in
+    manifest['contract_paths'] AND manifest['dep_hashes'] (its committed bytes frozen). The current impl
+    unions only ``user_added_paths`` and ignores ``cfg.contract_paths``, so the file is ABSENT.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="additive-config",
+        extra={
+            "lib/extra_contract.py": "EXTRA = 1\n",
+            ".issueforge.toml": (
+                'baseline = ["-m", "pytest"]\nframework = "pytest"\n'
+                'contract_paths = ["lib/extra_contract.py"]\n'
+            ),
+        },
+    )
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    assert "lib/extra_contract.py" in res.manifest["contract_paths"]
+    assert "lib/extra_contract.py" in res.manifest["dep_hashes"]
+    oracle = _sha256(
+        _committed_blob(scen.candidate_worktree, f"{scen.candidate_sha}:lib/extra_contract.py")
+    )
+    assert res.manifest["dep_hashes"]["lib/extra_contract.py"] == oracle
+
+
+def test_freeze_permanent_manifest_retained_on_repeated_differing_freeze(tmp_path):
+    """R5 (Codex gap): the permanent contract manifest is single-assignment per run — a SECOND freeze of
+    the same run producing DIFFERENT bytes must be REFUSED and the first manifest retained unchanged, so
+    the first freeze event's manifest_hash keeps addressing the retained bytes.
+
+    technical: freeze run-1, capture its artifact bytes + hash. Change an input (the approved write
+    scope) so a re-freeze would yield DIFFERENT canonical bytes, then re-freeze the SAME run. Because the
+    manifest is a permanent artifact written under one fixed run-dir name, the differing re-freeze must
+    fail closed (ValueError) rather than clobber the first; the on-disk bytes still equal the first
+    manifest and still hash to res1.manifest_hash. The current impl re-writes the fixed artifact name
+    unconditionally, DESTROYING the first manifest and stranding its event hash — so the re-freeze
+    wrongly succeeds and the bytes change.
+    """
+    scen = _fscen(tmp_path, name="retention")
+    run = _freeze_run(scen)
+    res1 = _freeze(run, scen)
+    first_bytes = _manifest_artifact_path(run).read_bytes()
+    assert _sha256(first_bytes) == res1.manifest_hash
+    # Change an input so a re-freeze would produce DIFFERENT manifest bytes (a new write-scope path flows
+    # into manifest['write_scope']). app/impl.py is an orphan SUT path, not a contract input, so the
+    # re-freeze is otherwise valid — only the permanence rule should stop it.
+    store.RunStore().apply(
+        run,
+        lambda r: {
+            "shape": {
+                **r["shape"],
+                "write_scope": [{"op": "edit", "path": "app/impl.py", "justification": "sut"}],
+            }
+        },
+    )
+    with pytest.raises(ValueError):
+        _freeze(run, scen)
+    after_bytes = _manifest_artifact_path(run).read_bytes()
+    assert after_bytes == first_bytes  # first manifest not clobbered
+    assert _sha256(after_bytes) == res1.manifest_hash
+
+
+def test_freeze_configured_directory_expands_to_per_file_committed_hashes(tmp_path):
+    """G1 (Codex round-2 gap): a configured ``contract_paths`` entry naming a committed DIRECTORY must
+    expand to its committed descendant FILE paths, each hashed by its own committed bytes — never
+    inserted verbatim and hashed as ``git show <commit>:src/`` (a tree LISTING), which leaves a
+    content-only edit to a descendant undetected and records no per-file hash.
+
+    technical: ``.issueforge.toml`` sets ``contract_paths = ["src/"]`` with a committed src/mod.py. The
+    frozen manifest must contain src/mod.py (NOT the bare "src/") in contract_paths AND dep_hashes with
+    the sha256 of src/mod.py's committed BYTES — so a content-only edit to src/mod.py would change
+    dep_hashes. The current impl inserts "src/" verbatim and hashes the tree listing.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="configured-dir",
+        extra={
+            "src/mod.py": "MOD = 1\n",
+            ".issueforge.toml": (
+                'baseline = ["-m", "pytest"]\nframework = "pytest"\ncontract_paths = ["src/"]\n'
+            ),
+        },
+    )
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    paths = set(res.manifest["contract_paths"])
+    assert "src/mod.py" in paths
+    assert "src/" not in paths and "src" not in paths  # the bare directory is never a contract path
+    oracle = _sha256(_committed_blob(scen.candidate_worktree, f"{scen.candidate_sha}:src/mod.py"))
+    assert res.manifest["dep_hashes"]["src/mod.py"] == oracle
+    # a content-only edit to the descendant would change its recorded per-file hash
+    assert res.manifest["dep_hashes"]["src/mod.py"] != _sha256(b"MOD = 999\n")
+
+
+def test_freeze_identical_retry_retained_manifest_survives_append_failure(tmp_path, monkeypatch):
+    """G2 (Codex round-2 gap): an IDENTICAL re-freeze whose ``append_event`` FAILS must NOT delete the
+    manifest the first successful freeze retained — only files THIS invocation created may roll back. The
+    first freeze's bytes + event stay addressable.
+
+    technical: freeze run-1 successfully (manifest retained, freeze event recorded, hash H). Inject an
+    ``append_event`` failure, then re-freeze the SAME run with IDENTICAL inputs (same canonical bytes).
+    The retry must leave the on-disk manifest == the first bytes and still hashing to H — the first
+    event's manifest_hash is never stranded. The current impl re-writes the fixed artifact then, on the
+    append failure, UNCONDITIONALLY removes it, DESTROYING the retained manifest.
+    """
+    scen = _fscen(tmp_path, name="retry-retained")
+    run = _freeze_run(scen)
+    res1 = _freeze(run, scen)
+    first_bytes = _manifest_artifact_path(run).read_bytes()
+    assert _sha256(first_bytes) == res1.manifest_hash
+    assert list(_freeze_events(run))  # first freeze recorded an event
+
+    # Inject an append_event failure for the SECOND (identical) freeze.
+    def _boom(self, run_id, event):
+        raise RuntimeError("injected append_event failure")
+
+    monkeypatch.setattr(store.RunStore, "append_event", _boom)
+    with pytest.raises(RuntimeError):
+        _freeze(run, scen)
+
+    # The first manifest is still retained and still addressable by the first freeze event's hash.
+    after = _manifest_artifact_path(run)
+    assert after.exists()  # NOT deleted by the failed identical retry
+    assert after.read_bytes() == first_bytes
+    assert _sha256(after.read_bytes()) == res1.manifest_hash
