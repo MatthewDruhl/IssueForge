@@ -226,22 +226,66 @@ def _pin_external(candidates: dict[str, str | None]) -> set[tuple[str, str]]:
         distributions = importlib.metadata.packages_distributions().get(top)
         if not distributions:
             raise DiscoveryError(top)
-        chosen = _owning_distribution(distributions, origin)
+        chosen = _owning_distribution(top, distributions, origin)
         pins.add((chosen, importlib.metadata.version(chosen)))
     return pins
 
 
-def _owning_distribution(distributions: list[str], origin: str | None) -> str:
-    """The single distribution that provides the imported module (files carry its origin), else the
-    sole/first distribution — a stable choice when a namespace maps to several siblings."""
+def _resolve_origin(value: str | None) -> str | None:
+    """The real (symlink-resolved) filesystem path of a module origin, or ``None``."""
+    if not value:
+        return None
+    try:
+        return os.path.realpath(str(value))
+    except (OSError, ValueError):
+        return None
+
+
+_SITE_MARKERS = ("site-packages", "dist-packages")
+
+
+def _is_stdlib_origin(top: str, origin: str | None) -> bool:
+    """True when ``top`` is a genuine stdlib import that needs no external pin.
+
+    Exemption is by RESOLVED ORIGIN, not the bare name: the name must be a stdlib module name AND its
+    origin must not sit under a ``site-packages``/``dist-packages`` tree. A builtin/frozen stdlib
+    module (no ``__file__``) is exempt; a site-packages package that merely shares a stdlib name
+    (a shadow) is NOT — it resolves to a real distribution and must be pinned.
+    """
+    if top not in sys.stdlib_module_names:
+        return False
+    resolved = _resolve_origin(origin)
+    if resolved is None:
+        return True
+    return not any(marker in resolved for marker in _SITE_MARKERS)
+
+
+def _owning_distribution(top: str, distributions: list[str], origin: str | None) -> str:
+    """The single distribution whose committed files actually provide the imported module.
+
+    A namespace maps to one distribution -> that one. Several -> the one whose files, resolved
+    against the distribution's own install location, equal the module's REAL origin path (a bare
+    ``str(entry) == origin`` never matches — ``files`` entries are location-relative while ``origin``
+    is absolute). Ambiguous ownership (no owner, or more than one candidate owner) fails CLOSED with a
+    ``DiscoveryError`` naming the import — never the alphabetical-first distribution.
+    """
     if len(distributions) == 1:
         return distributions[0]
-    if origin:
+    origin_real = _resolve_origin(origin)
+    owners: list[str] = []
+    if origin_real:
         for dist in distributions:
-            files = getattr(importlib.metadata.distribution(dist), "files", None) or []
-            if any(str(entry) == origin for entry in files):
-                return dist
-    return sorted(distributions)[0]
+            meta = importlib.metadata.distribution(dist)
+            locate = getattr(meta, "locate_file", None)
+            files = getattr(meta, "files", None) or []
+            for entry in files:
+                located = locate(entry) if locate is not None else entry
+                if _resolve_origin(str(located)) == origin_real:
+                    owners.append(dist)
+                    break
+    if len(owners) == 1:
+        return owners[0]
+    raise DiscoveryError(top)
 
 
 # The instrumented collection recorder: run in a FRESH subprocess so the conftest/plugin/config/test
@@ -279,7 +323,29 @@ _orig_import = builtins.__import__
 def _rec_import(name, glb=None, loc=None, fromlist=(), level=0):
     pn = glb.get("__name__") if isinstance(glb, dict) else None
     pf = glb.get("__file__") if isinstance(glb, dict) else None
-    _edges.append([pn, pf, name])
+    _edges.append([pn, pf, name, 0])
+    # Honor ``level`` (relative) and ``fromlist`` so a ``from . import shared`` / ``from .m import x``
+    # fixture import records its real submodule edge (bare __import__ passes name="" for a relative
+    # ``from . import ...``, losing the child otherwise). The resolved base anchors the fromlist
+    # children. fromlist edges are tagged kind=1: they only ever add IN-REPO adjacency at build time
+    # and never mint an external candidate, so a ``from helpers import make`` (``make`` is an
+    # attribute, not a module) can never be misread as an unresolvable distribution.
+    base = name
+    if level and isinstance(glb, dict):
+        anchor = glb.get("__package__")
+        if anchor is None:
+            anchor = pn or ""
+        parts = anchor.split(".") if anchor else []
+        if level > 1:
+            parts = parts[: max(0, len(parts) - (level - 1))]
+        base_anchor = ".".join(parts)
+        base = base_anchor + "." + name if name else base_anchor
+        if base:
+            _edges.append([pn, pf, base, 1])
+    for _from in fromlist or ():
+        if _from and _from != "*":
+            child = base + "." + _from if base else _from
+            _edges.append([pn, pf, child, 1])
     return _orig_import(name, glb, loc, fromlist, level)
 
 
@@ -291,27 +357,41 @@ builtins.__import__ = _rec_import
 class _Recorder(importlib.abc.MetaPathFinder):
     def find_spec(self, name, path, target=None):
         pn, pf = _stack_parent()
-        _edges.append([pn, pf, name])
+        _edges.append([pn, pf, name, 0])
         return None
 
 
 sys.meta_path.insert(0, _Recorder())
 
-_devnull = open(os.devnull, "w")
-_out, _err = sys.stdout, sys.stderr
-sys.stdout = _devnull
-sys.stderr = _devnull
+# Suppress pytest's collection chatter at the FILE-DESCRIPTOR level (never a builtin ``open`` write
+# outside the io seam): dup2 the real stdout/stderr fds onto ``os.devnull`` for the duration, then
+# restore them before the sentinel-framed graph is emitted. ``collect_rc`` carries pytest.main's exit
+# code so a caller can fail closed on a broken collection rather than freeze a partial graph.
+collect_rc = None
+_devnull_fd = os.open(os.devnull, os.O_WRONLY)
+_saved_out_fd = os.dup(1)
+_saved_err_fd = os.dup(2)
+os.dup2(_devnull_fd, 1)
+os.dup2(_devnull_fd, 2)
 try:
     import pytest
     try:
-        pytest.main(["--collect-only", "-q", "-p", "no:cacheprovider"])
-    except SystemExit:
-        pass
+        collect_rc = pytest.main(["--collect-only", "-q", "-p", "no:cacheprovider"])
+    except SystemExit as _exc:
+        collect_rc = _exc.code
 except BaseException:
-    pass
+    collect_rc = "error"
 finally:
-    sys.stdout = _out
-    sys.stderr = _err
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except BaseException:
+        pass
+    os.dup2(_saved_out_fd, 1)
+    os.dup2(_saved_err_fd, 2)
+    os.close(_devnull_fd)
+    os.close(_saved_out_fd)
+    os.close(_saved_err_fd)
 
 _module_files = {}
 _module_paths = {}
@@ -327,7 +407,12 @@ for _name, _mod in list(sys.modules.items()):
 sys.stdout.write(
     "<<<IFDISCOVER_START>>>"
     + json.dumps(
-        {"edges": _edges, "module_files": _module_files, "module_paths": _module_paths}
+        {
+            "edges": _edges,
+            "module_files": _module_files,
+            "module_paths": _module_paths,
+            "collect_rc": collect_rc,
+        }
     )
     + "<<<IFDISCOVER_END>>>"
 )
@@ -673,7 +758,7 @@ class PytestAdapter:
         # from ``sys.modules``, so it is absent from ``module_files`` — but it appears as a PARENT with
         # an in-repo importer FILE, which proves it is a repo file (its body started executing). Seed
         # the name->path map from those parent files so it is never misread as an external distribution.
-        for parent_name, parent_file, _child in edges:
+        for parent_name, parent_file, _child, *_rest in edges:
             parent_rel = _relrepo(parent_file)
             if parent_rel is not None and parent_name:
                 name_to_rel.setdefault(parent_name, parent_rel)
@@ -694,7 +779,8 @@ class PytestAdapter:
         has_inrepo_parent: set[str] = set()
         inrepo_nodes: set[str] = set(name_to_rel.values())
         external_candidates: dict[str, str | None] = {}
-        for parent_name, parent_file, child_name in edges:
+        for parent_name, parent_file, child_name, *_rest in edges:
+            kind = _rest[0] if _rest else 0
             parent_rel = _relrepo(parent_file)
             if parent_rel is None:
                 parent_rel = name_to_rel.get(parent_name)
@@ -712,11 +798,23 @@ class PytestAdapter:
                 continue
             if child_name in inrepo_pkgs:
                 continue  # fileless in-repo package: nothing to protect, submodules carry edges
+            # A fromlist/relative edge (kind 1) only ever contributes IN-REPO adjacency (handled
+            # above); it never mints an external candidate, because a ``from pkg import name`` cannot
+            # tell an attribute from a submodule and the base ``import pkg`` edge already pins the
+            # distribution. This keeps ``from helpers import make`` from forging a bogus ``make`` dist.
+            if kind == 1:
+                continue
             # child is external: pin it only when an IN-REPO contract file imported it directly.
             if not parent_inrepo:
                 continue
             top = child_name.split(".")[0]
-            if not top or top in sys.stdlib_module_names or top in inrepo_pkgs:
+            if not top or top in inrepo_pkgs:
+                continue
+            # Stdlib exemption is by RESOLVED ORIGIN, not the import NAME: a site-packages package that
+            # shadows a stdlib name (its origin under site-packages) is a real external dependency and
+            # must be pinned, while a genuine stdlib module (origin in the stdlib tree, or a builtin/
+            # frozen module with no file) needs no pin.
+            if _is_stdlib_origin(top, module_files.get(top) or module_files.get(child_name)):
                 continue
             # ``_pytest`` is the assertion rewriter's own injected import (``@pytest_ar``), attributed
             # to every rewritten conftest/test module — machinery, not a declared contract dependency.

@@ -1405,8 +1405,17 @@ def _git_text(repo: Path, *args: str) -> tuple[int, str]:
 
 
 def _committed_blob(repo: Path, commit: str, path: str) -> bytes:
-    """The raw committed blob bytes of ``commit:path`` (the hashing oracle domain)."""
-    _rc, data = _git_bytes(repo, "show", f"{commit}:{path}")
+    """The raw committed blob bytes of ``commit:path`` — a NAMED refusal, never an empty-content hash.
+
+    A missing blob or failed ``git show`` (nonzero return code) fails CLOSED with a ``ValueError``
+    naming the path, so a read failure can never be laundered into ``sha256(b"")`` and frozen as if
+    the file were empty.
+    """
+    rc, data = _git_bytes(repo, "show", f"{commit}:{path}")
+    if rc != 0:
+        raise ValueError(
+            f"freeze refused: cannot read committed blob {path!r} at {commit} (git rc={rc})"
+        )
     return data
 
 
@@ -1415,33 +1424,56 @@ def _sha256_hex(data: bytes) -> str:
 
 
 def _committed_tree(repo: Path, commit: str) -> tuple[set[str], dict[str, str]]:
-    """Every path committed at ``commit`` plus its git mode (``120000`` marks a symlink)."""
-    _rc, out = _git_text(repo, "ls-tree", "-r", commit)
+    """Every path committed at ``commit`` plus its git mode (``120000`` marks a symlink).
+
+    Parses ``git ls-tree -r -z`` (NUL-delimited records) so a committed path containing a quoted or
+    newline character is read as its exact literal bytes, never split on an embedded newline. A failed
+    ``ls-tree`` (nonzero return code) fails CLOSED rather than freezing a truncated/empty tree.
+    """
+    rc, out = _git_text(repo, "ls-tree", "-r", "-z", commit)
+    if rc != 0:
+        raise ValueError(f"freeze refused: cannot read committed tree at {commit} (git rc={rc})")
     paths: set[str] = set()
     modes: dict[str, str] = {}
-    for line in out.splitlines():
-        meta, _tab, path = line.partition("\t")
-        if not path:
+    for record in out.split("\0"):
+        if not record:
             continue
+        meta, _tab, path = record.partition("\t")
+        if not path:
+            raise ValueError(f"freeze refused: malformed ls-tree record {record!r} at {commit}")
         fields = meta.split()
-        if len(fields) >= 1:
+        if fields:
             modes[path] = fields[0]
             paths.add(path)
     return paths, modes
 
 
-def _test_functions(source: str) -> set[str]:
-    """The ``test``-prefixed function names declared in a Python source (empty on a parse failure)."""
+def _test_node_ids(path: str, source: str) -> set[str]:
+    """The pytest NODE-IDs a test module declares, class-qualified (empty on a parse failure).
+
+    A module-level ``test``-prefixed function is ``path::func``; a ``test`` method inside a ``Test``-
+    prefixed class (pytest's default class collection rule) is ``path::Class::method``. Parametrized
+    ids collapse to their base node-id here (the exact ``[param]`` suffix needs runtime collection);
+    the base id still uniquely names the lost test. This yields real node-ids, not bare function
+    names, so a deletion delta names ``path::Class::test_x``, never an ambiguous ``test_x``.
+    """
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return set()
-    return {
-        node.name
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name.startswith("test")
-    }
+    ids: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
+            "test"
+        ):
+            ids.add(f"{path}::{node.name}")
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            for member in node.body:
+                if isinstance(
+                    member, (ast.FunctionDef, ast.AsyncFunctionDef)
+                ) and member.name.startswith("test"):
+                    ids.add(f"{path}::{node.name}::{member.name}")
+    return ids
 
 
 def _dirty_refusal(worktree: Path, commit: str) -> str | None:
@@ -1452,7 +1484,9 @@ def _dirty_refusal(worktree: Path, commit: str) -> str | None:
     its path. ``None`` when the worktree matches the committed contract bytes exactly (untracked
     ``__pycache__``/cache noise is ignored by ``git diff HEAD``).
     """
-    _rc, out = _git_text(worktree, "diff", "HEAD", "--name-status", "-z")
+    rc, out = _git_text(worktree, "diff", "HEAD", "--name-status", "-z")
+    if rc != 0:
+        raise ValueError(f"freeze refused: cannot diff worktree against {commit} (git rc={rc})")
     fields = [f for f in out.split("\0") if f != ""]
     changed: list[str] = []
     index = 0
@@ -1469,11 +1503,12 @@ def _dirty_refusal(worktree: Path, commit: str) -> str | None:
         return None
     pieces: list[str] = []
     for path in changed:
-        committed = _test_functions(
-            (_git_bytes(worktree, "show", f"{commit}:{path}")[1]).decode("utf-8", "replace")
-        )
+        blob_rc, blob = _git_bytes(worktree, "show", f"{commit}:{path}")
+        committed = _test_node_ids(path, blob.decode("utf-8", "replace")) if blob_rc == 0 else set()
         worktree_file = worktree / path
-        current = _test_functions(worktree_file.read_text()) if worktree_file.is_file() else set()
+        current = (
+            _test_node_ids(path, worktree_file.read_text()) if worktree_file.is_file() else set()
+        )
         missing = sorted(committed - current)
         pieces.append(f"{path} (missing node-ids: {', '.join(missing)})" if missing else path)
     return "; ".join(pieces)
@@ -1494,7 +1529,10 @@ def _resolve_committed_symlink(
     if link in visited:
         raise ValueError(f"freeze refused: cyclic symlink at {link!r}")
     visited.add(link)
-    target = _committed_blob(repo, commit, link).decode("utf-8", "replace").strip()
+    # The committed link target is the blob's EXACT bytes — never ``.strip()``ed. Git stores a
+    # symlink's target verbatim (no trailing newline), so a valid filename with surrounding whitespace
+    # must resolve/hash as its exact committed form; only a truly empty/absolute target fails closed.
+    target = _committed_blob(repo, commit, link).decode("utf-8", "replace")
     if not target or os.path.isabs(target):
         raise ValueError(
             f"freeze refused: symlink {link!r} escapes the repository (target {target!r})"
@@ -1559,8 +1597,20 @@ def freeze_contract(
         )
 
     committed, modes = _committed_tree(worktree, contract_commit)
+    committed_norm = {_normalize(p) for p in committed}
 
-    # (3) Provenance discovery over the real collection (a DiscoveryError propagates as a named
+    # (3) The build configuration is frozen from the committed object; a ConfigError is a FAIL-CLOSED
+    # named refusal, never a silently-erased ``command = []`` (which would drop the contract's real
+    # invocation). The frozen command array is loaded ONCE here and reused for both the collection
+    # invocation (below) and the frozen manifest, so the contract that is discovered is the one that
+    # actually runs.
+    try:
+        cfg = _config.load_config(worktree, ref=contract_commit)
+    except _config.ConfigError as exc:
+        raise ValueError(f"freeze refused: contract configuration is invalid: {exc}") from exc
+    command = [list(c) for c in (cfg.baseline, cfg.acceptance, cfg.lint, cfg.build) if c]
+
+    # (4) Provenance discovery over the real collection (a DiscoveryError propagates as a named
     # refusal); the collection also supplies the frozen collected-id set and external pins.
     handle = adapter.provision_environment(worktree, None, provisioner=provisioner)
     invocation = SimpleNamespace(
@@ -1571,18 +1621,47 @@ def freeze_contract(
     )
     collection = adapter.canonical_collect(invocation)
     closure = adapter.discover_contract_dependencies(collection)
+    # A BROKEN/ABORTED collection MUST fail closed rather than freeze a partial id/closure set. The
+    # DiscoveryError above already fails closed (naming an unresolvable import); this catches every
+    # OTHER broken collection AFTER discovery has had its chance to name a specific missing import. A
+    # timeout, or a hard collection/internal/usage error (pytest exit 2/3/4) or a signaled death, is a
+    # partial collection; exit 0 (clean) and exit 5 (a clean, empty collection) are complete and pass.
+    _collect_rc = getattr(collection, "returncode", 0)
+    if getattr(collection, "timed_out", False) or (_collect_rc not in (0, 5)):
+        raise ValueError(
+            f"freeze refused: candidate collection did not complete cleanly (rc={_collect_rc!r}, "
+            f"timed_out={getattr(collection, 'timed_out', None)!r})"
+        )
     collected_ids = tuple(sorted(set(getattr(collection, "ids", ()) or ())))
     test_body_set = {_normalize(p) for p in closure.test_body_imports}
 
-    # (4) Write scope reconciliation. A write-scope entry that names a COMMITTED file which is NOT an
+    # (5) Every discovered closure member (fixture-route or test-body) MUST be committed — a
+    # discovered dependency that is untracked is named and fails the freeze closed, never silently
+    # omitted from the protected set.
+    for member in (*closure.fixture_closure, *closure.test_body_imports):
+        if _normalize(member) not in committed_norm:
+            raise ValueError(
+                f"freeze refused: discovered contract dependency {member!r} is not committed"
+            )
+
+    # (6) TOCTOU re-check: provisioning + collection must not have mutated a tracked contract file. If
+    # collection added/deleted/edited any tracked file, fail closed (untracked cache noise is ignored).
+    post_refusal = _dirty_refusal(worktree, contract_commit)
+    if post_refusal is not None:
+        raise ValueError(
+            f"freeze refused: collection mutated committed contract file(s): {post_refusal}"
+        )
+
+    # (7) Write scope reconciliation. A write-scope entry that names a COMMITTED file which is NOT an
     # editable test-body SUT is a contradiction (a protected fixture/test/config/toml/user-added path
     # in scope) — the freeze refuses, naming it, never silently sanitizing the sets. A committed
-    # test-body import in scope is the sanctioned editable SUT: excluded and surfaced.
+    # test-body import in scope is the sanctioned editable SUT: excluded and surfaced. A fixture_closure
+    # path is never a test-body SUT (the two provenance sets are disjoint, fixture wins on collision),
+    # so a fixture_closure path in scope always lands in this refusal.
     shape = record.get("shape") or {}
     write_scope_paths = [
         entry["path"] for entry in (shape.get("write_scope") or []) if entry.get("path")
     ]
-    committed_norm = {_normalize(p) for p in committed}
     excluded_sut: set[str] = set()
     for raw in write_scope_paths:
         norm = _normalize(raw)
@@ -1594,13 +1673,32 @@ def freeze_contract(
         if norm in test_body_set:
             excluded_sut.add(norm)
 
-    # (5) The protected boundary: every committed file EXCEPT the editable SUTs, plus any user-added
-    # path. Paths are stored verbatim (symlinks never collapsed).
-    contract_path_set = (set(committed) - excluded_sut) | set(user_added)
+    # (8) A committed symlink whose resolved in-repo target is an excluded editable SUT must NOT
+    # re-freeze that target through the link (the editable-SUT identity stays editable consistently).
+    # Broken/cyclic/escaping links are left in the set so the hashing step below refuses them by name.
+    symlink_excluded: set[str] = set()
+    for path in committed:
+        if modes.get(path) == "120000":
+            try:
+                target = _resolve_committed_symlink(
+                    worktree, contract_commit, path, modes, committed, set()
+                )
+            except ValueError:
+                continue
+            if _normalize(target) in excluded_sut:
+                symlink_excluded.add(path)
+
+    # (9) The protected boundary: every committed file EXCEPT the editable SUTs (and any symlink to
+    # one), plus any user-added path that is not itself an editable SUT. No path is ever both excluded
+    # and protected. Paths are stored verbatim (symlinks never collapsed).
+    contract_path_set = (
+        (set(committed) - excluded_sut) | (set(user_added) - excluded_sut)
+    ) - symlink_excluded
     contract_paths = tuple(sorted(contract_path_set))
 
-    # (6) Hash each protected file's committed blob; a symlink hashes its resolved in-repo target's
-    # committed blob and records the link target (broken/cyclic/escaping links fail closed here).
+    # (10) Hash each protected file's committed blob; a symlink hashes its resolved in-repo target's
+    # committed blob and records the link target (broken/cyclic/escaping links fail closed here, and a
+    # missing/failed blob read is a named refusal, never an empty-content hash).
     dep_hashes: dict[str, str] = {}
     symlinks: dict[str, str] = {}
     for path in contract_paths:
@@ -1613,12 +1711,7 @@ def freeze_contract(
         else:
             dep_hashes[path] = _sha256_hex(_committed_blob(worktree, contract_commit, path))
 
-    # (7) Command arrays + the winning pytest config, both frozen from the committed objects.
-    try:
-        cfg = _config.load_config(worktree, ref=contract_commit)
-        command = [list(c) for c in (cfg.baseline, cfg.acceptance, cfg.lint, cfg.build) if c]
-    except _config.ConfigError:
-        command = []
+    # (11) The winning pytest config, frozen from the committed object.
     config_name, config_text = _select_pytest_config(worktree, contract_commit)
     test_config = {"source": config_name, "content": config_text} if config_name else {}
 
@@ -1645,18 +1738,32 @@ def freeze_contract(
         manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
 
-    # (8) The approver is consulted BEFORE any write, on the EXACT canonical bytes. Only True persists.
+    # (12) The approver is consulted BEFORE any write, on the EXACT canonical bytes. Only True persists.
     if approver(canonical) is not True:
         return FreezeResult(approved=False, manifest=None, manifest_hash=None, artifact_path=None)
 
+    # (13) Atomic approved persistence. The manifest hash is sha256 of the EXACT canonical bytes shown
+    # to the approver; the artifact must persist those same bytes (the store's redacting writer is
+    # idempotent here because the manifest was already redacted, so a byte divergence is a hard fault,
+    # not a show-A-persist-B). If appending the freeze event fails after the artifact was written, the
+    # artifact is rolled back through the seam, so a partial (artifact-without-event) can never persist.
+    manifest_hash = _sha256_hex(canonical)
     artifact_path = st.write_artifact(
         run_id, _MANIFEST_ARTIFACT, canonical.decode("utf-8"), secrets=secrets
     )
     persisted = artifact_path.read_bytes()
-    manifest_hash = _sha256_hex(persisted)
-    st.append_event(
-        run_id, {"transition": "freeze", "approved": True, "manifest_hash": manifest_hash}
-    )
+    if persisted != canonical:
+        WriteSeam().remove_file(artifact_path)
+        raise ValueError(
+            "freeze refused: persisted manifest bytes diverged from the approved canonical bytes"
+        )
+    try:
+        st.append_event(
+            run_id, {"transition": "freeze", "approved": True, "manifest_hash": manifest_hash}
+        )
+    except BaseException:
+        WriteSeam().remove_file(artifact_path)
+        raise
     return FreezeResult(
         approved=True,
         manifest=manifest,
