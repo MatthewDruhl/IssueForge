@@ -10,6 +10,7 @@ than a silent stub, so a caller can never mistake an unbuilt operation for a rea
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import os
 import uuid
 from dataclasses import dataclass
@@ -171,6 +172,438 @@ class BaselineSelection:
     ok: bool
 
 
+class DiscoveryError(Exception):
+    """An import reached at collection resolves to neither a repo file, the stdlib, nor an installed
+    distribution. Discovery fails CLOSED naming the offender — never a partial closure."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(
+            f"unresolvable import {name!r}: not a repo file, the stdlib, nor an installed distribution"
+        )
+
+
+@dataclass(frozen=True)
+class ContractClosure:
+    """The provenance-tagged import closure discovery computes for a real collection.
+
+    ``test_files`` — the collected test-module paths; ``fixture_closure`` — every in-repo file
+    reached via the fixture/conftest/plugin/config route (always protected); ``test_body_imports``
+    — in-repo files reached ONLY through a test-module body import (candidate SUTs). Every path is
+    a sorted/dedup repo-relative string. ``external`` — sorted ``(distribution, version)`` pins.
+    """
+
+    test_files: tuple[str, ...]
+    fixture_closure: tuple[str, ...]
+    test_body_imports: tuple[str, ...]
+    external: tuple[tuple[str, str], ...]
+
+
+def _reach(roots: set[str], adjacency: dict[str, set[str]]) -> set[str]:
+    """Every node reachable from ``roots`` over ``adjacency`` (roots included; cycle-safe)."""
+    seen: set[str] = set()
+    stack = list(roots)
+    while stack:
+        node = stack.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        stack.extend(adjacency.get(node, ()))
+    return seen
+
+
+# External identity (distribution + version) resolves inside the provisioned discovery subprocess
+# (see ``_DISCOVER_SRC`` below), never in this parent process — so pins carry the PROVISIONED venv's
+# versions, not the host interpreter's. The parent only consumes the pins the subprocess returns.
+
+
+# The instrumented collection recorder: run in a FRESH subprocess so the conftest/plugin/config/test
+# import graph is captured from a clean interpreter (no cross-repo sys.modules pollution). A meta-path
+# finder records every (importer, importer_file, imported) edge at import time — catching dynamic
+# ``importlib.import_module`` and defeating a same-name local rebinding, unlike an AST scan — then the
+# graph is emitted between sentinels on stdout (pytest's own output is suppressed during collection).
+_DISCOVER_START = "<<<IFDISCOVER_START>>>"
+_DISCOVER_END = "<<<IFDISCOVER_END>>>"
+_DISCOVER_SRC = r"""
+import sys, os, json, builtins, importlib, importlib.abc, importlib.metadata
+
+_repo = sys.argv[1]
+os.chdir(_repo)
+_edges = []
+
+
+def _stack_parent():
+    frame = sys._getframe(2)
+    while frame is not None:
+        name = frame.f_globals.get("__name__")
+        if name and name != "__main__" and "importlib" not in name and "_bootstrap" not in name:
+            return name, frame.f_globals.get("__file__")
+        frame = frame.f_back
+    return None, None
+
+
+# The import statement always calls builtins.__import__ (even for an already-cached module), and its
+# ``globals`` argument names the IMPORTER — so a conftest/test import of a module pytest pre-imported
+# (e.g. pluggy) is still attributed to that in-repo file, unlike a meta-path finder which never fires
+# on a cache hit.
+_orig_import = builtins.__import__
+
+
+def _rec_import(name, glb=None, loc=None, fromlist=(), level=0):
+    pn = glb.get("__name__") if isinstance(glb, dict) else None
+    pf = glb.get("__file__") if isinstance(glb, dict) else None
+    _edges.append([pn, pf, name, 0])
+    # Honor ``level`` (relative) and ``fromlist`` so a ``from . import shared`` / ``from .m import x``
+    # fixture import records its real submodule edge (bare __import__ passes name="" for a relative
+    # ``from . import ...``, losing the child otherwise). The resolved base anchors the fromlist
+    # children. fromlist edges are tagged kind=1: they only ever add IN-REPO adjacency at build time
+    # and never mint an external candidate, so a ``from helpers import make`` (``make`` is an
+    # attribute, not a module) can never be misread as an unresolvable distribution.
+    base = name
+    if level and isinstance(glb, dict):
+        anchor = glb.get("__package__")
+        if anchor is None:
+            anchor = pn or ""
+        parts = anchor.split(".") if anchor else []
+        if level > 1:
+            parts = parts[: max(0, len(parts) - (level - 1))]
+        base_anchor = ".".join(parts)
+        base = base_anchor + "." + name if name else base_anchor
+        if base:
+            _edges.append([pn, pf, base, 1])
+    for _from in fromlist or ():
+        if _from and _from != "*":
+            child = base + "." + _from if base else _from
+            _edges.append([pn, pf, child, 1])
+    return _orig_import(name, glb, loc, fromlist, level)
+
+
+builtins.__import__ = _rec_import
+
+
+# A meta-path finder supplements the wrapper for DYNAMIC imports (``importlib.import_module``), which
+# bypass builtins.__import__; the importer is recovered from the stack.
+class _Recorder(importlib.abc.MetaPathFinder):
+    def find_spec(self, name, path, target=None):
+        pn, pf = _stack_parent()
+        _edges.append([pn, pf, name, 0])
+        return None
+
+
+_recorder = _Recorder()
+sys.meta_path.insert(0, _recorder)
+
+# Suppress pytest's collection chatter at the FILE-DESCRIPTOR level (never a builtin ``open`` write
+# outside the io seam): dup2 the real stdout/stderr fds onto ``os.devnull`` for the duration, then
+# restore them before the sentinel-framed graph is emitted. ``collect_rc`` carries pytest.main's exit
+# code so a caller can fail closed on a broken collection rather than freeze a partial graph.
+collect_rc = None
+_devnull_fd = os.open(os.devnull, os.O_WRONLY)
+_saved_out_fd = os.dup(1)
+_saved_err_fd = os.dup(2)
+os.dup2(_devnull_fd, 1)
+os.dup2(_devnull_fd, 2)
+try:
+    import pytest
+    try:
+        collect_rc = pytest.main(["--collect-only", "-q", "-p", "no:cacheprovider"])
+    except SystemExit as _exc:
+        collect_rc = _exc.code
+except BaseException:
+    collect_rc = "error"
+finally:
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except BaseException:
+        pass
+    os.dup2(_saved_out_fd, 1)
+    os.dup2(_saved_err_fd, 2)
+    os.close(_devnull_fd)
+    os.close(_saved_out_fd)
+    os.close(_saved_err_fd)
+
+_module_files = {}
+_module_paths = {}
+for _name, _mod in list(sys.modules.items()):
+    _module_files[_name] = getattr(_mod, "__file__", None)
+    _path = getattr(_mod, "__path__", None)
+    if _path is not None:
+        try:
+            _module_paths[_name] = list(_path)
+        except TypeError:
+            _module_paths[_name] = []
+
+# ---- external distribution resolution, IN THIS (PROVISIONED) INTERPRETER (D5) ----
+# External identity + version resolve from THIS interpreter's installed distributions — the
+# provisioned hermetic venv, never the parent process. Restore the import hook and drop the
+# meta-path recorder first so the resolution's own imports never pollute the recorded edges.
+builtins.__import__ = _orig_import
+try:
+    sys.meta_path.remove(_recorder)
+except ValueError:
+    pass
+
+_md = importlib.metadata
+_repo_real = os.path.realpath(_repo)
+_SITE = ("site-packages", "dist-packages")
+
+
+def _real(v):
+    if not v:
+        return None
+    try:
+        return os.path.realpath(str(v))
+    except (OSError, ValueError):
+        return None
+
+
+def _under_repo(f):
+    r = _real(f)
+    if r is None:
+        return False
+    return r == _repo_real or r.startswith(_repo_real + os.sep)
+
+
+_inrepo_pkgs = set()
+for _n, _locs in _module_paths.items():
+    for _loc in _locs or []:
+        if _under_repo(_loc):
+            _inrepo_pkgs.add(_n)
+            break
+
+# In-repo module NAMES: file-backed modules under the repo, PLUS any module that appears as an
+# in-repo IMPORTER in the edges. The latter recovers an in-repo helper whose own import RAISED (so it
+# was dropped from sys.modules and carries no __file__) — its body started executing, proving it is a
+# repo file, so a ``from helpers import H`` where helpers.py failed is never misread as an external
+# distribution to fail closed on.
+_inrepo_names = set()
+for _n, _f in _module_files.items():
+    if _under_repo(_f):
+        _inrepo_names.add(_n)
+for _e in _edges:
+    if _e[0] and _under_repo(_e[1]):
+        _inrepo_names.add(_e[0])
+
+
+def _is_stdlib(top, origin):
+    if top not in sys.stdlib_module_names:
+        return False
+    r = _real(origin)
+    if r is None:
+        return True
+    return not any(m in r for m in _SITE)
+
+
+try:
+    _pkg_dist = _md.packages_distributions()
+except Exception:
+    _pkg_dist = {}
+
+
+def _owning_dist(dists, origin):
+    # A namespace shared by several distributions is disambiguated to the ONE whose installed files
+    # equal the imported module's REAL origin path; ambiguous ownership resolves to no owner.
+    if len(dists) == 1:
+        return dists[0]
+    origin_real = _real(origin)
+    owners = []
+    if origin_real:
+        for _d in dists:
+            try:
+                _meta = _md.distribution(_d)
+            except Exception:
+                continue
+            _locate = getattr(_meta, "locate_file", None)
+            for _entry in getattr(_meta, "files", None) or []:
+                _loc = _locate(_entry) if _locate is not None else _entry
+                if _real(str(_loc)) == origin_real:
+                    owners.append(_d)
+                    break
+    return owners[0] if len(owners) == 1 else None
+
+
+def _resolve(full_name):
+    _top = full_name.split(".")[0]
+    _dists = _pkg_dist.get(_top)
+    if not _dists:
+        return None
+    _chosen = _owning_dist(_dists, _module_files.get(full_name))
+    if _chosen is None:
+        return None
+    try:
+        return [_chosen, _md.version(_chosen)]
+    except Exception:
+        return None
+
+
+def _is_external_mod(name):
+    if name in _inrepo_pkgs or name in _inrepo_names or _under_repo(_module_files.get(name)):
+        return False
+    _top = name.split(".")[0]
+    return not _is_stdlib(_top, _module_files.get(_top) or _module_files.get(name))
+
+
+def _norm(name):
+    # PEP 503 canonical distribution name: lowercase, runs of -_. collapse to a single '-'.
+    out = ""
+    sep = False
+    for ch in str(name).lower():
+        if ch in "-_.":
+            if not sep:
+                out += "-"
+            sep = True
+        else:
+            out += ch
+            sep = False
+    return out
+
+
+def _dist_record(name):
+    # ``[canonical Name, version]`` for an installed distribution, or None if absent.
+    try:
+        _d = _md.distribution(name)
+    except Exception:
+        return None
+    try:
+        _nm = _d.metadata["Name"] or name
+    except Exception:
+        _nm = name
+    try:
+        return [_nm, _d.version]
+    except Exception:
+        return None
+
+
+def _dep_names(name):
+    # The MANDATORY runtime dependencies a distribution DECLARES (Requires-Dist), by name. An
+    # extra-gated optional dependency (``; extra == '...'``) is skipped: it is not installed unless
+    # its extra is requested, and pinning it would inventory the environment rather than the closure.
+    try:
+        _reqs = _md.distribution(name).requires or []
+    except Exception:
+        return []
+    _out = []
+    for _req in _reqs:
+        if ";" in _req and "extra" in _req.split(";", 1)[1]:
+            continue
+        _nm = ""
+        for _ch in _req.strip():
+            if _ch.isalnum() or _ch in "._-":
+                _nm += _ch
+            else:
+                break
+        if _nm:
+            _out.append(_nm)
+    return _out
+
+
+# External modules imported DIRECTLY by an in-repo contract file: the fail-closed roots. Each MUST
+# resolve to an installed distribution (the provenance the freeze protects), or discovery fails
+# closed naming it.
+_direct = set()
+for _e in _edges:
+    _pn, _pf, _ch = _e[0], _e[1], _e[2]
+    if (_e[3] if len(_e) > 3 else 0) != 0:
+        continue
+    if not (_under_repo(_pf) or _pn in _inrepo_pkgs or _pn in _inrepo_names):
+        continue
+    if _ch in _inrepo_pkgs or _ch in _inrepo_names or _under_repo(_module_files.get(_ch)):
+        continue
+    # NB: do NOT skip on ``_top in _inrepo_pkgs`` — a namespace (``sphinxcontrib``) can be shared by
+    # an in-repo member AND an external submodule (``sphinxcontrib.applehelp``); the child itself was
+    # already proven external above, so a mixed-namespace external part must still be pinned.
+    _top = _ch.split(".")[0]
+    if not _top or _top == "_pytest":
+        continue
+    if _is_stdlib(_top, _module_files.get(_top) or _module_files.get(_ch)):
+        continue
+    _direct.add(_ch)
+
+_root_dists = set()
+_unresolvable = []
+for _r in sorted(_direct):
+    _pin = _resolve(_r)
+    if _pin is None:
+        _unresolvable.append(_r.split(".")[0])
+    else:
+        _root_dists.add(_pin[0])
+
+# Entry-point (autoloaded) pytest plugins present in THIS venv are external roots too — loaded by
+# pytest during collection though no test file imports them (autoload is ON in the hermetic env).
+try:
+    _eps = list(_md.entry_points(group="pytest11"))
+except Exception:
+    _eps = []
+for _ep in _eps:
+    _mod = getattr(_ep, "module", None) or (getattr(_ep, "value", "") or "").split(":")[0]
+    if not _mod or _mod.split(".")[0] in ("pytest", "_pytest"):
+        continue
+    if _mod in sys.modules and _is_external_mod(_mod):
+        _pin = _resolve(_mod)
+        if _pin is not None:
+            _root_dists.add(_pin[0])
+
+# Transitive external closure over DECLARED distribution dependencies (Requires-Dist), pinned at the
+# EXACT version installed in THIS provisioned interpreter. This follows a dist's own external deps
+# (markdown-it-py -> mdurl) and a plugin's declared deps (pytest-timeout -> pytest) while EXCLUDING a
+# dist's incidental runtime imports of unrelated installed packages (pytest imports wcwidth only if
+# present; wcwidth is no declared dependency, so a decoy never enters the closure).
+_seen = {}
+_stack = list(_root_dists)
+while _stack:
+    _name = _stack.pop()
+    _k = _norm(_name)
+    if _k in _seen:
+        continue
+    _rec = _dist_record(_name)
+    if _rec is None:
+        continue
+    _seen[_k] = _rec
+    for _dep in _dep_names(_name):
+        if _norm(_dep) in _seen:
+            continue
+        try:
+            _md.version(_dep)  # follow only deps actually installed in this env
+        except Exception:
+            continue
+        _stack.append(_dep)
+
+_pins = list(_seen.values())
+
+sys.stdout.write(
+    "<<<IFDISCOVER_START>>>"
+    + json.dumps(
+        {
+            "edges": _edges,
+            "module_files": _module_files,
+            "module_paths": _module_paths,
+            "collect_rc": collect_rc,
+            "external": _pins,
+            "unresolvable": _unresolvable,
+        }
+    )
+    + "<<<IFDISCOVER_END>>>"
+)
+"""
+
+
+def _run_discovery_collector(interpreter: object, worktree: Path, env: object) -> dict:
+    """Launch the instrumented collector and parse the emitted import graph."""
+    argv = [str(interpreter), "-c", _DISCOVER_SRC, str(worktree)]
+    result = process.run(argv, cwd=Path(worktree), timeout=_COLLECT_TIMEOUT, env=env)
+    stdout = result.stdout or ""
+    start = stdout.find(_DISCOVER_START)
+    end = stdout.find(_DISCOVER_END)
+    if start == -1 or end == -1:
+        raise RuntimeError(
+            f"discovery collection produced no import graph (rc={result.returncode}, "
+            f"timed_out={result.timed_out}): {result.stderr.strip()!r}"
+        )
+    payload = stdout[start + len(_DISCOVER_START) : end]
+    return json.loads(payload)
+
+
 class PytestAdapter:
     """Verification adapter for the pytest framework, using pytest's own reporter."""
 
@@ -253,6 +686,12 @@ class PytestAdapter:
             returncode=result.returncode,
             timed_out=result.timed_out,
             ok=ok,
+            # Provenance carriers so ``discover_contract_dependencies`` (S12) can re-run an
+            # instrumented collection over the SAME worktree/interpreter/env this collection used.
+            worktree=worktree,
+            interpreter=invocation.interpreter,
+            env=env,
+            command=tuple(command),
         )
 
     def classify(
@@ -437,8 +876,103 @@ class PytestAdapter:
         call = [n for n in recs if n.phase == "call"]
         return bool(call) and all(n.outcome is Outcome.PASSED for n in call)
 
-    def discover_contract_dependencies(self, collection: object) -> object:
-        raise NotImplementedError("discover_contract_dependencies lands in S12")
+    def discover_contract_dependencies(self, collection: object) -> ContractClosure:
+        """Compute the provenance-tagged import closure of a real collection (S12, US-5/D5/G16).
+
+        Re-runs the collection under an instrumented import recorder in a FRESH subprocess (so the
+        conftest/plugin/config/test import graph is the REAL runtime graph, never an AST scan), then
+        classifies every in-repo file by PROVENANCE: reached via the fixture/conftest/plugin/config
+        route (``fixture_closure``, always protected) versus reached ONLY through a test-module body
+        import (``test_body_imports``, a candidate SUT the freeze may exclude). Fixture provenance
+        wins on a collision. External identity (distribution + version) is resolved INSIDE the
+        provisioned discovery subprocess (D5) — so pins carry the PROVISIONED interpreter's versions,
+        never this parent process's — and the transitive external closure (a dist's own external
+        deps, an autoloaded plugin's reached deps) is pinned too. An external import made by an
+        in-repo contract file that resolves to no installed distribution fails the discovery CLOSED
+        with ``DiscoveryError`` naming it — never a partial closure.
+        """
+        worktree = Path(getattr(collection, "worktree")).resolve()
+        interpreter = getattr(collection, "interpreter")
+        env = getattr(collection, "env", None)
+        ids = tuple(getattr(collection, "ids", ()) or ())
+
+        graph = _run_discovery_collector(interpreter, worktree, env)
+        edges = graph["edges"]
+        module_files = graph["module_files"]
+        # External pins are resolved in the provisioned subprocess (D5); the parent only consumes
+        # them. A direct in-repo external import the subprocess could not resolve to an installed
+        # distribution fails the discovery CLOSED here, naming the offender — never a partial closure.
+        unresolvable = graph.get("unresolvable") or []
+        if unresolvable:
+            raise DiscoveryError(unresolvable[0])
+        external = tuple(sorted({(str(d), str(v)) for d, v in graph.get("external") or []}))
+
+        def _relrepo(fpath: object) -> str | None:
+            if not fpath:
+                return None
+            try:
+                resolved = Path(fpath).resolve()
+            except (OSError, ValueError):
+                return None
+            try:
+                return str(resolved.relative_to(worktree))
+            except ValueError:
+                return None
+
+        # File-backed in-repo modules map to a repo-relative path. A fileless in-repo PACKAGE (a PEP
+        # 420 namespace package, ``__file__ is None`` but ``__path__`` under the repo) has no blob to
+        # protect: it is neither a closure member nor an external — its file-backed submodules carry
+        # their own edges.
+        name_to_rel: dict[str, str] = {}
+        for name, fpath in module_files.items():
+            rel = _relrepo(fpath)
+            if rel is not None:
+                name_to_rel[name] = rel
+        # An in-repo module that FAILED to import (e.g. a helper whose own import raised) is dropped
+        # from ``sys.modules``, so it is absent from ``module_files`` — but it appears as a PARENT with
+        # an in-repo importer FILE, which proves it is a repo file (its body started executing). Seed
+        # the name->path map from those parent files so it is never misread as an external distribution.
+        for parent_name, parent_file, _child, *_rest in edges:
+            parent_rel = _relrepo(parent_file)
+            if parent_rel is not None and parent_name:
+                name_to_rel.setdefault(parent_name, parent_rel)
+
+        test_files = tuple(sorted({nid.split("::")[0] for nid in ids if "::" in nid}))
+        test_set = set(test_files)
+
+        # In-repo adjacency (parent_rel -> child_rel). A file is a ROOT when no in-repo file imported
+        # it: pytest imports conftests/test modules by file spec (bypassing the import hooks) and loads
+        # ``-p`` plugins / config modules itself, so those carry no in-repo importer. (External pins
+        # are computed in the subprocess; the parent loop only builds the in-repo import graph.)
+        adjacency: dict[str, set[str]] = {}
+        has_inrepo_parent: set[str] = set()
+        inrepo_nodes: set[str] = set(name_to_rel.values())
+        for parent_name, parent_file, child_name, *_rest in edges:
+            parent_rel = _relrepo(parent_file)
+            if parent_rel is None:
+                parent_rel = name_to_rel.get(parent_name)
+            if parent_rel is not None:
+                # A conftest name collides across directories (every ``conftest.py`` is module
+                # ``conftest``), so a root conftest is knowable only via its edges' importer FILE —
+                # record it as an in-repo node so it can still be a fixture root.
+                inrepo_nodes.add(parent_rel)
+            child_rel = name_to_rel.get(child_name)
+            if child_rel is not None and parent_rel is not None:
+                adjacency.setdefault(parent_rel, set()).add(child_rel)
+                has_inrepo_parent.add(child_rel)
+
+        roots = inrepo_nodes - has_inrepo_parent
+        fixture_roots = roots - test_set
+        fixture_closure = _reach(fixture_roots, adjacency)
+        test_reach = _reach(test_set, adjacency)
+        test_body_imports = test_reach - fixture_closure - test_set
+
+        return ContractClosure(
+            test_files=test_files,
+            fixture_closure=tuple(sorted(fixture_closure)),
+            test_body_imports=tuple(sorted(test_body_imports)),
+            external=external,
+        )
 
     def validate_invocation(self, command: object) -> object:
         raise NotImplementedError("validate_invocation lands in S13")
