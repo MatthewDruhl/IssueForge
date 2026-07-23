@@ -58,6 +58,22 @@ Non-negotiable, before the word "done":
 (authored before the build) and the orchestrator-run gate are what make the three rules above enforced instead
 of honor-system. Raw `/tdd` has neither, which is how the #4 run had the discretion to skip them.
 
+## Gate-finding triage — PoC before hardening (Matt, 2026-07-23)
+
+The milestone order is **M1 walking skeleton (#18–#22) → M2 full loop + TUI (#23–#25, #27) → M3 v1
+completion (#15, #26, #28)**, then batched hardening rounds. To keep the critical path moving, every
+review-gate or cross-review finding gets exactly one of two dispositions:
+
+1. **Fix inline before merge** — happy-path correctness: wrong output, a fake or unearned green, data
+   loss, security.
+2. **File with the `post-v1` label and do NOT schedule** — robustness: crash recovery, concurrency
+   edges, adversarial inputs, portability. It waits for a hardening round after v1 is usable.
+
+There is no third bucket; a finding never becomes a new scheduled v1 peer of the feature slices. This
+triages **findings about code already satisfying its contract** — it does not touch the rules above:
+the acceptance criteria of the issue under build are still never dropped, narrowed, or deferred.
+Deferral here is explicit and labeled, never silent.
+
 ## Development
 
 - Python 3.12+. Use `uv` (`uv run pytest`, `uv run ruff check`) — never `pip`.
