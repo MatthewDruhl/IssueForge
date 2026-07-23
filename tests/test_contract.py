@@ -3447,6 +3447,11 @@ def test_freeze_pins_every_owner_of_a_multi_dist_namespace(tmp_path):
             {
                 "sphinxcontrib-applehelp": "1.0.8",
                 "sphinxcontrib-devhelp": "1.0.6",
+                # applehelp's __init__ hard-imports sphinx; provision it so the
+                # conftest import resolves and collection completes (mirrors the
+                # committed discover-level sibling test_discover_namespace_...).
+                # sphinx is NOT in the closure -> asserted absent from the pins.
+                "sphinx": "9.1.0",
                 "wcwidth": "0.8.2",
             }
         ),
@@ -3491,7 +3496,13 @@ def test_freeze_handles_mixed_in_repo_and_external_namespace_package(tmp_path):
     )
     run = _freeze_run(scen)
     res = _freeze_prov(
-        run, scen, _real_pin_provisioner({"sphinxcontrib-applehelp": "1.0.8", "wcwidth": "0.8.2"})
+        run,
+        scen,
+        # sphinx provisioned because applehelp's __init__ hard-imports it; it is
+        # NOT in the closure and is asserted absent from the pins below.
+        _real_pin_provisioner(
+            {"sphinxcontrib-applehelp": "1.0.8", "sphinx": "9.1.0", "wcwidth": "0.8.2"}
+        ),
     )
     assert "sphinxcontrib/local_ns.py" in set(res.manifest["contract_paths"])
     pins = _pin_set(res.manifest)
