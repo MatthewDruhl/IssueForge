@@ -1480,9 +1480,7 @@ def test_discover_fails_closed_on_nonzero_instrumented_collect_rc(tmp_path, monk
         "unresolvable": [],  # nothing unresolvable — the ONLY defect is the failed collection
         "collect_rc": 2,  # pytest exit 2: a hard collection/internal error -> partial, must fail closed
     }
-    monkeypatch.setattr(
-        pytest_adapter, "_run_discovery_collector", lambda *a, **k: partial_graph
-    )
+    monkeypatch.setattr(pytest_adapter, "_run_discovery_collector", lambda *a, **k: partial_graph)
     collection = SimpleNamespace(
         worktree=Path(tmp_path),
         interpreter=sys.executable,
