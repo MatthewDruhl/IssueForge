@@ -12,7 +12,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from issueforge.adapters.pytest_adapter import ContractClosure
 
 
 class Outcome(Enum):
@@ -124,7 +127,7 @@ class VerificationAdapter(Protocol):
         """Fuse report records + exit code + timeout flag into a run-level ``BaselineStatus``."""
         ...
 
-    def discover_contract_dependencies(self, collection: object) -> object:
+    def discover_contract_dependencies(self, collection: object) -> ContractClosure:
         """Return the protected import closure: in-repo paths plus pinned external identities."""
         ...
 
