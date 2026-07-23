@@ -3413,7 +3413,6 @@ def test_freeze_pins_external_to_external_transitive_deps_from_provisioned_env(t
     assert "wcwidth" not in {d for d, _ in pins}  # decoy: installed but unreached -> not in closure
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_pins_every_owner_of_a_multi_dist_namespace(tmp_path):
     """When one namespace package is provided by MORE THAN ONE distribution, every distinct owning
     distribution is pinned at its EXACT provisioned version — a namespace-maps-to-one-dist assumption
@@ -3467,7 +3466,6 @@ def test_freeze_pins_every_owner_of_a_multi_dist_namespace(tmp_path):
     assert "wcwidth" not in {d for d, _ in pins}  # decoy: installed but unreached -> not in closure
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_handles_mixed_in_repo_and_external_namespace_package(tmp_path):
     """A namespace shared by an IN-REPO submodule and an EXTERNAL site-packages submodule splits by
     provenance: the in-repo part is protected as a file (fixture_closure) and the external part is
