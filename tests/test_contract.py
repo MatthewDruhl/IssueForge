@@ -2608,7 +2608,9 @@ def test_redaction_canary_copied_into_packet_then_redacted(
 #     - resolves contract_commit = the real committed HEAD of candidate_worktree;
 #     - refuses (ValueError) unless require_current_evidence(record, HEAD) holds and the run's
 #       accepted S10 red_proof is bound to that HEAD;
-#     - runs adapter.discover_contract_dependencies over the candidate collection; a DiscoveryError
+#     - runs adapter.discover_contract_dependencies over the candidate collection in the PROVISIONED
+#       hermetic env, so external pins/plugins resolve from the provisioned interpreter (a version
+#       present there is what gets pinned) — never the parent process (D5 2026-07-22); a DiscoveryError
 #       propagates as a named freeze refusal (nothing persisted);
 #     - composes contract_paths per the schema formula (test_files ∪ fixture_closure ∪
 #       (test_body_imports − write_scope) ∪ {selected config} ∪ {.issueforge.toml} ∪ user_added),
@@ -2761,6 +2763,66 @@ def _freeze(run, scen, *, approver=None, user_added_paths=(), secrets=frozenset(
         user_added_paths=tuple(user_added_paths),
         secrets=frozenset(secrets),
     )
+
+
+def _freeze_prov(run, scen, provisioner, *, user_added_paths=(), secrets=frozenset()):
+    """Freeze driving discovery through a caller-supplied PROVISIONER — used by the pin tests so
+    external identities resolve from a REAL provisioned interpreter (D5 2026-07-22: pins/plugins
+    resolve in the provisioned hermetic env, never the parent process)."""
+    from issueforge import contract
+
+    return contract.freeze_contract(
+        run,
+        candidate_worktree=scen.candidate_worktree,
+        base_sha=scen.base_sha,
+        adapter=_adapter(),
+        provisioner=provisioner,
+        approver=_approve_all,
+        user_added_paths=tuple(user_added_paths),
+        secrets=frozenset(secrets),
+    )
+
+
+def _real_pin_provisioner(pins):
+    """A provisioner that builds a REAL, SEPARATE venv with ``pins`` installed (the DEFAULT provision
+    path, interpreter != sys.executable), so discovery resolves external identity from the PROVISIONED
+    interpreter — a version present in that venv is what gets pinned, never a parent-process
+    ``importlib.metadata`` reading. Autoload stays ON so entry-point plugins load in that env."""
+
+    def _provision(worktree, frozen_deps=None):
+        merged = dict(pins)
+        if frozen_deps:
+            merged.update(frozen_deps)
+        return _adapter().provision_environment(worktree, merged)
+
+    return _provision
+
+
+def _pin_set(manifest):
+    """Normalize ``manifest['external_pins']`` to a set of ``(dist, version)`` pairs (dict or
+    pair-list) — the shape-tolerant oracle for the provisioned pins."""
+    raw = manifest["external_pins"]
+    if isinstance(raw, dict):
+        return {(str(k), str(v)) for k, v in raw.items()}
+    return {(str(d), str(v)) for d, v in raw}
+
+
+def _pin_dists(manifest):
+    return {d for d, _ in _pin_set(manifest)}
+
+
+def _collect_ids_cmd(worktree, command):
+    """The sorted/dedup canonical node-id set of ``worktree`` collected with an EXPLICIT command —
+    the oracle for 'what a hardcoded ``-m pytest`` would collect' vs the configured baseline."""
+    adapter = _adapter()
+    handle = adapter.provision_environment(worktree, None, provisioner=_provisioner())
+    invocation = SimpleNamespace(
+        worktree=Path(worktree),
+        interpreter=handle.interpreter,
+        command=list(command),
+        env=getattr(handle, "env", None),
+    )
+    return tuple(sorted(set(adapter.canonical_collect(invocation).ids)))
 
 
 def _freeze_events(run):
@@ -3084,16 +3146,21 @@ def test_freeze_write_scope_exactly_preserved(tmp_path):
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
 def test_freeze_contract_paths_match_composition_formula_user_can_only_add(tmp_path):
-    """The protected boundary equals the composition formula; a user list omitting a discovered path
-    does NOT remove it, and a user-added path IS included — user config can only ADD.
+    """The protected boundary equals the composition formula. A conftest-reached helper enters via
+    fixture_closure and stays protected even when the user's .issueforge.toml contract list omits it,
+    and a user_added path is included — user config can only ADD, never remove a discovered path.
 
-    technical: with a narrower .issueforge.toml contract list, the discovered helpers.py is still in
-    contract_paths; a user_added extra/thing.py is present; the test module is present.
+    technical: tests/conftest.py imports tests/helpers.py (so helpers.py is in fixture_closure, not
+    merely a committed file). A narrower contract_paths=["tests/test_new.py"] does NOT drop helpers.py;
+    a user_added extra/thing.py is present; the test module + conftest are present. Because the helper
+    is genuinely fixture-reached, this exercises the composition formula (an 'all committed - SUT' impl
+    would also pass this positive case — the negative test below is the discriminator).
     """
     scen = _fscen(
         tmp_path,
         name="composition",
         extra={
+            "tests/conftest.py": "from helpers import H  # noqa: F401\n",
             "tests/helpers.py": "H = 1\n",
             "extra/thing.py": "T = 1\n",
             ".issueforge.toml": (
@@ -3105,9 +3172,38 @@ def test_freeze_contract_paths_match_composition_formula_user_can_only_add(tmp_p
     run = _freeze_run(scen)
     res = _freeze(run, scen, user_added_paths=("extra/thing.py",))
     paths = set(res.manifest["contract_paths"])
-    assert "tests/helpers.py" in paths  # omitted by config, still present (never removed)
+    assert "tests/helpers.py" in paths  # fixture-reached, omitted by config, still protected
+    assert "tests/conftest.py" in paths
     assert "extra/thing.py" in paths  # user-added
     assert "tests/test_new.py" in paths
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_contract_paths_exclude_unreached_committed_files(tmp_path):
+    """A committed file reached by NO collection route — not a test, not in the fixture graph, not a
+    test-body import — is NOT in the protected boundary. The closure base is the discovered graph, not
+    'every committed file', and naming such an unreached file in the write scope is not a contradiction.
+
+    technical: docs/UNRELATED.md and orphan.py are committed but imported/collected by nothing, so both
+    are ABSENT from contract_paths. A pure 'all committed - write_scope' (subtraction) impl would
+    PROTECT docs/UNRELATED.md and FAIL here; orphan.py named in the write scope raises NO fixture-closure
+    contradiction (it is not in fixture_closure) and stays out of contract_paths.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="closure-base",
+        extra={
+            "docs/UNRELATED.md": "# unrelated\n",
+            "orphan.py": "ORPHAN = 1\n",
+        },
+    )
+    run = _freeze_run(scen, write_scope=("orphan.py",))
+    res = _freeze(run, scen)
+    paths = set(res.manifest["contract_paths"])
+    assert (
+        "docs/UNRELATED.md" not in paths
+    )  # unreached -> a subtraction impl would wrongly protect it
+    assert "orphan.py" not in paths
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
@@ -3229,25 +3325,158 @@ def test_freeze_config_and_issueforge_toml_are_hashed_boundary_members(tmp_path)
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
-def test_freeze_external_pins_flow_into_manifest_hash(tmp_path, monkeypatch):
-    """The external pins are part of the manifest hash — swapping a plugin version changes the frozen
-    hash.
+def test_freeze_external_pins_resolve_from_provisioned_env_and_flow_into_hash(tmp_path):
+    """External pins resolve from the PROVISIONED hermetic interpreter (D5), not the parent process,
+    and they are part of the manifest hash: the SAME conftest import pinned at two DIFFERENT provisioned
+    versions yields two different pins and two different manifest hashes.
 
-    technical: metadata.version stubbed V1 vs V2 -> manifest_hash differs (external pins are hashed).
+    technical: a conftest importing ``platformdirs`` frozen at 4.10.0 vs 4.9.1 in a REAL separate venv
+    -> external_pins carries ('platformdirs','4.10.0') vs ('platformdirs','4.9.1') AND the two
+    manifest_hashes differ. platformdirs is NOT a pytest/pytest-reportlog transitive, so an in-process
+    parent reading of importlib.metadata (the same version — or absent — for both runs) cannot produce
+    these two distinct pins: a parent-monkeypatch impl fails this.
     """
-    import importlib.metadata as meta
-
-    monkeypatch.setattr(meta, "packages_distributions", lambda: {"pytest_reportlog": ["Dist"]})
-    extra = {"tests/conftest.py": "import pytest_reportlog  # noqa: F401\n"}
+    extra = {"tests/conftest.py": "import platformdirs  # noqa: F401\n"}
     scen1 = _fscen(tmp_path, name="pin-v1", extra=extra)
     scen2 = _fscen(tmp_path, name="pin-v2", extra=extra)
     run1 = _freeze_run(scen1, run_id="run-v1")
     run2 = _freeze_run(scen2, run_id="run-v2")
-    monkeypatch.setattr(meta, "version", lambda dist: "1.0.0")
-    res1 = _freeze(run1, scen1)
-    monkeypatch.setattr(meta, "version", lambda dist: "2.0.0")
-    res2 = _freeze(run2, scen2)
+    res1 = _freeze_prov(run1, scen1, _real_pin_provisioner({"platformdirs": "4.10.0"}))
+    res2 = _freeze_prov(run2, scen2, _real_pin_provisioner({"platformdirs": "4.9.1"}))
+    assert ("platformdirs", "4.10.0") in _pin_set(res1.manifest)
+    assert ("platformdirs", "4.9.1") in _pin_set(res2.manifest)
     assert res1.manifest_hash != res2.manifest_hash
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_collects_via_configured_invocation_not_hardcoded_dash_m_pytest(tmp_path):
+    """Freeze collects the contract via the repo's CONFIGURED .issueforge.toml baseline, not a
+    hardcoded ``-m pytest``. A baseline that path-filters collection to ``tests`` must EXCLUDE a
+    root-level test a bare ``-m pytest`` would have collected.
+
+    technical: baseline=["-m","pytest","tests"]; extra_tests/test_extra.py is collected by a hardcoded
+    ["-m","pytest"] (proven against the real adapter) but NOT by the configured baseline -> its id is
+    absent from manifest['collected_ids'] and manifest['collected_ids'] equals the CONFIGURED
+    collection. A hardcoded ``-m pytest`` impl would include the extra id and fail both assertions.
+    """
+    extra_id = "extra_tests/test_extra.py::test_extra"
+    scen = _fscen(
+        tmp_path,
+        name="configured-collection",
+        extra={
+            "extra_tests/test_extra.py": "def test_extra():\n    assert True\n",
+            ".issueforge.toml": 'baseline = ["-m", "pytest", "tests"]\nframework = "pytest"\n',
+        },
+    )
+    default_ids = _collect_ids_cmd(scen.candidate_worktree, ["-m", "pytest"])
+    configured_ids = _collect_ids_cmd(scen.candidate_worktree, ["-m", "pytest", "tests"])
+    assert extra_id in default_ids  # a hardcoded -m pytest WOULD collect the root-level test
+    assert extra_id not in configured_ids
+    run = _freeze_run(scen)
+    res = _freeze(run, scen)
+    assert extra_id not in res.manifest["collected_ids"]  # freeze used the CONFIGURED baseline
+    assert set(res.manifest["collected_ids"]) == set(configured_ids)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_pins_externally_autoloaded_plugin_from_provisioned_env(tmp_path):
+    """An entry-point pytest plugin present in the PROVISIONED venv is loaded during discovery
+    (autoload ON in the hermetic env) and its distribution is pinned in external_pins — even though no
+    test file imports it.
+
+    technical: pytest-timeout==2.3.1 installed in a REAL separate venv; discovery loads it via its
+    entry point -> ('pytest-timeout','2.3.1') in external_pins. A provisioner that sets
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD (like the host _provisioner) — or a parent-process resolver — never
+    loads it and omits the pin, so it fails this.
+    """
+    scen = _fscen(tmp_path, name="ext-plugin")
+    run = _freeze_run(scen)
+    res = _freeze_prov(run, scen, _real_pin_provisioner({"pytest-timeout": "2.3.1"}))
+    assert ("pytest-timeout", "2.3.1") in _pin_set(res.manifest)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_pins_external_to_external_transitive_deps_from_provisioned_env(tmp_path):
+    """External dependency edges are followed transitively: a conftest importing an external dist pins
+    that dist AND its own external dependencies (external->external), resolved from the provisioned env.
+
+    technical: conftest imports ``markdown_it`` (markdown-it-py) frozen at 3.0.0, which really depends
+    on ``mdurl`` -> external_pins carries BOTH 'markdown-it-py' and 'mdurl'. A resolver that stops at
+    the directly-imported dist, or a fixed packages_distributions patch, omits the transitive 'mdurl'
+    and fails.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="ext-transitive",
+        extra={"tests/conftest.py": "import markdown_it  # noqa: F401\n"},
+    )
+    run = _freeze_run(scen)
+    res = _freeze_prov(run, scen, _real_pin_provisioner({"markdown-it-py": "3.0.0"}))
+    dists = _pin_dists(res.manifest)
+    assert "markdown-it-py" in dists
+    assert "mdurl" in dists  # followed the real external->external edge
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_pins_every_owner_of_a_multi_dist_namespace(tmp_path):
+    """When one namespace package is provided by MORE THAN ONE distribution, every distinct owning
+    distribution is pinned — a namespace-maps-to-one-dist assumption is wrong.
+
+    technical: sphinxcontrib.applehelp and sphinxcontrib.devhelp are two DIFFERENT dists sharing the
+    PEP420 ``sphinxcontrib`` namespace; a conftest importing both -> external_pins names BOTH
+    'sphinxcontrib-applehelp' and 'sphinxcontrib-devhelp'. Mapping the namespace to a single owner drops
+    one and fails.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="ns-multi-owner",
+        extra={
+            "tests/conftest.py": (
+                "import sphinxcontrib.applehelp  # noqa: F401\n"
+                "import sphinxcontrib.devhelp  # noqa: F401\n"
+            )
+        },
+    )
+    run = _freeze_run(scen)
+    res = _freeze_prov(
+        run,
+        scen,
+        _real_pin_provisioner(
+            {"sphinxcontrib-applehelp": "1.0.8", "sphinxcontrib-devhelp": "1.0.6"}
+        ),
+    )
+    dists = _pin_dists(res.manifest)
+    assert "sphinxcontrib-applehelp" in dists
+    assert "sphinxcontrib-devhelp" in dists
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#18)")
+def test_freeze_handles_mixed_in_repo_and_external_namespace_package(tmp_path):
+    """A namespace shared by an IN-REPO submodule and an EXTERNAL site-packages submodule splits by
+    provenance: the in-repo part is protected as a file (fixture_closure) and the external part is
+    pinned.
+
+    technical: in-repo sphinxcontrib/local_ns.py + external sphinxcontrib.applehelp under the PEP420
+    ``sphinxcontrib`` namespace; a conftest importing both -> 'sphinxcontrib/local_ns.py' in
+    contract_paths (in-repo, protected) AND 'sphinxcontrib-applehelp' in external_pins (external,
+    pinned). Treating the whole namespace as external drops the in-repo file; treating it all as in-repo
+    misses the pin — either failure is caught here.
+    """
+    scen = _fscen(
+        tmp_path,
+        name="ns-mixed",
+        extra={
+            "sphinxcontrib/local_ns.py": "LOCAL = 1\n",
+            "tests/conftest.py": (
+                "import sphinxcontrib.applehelp  # noqa: F401\n"
+                "from sphinxcontrib import local_ns  # noqa: F401\n"
+            ),
+        },
+    )
+    run = _freeze_run(scen)
+    res = _freeze_prov(run, scen, _real_pin_provisioner({"sphinxcontrib-applehelp": "1.0.8"}))
+    assert "sphinxcontrib/local_ns.py" in set(res.manifest["contract_paths"])
+    assert "sphinxcontrib-applehelp" in _pin_dists(res.manifest)
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
@@ -3446,14 +3675,18 @@ def test_freeze_redaction_removes_only_secrets_preserves_command_structure(tmp_p
         tmp_path,
         name="redact-1",
         extra={
-            ".issueforge.toml": 'baseline = ["pytest", "--token=SEKRET"]\nframework = "pytest"\n'
+            ".issueforge.toml": (
+                'baseline = ["pytest", "-o", "cache_dir=a-SEKRET"]\nframework = "pytest"\n'
+            )
         },
     )
     scen2 = _fscen(
         tmp_path,
         name="redact-2",
         extra={
-            ".issueforge.toml": 'baseline = ["pytest", "--other=SEKRET"]\nframework = "pytest"\n'
+            ".issueforge.toml": (
+                'baseline = ["pytest", "-o", "cache_dir=b-SEKRET"]\nframework = "pytest"\n'
+            )
         },
     )
     run1 = _freeze_run(scen1, run_id="run-redact-1")
