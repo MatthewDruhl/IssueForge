@@ -3381,20 +3381,26 @@ def test_freeze_pins_externally_autoloaded_plugin_from_provisioned_env(tmp_path)
     test file imports it.
 
     technical: pytest-timeout==2.3.1 installed in a REAL separate venv; discovery loads it via its
-    entry point -> ('pytest-timeout','2.3.1') in external_pins. An UNRELATED decoy dist (wcwidth) is
-    also installed in the venv but is not imported, not a plugin, and not a transitive of the closure,
-    so its name is ABSENT from external_pins. A provisioner that sets PYTEST_DISABLE_PLUGIN_AUTOLOAD
-    (like the host _provisioner) — or a parent-process resolver — never loads the plugin and omits the
-    pin; an impl that inventories the whole provisioned environment (not the plugin closure) includes
-    the decoy 'wcwidth' and fails the absence assertion.
+    entry point -> ('pytest-timeout','2.3.1') in external_pins. pytest-timeout 2.3.1 declares
+    ``pytest>=7.0.0``, so its plugin-reached transitive closure includes pytest (pinned 8.3.4 in the
+    venv) -> ('pytest','8.3.4') is ALSO in external_pins. An UNRELATED decoy dist (wcwidth) is also
+    installed but is not imported, not a plugin, and not a transitive of the closure, so its name is
+    ABSENT. A provisioner that sets PYTEST_DISABLE_PLUGIN_AUTOLOAD (like the host _provisioner) — or a
+    parent-process resolver — never loads the plugin and omits the pin; an impl that discovers the
+    entry-point plugin owner but does NOT traverse its transitive deps omits pytest and fails the exact
+    (pytest, 8.3.4) assertion; an impl that inventories the whole provisioned environment (not the
+    plugin closure) includes the decoy 'wcwidth' and fails the absence assertion.
     """
     scen = _fscen(tmp_path, name="ext-plugin")
     run = _freeze_run(scen)
     res = _freeze_prov(
-        run, scen, _real_pin_provisioner({"pytest-timeout": "2.3.1", "wcwidth": "0.8.2"})
+        run,
+        scen,
+        _real_pin_provisioner({"pytest-timeout": "2.3.1", "pytest": "8.3.4", "wcwidth": "0.8.2"}),
     )
     pins = _pin_set(res.manifest)
     assert ("pytest-timeout", "2.3.1") in pins
+    assert ("pytest", "8.3.4") in pins  # plugin-reached transitive (pytest-timeout -> pytest)
     assert "wcwidth" not in {d for d, _ in pins}  # decoy: installed but unreached -> not in closure
 
 
