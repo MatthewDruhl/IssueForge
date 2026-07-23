@@ -306,7 +306,7 @@ os.dup2(_devnull_fd, 2)
 try:
     import pytest
     try:
-        collect_rc = pytest.main(["--collect-only", "-q", "-p", "no:cacheprovider"])
+        collect_rc = pytest.main([*sys.argv[2:], "--collect-only", "-q", "-p", "no:cacheprovider"])
     except SystemExit as _exc:
         collect_rc = _exc.code
 except BaseException:
@@ -605,9 +605,37 @@ sys.stdout.write(
 """
 
 
-def _run_discovery_collector(interpreter: object, worktree: Path, env: object) -> dict:
-    """Launch the instrumented collector and parse the emitted import graph."""
-    argv = [str(interpreter), "-c", _DISCOVER_SRC, str(worktree)]
+def _collection_args(command: object) -> list[str]:
+    """The configured baseline's own pytest CLI arguments — every token AFTER the ``pytest`` launcher
+    token (however it is spelled: ``["-m", "pytest", "tests"]``, ``["pytest", "tests"]``,
+    ``["uv", "run", "pytest", "tests"]`` all yield ``["tests"]``). These path filters / ``-p`` plugin
+    flags decide WHICH modules the baseline collects, so the instrumented collection can reproduce the
+    configured collection scope instead of a hardcoded bare pytest that would pull in modules the
+    baseline excludes. An unrecognized command (no ``pytest`` token) yields no extra args."""
+    tokens = [str(tok) for tok in command or ()]
+    for index, tok in enumerate(tokens):
+        leaf = tok.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if leaf in ("pytest", "py.test"):
+            return tokens[index + 1 :]
+    return []
+
+
+def _run_discovery_collector(
+    interpreter: object, worktree: Path, env: object, collect_args: object = ()
+) -> dict:
+    """Launch the instrumented collector and parse the emitted import graph.
+
+    ``collect_args`` are the configured baseline's own pytest arguments (path filters, ``-p`` plugin
+    flags); passing them through makes the instrumented collection select the SAME modules the
+    configured baseline does, never a hardcoded bare ``pytest`` that would import modules the baseline
+    excludes into the recorded graph."""
+    argv = [
+        str(interpreter),
+        "-c",
+        _DISCOVER_SRC,
+        str(worktree),
+        *[str(arg) for arg in collect_args or ()],
+    ]
     result = process.run(argv, cwd=Path(worktree), timeout=_COLLECT_TIMEOUT, env=env)
     stdout = result.stdout or ""
     start = stdout.find(_DISCOVER_START)
@@ -912,8 +940,12 @@ class PytestAdapter:
         interpreter = getattr(collection, "interpreter")
         env = getattr(collection, "env", None)
         ids = tuple(getattr(collection, "ids", ()) or ())
+        # The instrumented collection honors the CONFIGURED baseline command (its path filters / ``-p``
+        # plugin flags), never a hardcoded bare ``pytest`` — so the discovered closure matches exactly
+        # what the configured collection selects and cannot pull in modules the baseline excludes.
+        collect_args = _collection_args(getattr(collection, "command", ()) or ())
 
-        graph = _run_discovery_collector(interpreter, worktree, env)
+        graph = _run_discovery_collector(interpreter, worktree, env, collect_args)
         edges = graph["edges"]
         module_files = graph["module_files"]
         # External pins are resolved in the provisioned subprocess (D5); the parent only consumes
@@ -922,6 +954,19 @@ class PytestAdapter:
         unresolvable = graph.get("unresolvable") or []
         if unresolvable:
             raise DiscoveryError(unresolvable[0])
+        # A BROKEN instrumented ``collect_rc`` means the collection did not complete (a hard
+        # collection/internal/usage error, a timeout, an aborted run): the recorded graph is PARTIAL,
+        # so fail the discovery CLOSED rather than build a closure from a truncated import graph the
+        # freeze would then approve. Exit 0 (clean) and exit 5 (a clean, EMPTY collection) are the only
+        # complete outcomes — mirroring the freeze's own candidate-collection completion gate. (An
+        # unresolvable import above names the specific offender first; this catches every OTHER broken
+        # collection, including one with nothing unresolvable.)
+        collect_rc = graph.get("collect_rc")
+        if collect_rc not in (0, 5):
+            raise RuntimeError(
+                f"instrumented contract discovery did not complete cleanly "
+                f"(collect_rc={collect_rc!r}); refusing a partial closure"
+            )
         external = tuple(sorted({(str(d), str(v)) for d, v in graph.get("external") or []}))
 
         def _relrepo(fpath: object) -> str | None:

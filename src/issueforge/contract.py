@@ -36,6 +36,7 @@ from issueforge import verify as _verify
 from issueforge import workspace as _workspace_mod
 from issueforge.adapters.base import BaselineStatus, Outcome
 from issueforge.io import WriteSeam
+from issueforge.paths import run_dir
 from issueforge.state import State, transition
 from issueforge.store import REDACTED, RunStore, write_artifact
 
@@ -1562,6 +1563,24 @@ def _normalize(path: str) -> str:
     return os.path.normpath(path)
 
 
+def _write_scope_operands(entries: object) -> list[str]:
+    """Every filesystem path a write-scope entry names. A ``rename`` op carries ``source_path`` +
+    ``destination_path`` (and no ``path`` key), so BOTH operands must enter the write-scope path set
+    the freeze normalizes, collision-checks against the protected boundary, excludes as an editable
+    SUT, and serializes into the manifest — mirroring ``engine.enforce_write_scope``. Any other op
+    (edit/create/delete) carries a single ``path``."""
+    paths: list[str] = []
+    for entry in entries or []:
+        if entry.get("op") == "rename":
+            for key in ("source_path", "destination_path"):
+                value = entry.get(key)
+                if value:
+                    paths.append(value)
+        elif entry.get("path"):
+            paths.append(entry["path"])
+    return paths
+
+
 def freeze_contract(
     run_id: str,
     *,
@@ -1609,6 +1628,12 @@ def freeze_contract(
     except _config.ConfigError as exc:
         raise ValueError(f"freeze refused: contract configuration is invalid: {exc}") from exc
     command = [list(c) for c in (cfg.baseline, cfg.acceptance, cfg.lint, cfg.build) if c]
+    # Additive contract paths union from BOTH sources: the caller's explicit ``user_added_paths`` AND
+    # the committed ``.issueforge.toml`` ``contract_paths``. User config can ADD a committed file
+    # discovery never reaches (never shrink the boundary), so a path it names is frozen into
+    # ``contract_paths`` + ``dep_hashes`` exactly like an explicit user-added path — unioned BEFORE
+    # normalization, the collision check, committed-blob validation, and hashing.
+    added_paths = user_added + tuple(cfg.contract_paths or ())
 
     # (4) Provenance discovery over the real collection (a DiscoveryError propagates as a named
     # refusal); the collection also supplies the frozen collected-id set and external pins. The
@@ -1685,7 +1710,7 @@ def freeze_contract(
     # committed boundary member plus any user-added path.
     protected_committed = {p for p in committed if _is_boundary_member(p)}
     protected_norm = {_normalize(p) for p in protected_committed} | {
-        _normalize(u) for u in user_added
+        _normalize(u) for u in added_paths
     }
 
     # (7) Write scope reconciliation. A write-scope entry that names a PROTECTED contract input (any
@@ -1694,9 +1719,7 @@ def freeze_contract(
     # SUT: excluded and surfaced. Any other write-scope path (an unreached orphan, an untracked path) is
     # NOT a contract input — it raises nothing and simply never enters the boundary.
     shape = record.get("shape") or {}
-    write_scope_paths = [
-        entry["path"] for entry in (shape.get("write_scope") or []) if entry.get("path")
-    ]
+    write_scope_paths = _write_scope_operands(shape.get("write_scope") or [])
     excluded_sut: set[str] = set()
     scope_excluded: set[str] = set()
     for raw in write_scope_paths:
@@ -1729,7 +1752,7 @@ def freeze_contract(
     # (9) The protected boundary: the boundary members plus user-added paths, minus the editable SUTs
     # (and any symlink to one) and the write-scope-only non-contract paths. No path is ever both
     # excluded and protected. Paths are stored verbatim (symlinks never collapsed).
-    contract_path_set = (protected_committed | set(user_added)) - symlink_excluded
+    contract_path_set = (protected_committed | set(added_paths)) - symlink_excluded
     contract_path_set = {
         p
         for p in contract_path_set
@@ -1788,6 +1811,16 @@ def freeze_contract(
     # not a show-A-persist-B). If appending the freeze event fails after the artifact was written, the
     # artifact is rolled back through the seam, so a partial (artifact-without-event) can never persist.
     manifest_hash = _sha256_hex(canonical)
+    # (13a) The permanent contract manifest is SINGLE-ASSIGNMENT per run: if a manifest is already
+    # retained for this run and the newly approved canonical bytes DIFFER, fail closed and leave the
+    # first manifest untouched — so the first freeze event's ``manifest_hash`` keeps addressing the
+    # retained bytes and no prior manifest is ever clobbered. Identical bytes are an idempotent retry.
+    existing_manifest = run_dir(run_id) / _MANIFEST_ARTIFACT
+    if existing_manifest.exists() and existing_manifest.read_bytes() != canonical:
+        raise ValueError(
+            "freeze refused: a permanent contract manifest is already retained for this run with "
+            "differing bytes; the first manifest is not clobbered"
+        )
     artifact_path = st.write_artifact(
         run_id, _MANIFEST_ARTIFACT, canonical.decode("utf-8"), secrets=secrets
     )
