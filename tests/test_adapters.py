@@ -853,8 +853,9 @@ def test_behavioral_red_requires_every_expected_node_to_reach_a_call_phase():
 #       the REAL collection-reached import graph (not an AST scan), classifies each in-repo path by
 #       PROVENANCE (fixture/conftest/config/plugin vs test-body-only), fails CLOSED (DiscoveryError)
 #       on an import that resolves to neither a repo file, the stdlib, nor an installed distribution,
-#       and resolves external identity in-process via importlib.metadata.packages_distributions() /
-#       importlib.metadata.version() (so a test may monkeypatch those module attributes).
+#       and resolves external identity from the collection's PROVISIONED interpreter (the venv
+#       provision_environment builds), never the parent process — a version present in that venv is
+#       what gets pinned.
 #   ContractClosure (frozen): test_files, fixture_closure, test_body_imports: tuple[str, ...] of
 #       sorted/dedup repo-relative paths; external: tuple[tuple[str, str], ...] sorted (dist, version).
 #   DiscoveryError(name): raised naming the unresolvable import; discovery never returns a partial
@@ -903,6 +904,31 @@ def _s12_discover(repo):
     from issueforge.adapters.pytest_adapter import PytestAdapter
 
     return PytestAdapter().discover_contract_dependencies(_s12_collection(repo))
+
+
+def _s12_discover_prov(repo, pins):
+    """Run the real ``discover_contract_dependencies`` over ``repo`` collected under a REAL separate
+    venv holding ``pins`` — so external identity resolves from the PROVISIONED interpreter (D5), never
+    the parent process.
+
+    Provision the DEFAULT path (``interpreter`` != ``sys.executable``, plugin autoload ON), build the
+    collection with that provisioned interpreter + its env (mirrors ``_s12_collection``), then discover.
+    ``pins`` maps ``dist -> version``; provisioning installs each pinned so a version present in that
+    venv is what gets pinned. The scenario conftest must import a module the provisioned dist provides,
+    so the real collection reaches it and discovery resolves it from the venv."""
+    from types import SimpleNamespace
+
+    from issueforge.adapters.pytest_adapter import PytestAdapter
+
+    adapter = PytestAdapter()
+    handle = adapter.provision_environment(repo, dict(pins))
+    invocation = SimpleNamespace(
+        worktree=Path(repo),
+        interpreter=handle.interpreter,
+        command=["-m", "pytest"],
+        env=getattr(handle, "env", None),
+    )
+    return adapter.discover_contract_dependencies(adapter.canonical_collect(invocation))
 
 
 # --------------------------------------------------------------------- fixture-closure provenance
@@ -1048,80 +1074,73 @@ def test_discover_protects_dynamically_imported_collection_dep(tmp_path):
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
-def test_discover_pins_external_identity_not_module_name(tmp_path, monkeypatch):
+def test_discover_pins_external_identity_not_module_name(tmp_path):
     """An external import is pinned by its DISTRIBUTION identity + version, not its module name.
 
-    technical: an installed module (pytest_reportlog) imported in conftest, with
-    packages_distributions() monkeypatched so the module maps to dist ``Foo-Dist``; external
-    superset of {("Foo-Dist", "1.0.0")} and no ("pytest_reportlog", ...) entry.
+    technical: a conftest ``import markdown_it`` provisioned as markdown-it-py==3.0.0 in a REAL
+    separate venv -> external superset of {("markdown-it-py", "3.0.0")} and NO pin whose dist is the
+    module name ``markdown_it`` (identity comes from the provisioned distribution, not the import name).
     """
-    import importlib.metadata as m
-
-    monkeypatch.setattr(m, "packages_distributions", lambda: {"pytest_reportlog": ["Foo-Dist"]})
-    monkeypatch.setattr(m, "version", lambda dist: "1.0.0" if dist == "Foo-Dist" else "0")
     repo = _s12_write_repo(
         tmp_path / "a7",
         {
-            "tests/conftest.py": "import pytest_reportlog  # noqa: F401\n",
+            "tests/conftest.py": "import markdown_it  # noqa: F401\n",
             "tests/test_x.py": "def test_x():\n    assert True\n",
         },
     )
-    closure = _s12_discover(repo)
-    assert ("Foo-Dist", "1.0.0") in closure.external
-    assert all(dist != "pytest_reportlog" for dist, _ in closure.external)
+    closure = _s12_discover_prov(repo, {"markdown-it-py": "3.0.0"})
+    assert ("markdown-it-py", "3.0.0") in closure.external
+    assert all(dist != "markdown_it" for dist, _ in closure.external)
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
-def test_discover_pins_external_transitive_deps_exactly_no_extras(tmp_path, monkeypatch):
-    """An external plugin plus the second distribution it pulls into collection are BOTH pinned, and
-    NO unrelated installed distribution is pinned.
+def test_discover_pins_external_transitive_deps_exactly_no_extras(tmp_path):
+    """An external dist plus the second distribution it pulls into collection are BOTH pinned at their
+    EXACT provisioned versions, and NO unrelated installed distribution is pinned.
 
-    technical: two installed modules (pytest_reportlog, pluggy) imported in conftest map to
-    (PluginDist, 1) and (DepDist, 2); a DecoyDist is installed but never imported. external ==
-    exactly {(PluginDist, 1), (DepDist, 2)} (rules out "pin every installed distribution").
+    technical: a conftest ``import markdown_it`` provisioned as markdown-it-py==3.0.0, which really
+    depends on ``mdurl`` (pinned 0.1.2 in the provisioned venv) -> external restricted to the dists
+    under test == {("markdown-it-py","3.0.0"), ("mdurl","0.1.2")} EXACTLY; an UNRELATED decoy dist
+    (wcwidth==0.8.2, installed but not imported and not a transitive) is ABSENT (rules out "pin every
+    installed distribution").
     """
-    import importlib.metadata as m
-
-    dist_map = {"pytest_reportlog": ["PluginDist"], "pluggy": ["DepDist"]}
-    versions = {"PluginDist": "1", "DepDist": "2", "DecoyDist": "9"}
-    monkeypatch.setattr(m, "packages_distributions", lambda: dist_map)
-    monkeypatch.setattr(m, "version", lambda dist: versions.get(dist, "0"))
     repo = _s12_write_repo(
         tmp_path / "a8",
         {
-            "tests/conftest.py": "import pytest_reportlog  # noqa: F401\nimport pluggy  # noqa: F401\n",
+            "tests/conftest.py": "import markdown_it  # noqa: F401\n",
             "tests/test_x.py": "def test_x():\n    assert True\n",
         },
     )
-    closure = _s12_discover(repo)
-    assert set(closure.external) == {("PluginDist", "1"), ("DepDist", "2")}
-    assert all(dist != "DecoyDist" for dist, _ in closure.external)
+    closure = _s12_discover_prov(
+        repo, {"markdown-it-py": "3.0.0", "mdurl": "0.1.2", "wcwidth": "0.8.2"}
+    )
+    under_test = {(d, v) for (d, v) in closure.external if d in {"markdown-it-py", "mdurl"}}
+    assert under_test == {("markdown-it-py", "3.0.0"), ("mdurl", "0.1.2")}
+    assert all(dist != "wcwidth" for dist, _ in closure.external)
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
-def test_discover_external_pin_is_version_sensitive(tmp_path, monkeypatch):
-    """The same external import under two distribution versions yields two distinct pins.
+def test_discover_external_pin_is_version_sensitive(tmp_path):
+    """The same external import provisioned under two distribution versions yields two distinct pins.
 
-    technical: version(Dist) monkeypatched V1 then V2; the external pin for the same module differs
-    accordingly.
+    technical: a conftest ``import platformdirs`` provisioned at 4.10.0 in one REAL venv and 4.9.1 in
+    another -> the two closures pin ("platformdirs","4.10.0") vs ("platformdirs","4.9.1"), and neither
+    leaks the other's version. A parent-process importlib.metadata reading (one version for both runs)
+    cannot produce these two distinct pins.
     """
-    import importlib.metadata as m
-
-    monkeypatch.setattr(m, "packages_distributions", lambda: {"pytest_reportlog": ["Dist"]})
     repo = _s12_write_repo(
         tmp_path / "a9",
         {
-            "tests/conftest.py": "import pytest_reportlog  # noqa: F401\n",
+            "tests/conftest.py": "import platformdirs  # noqa: F401\n",
             "tests/test_x.py": "def test_x():\n    assert True\n",
         },
     )
-    monkeypatch.setattr(m, "version", lambda dist: "1.0.0")
-    first = _s12_discover(repo)
-    monkeypatch.setattr(m, "version", lambda dist: "2.0.0")
-    second = _s12_discover(repo)
-    assert ("Dist", "1.0.0") in first.external
-    assert ("Dist", "2.0.0") in second.external
-    assert ("Dist", "1.0.0") not in second.external
+    first = _s12_discover_prov(repo, {"platformdirs": "4.10.0"})
+    second = _s12_discover_prov(repo, {"platformdirs": "4.9.1"})
+    assert ("platformdirs", "4.10.0") in first.external
+    assert ("platformdirs", "4.9.1") in second.external
+    assert ("platformdirs", "4.10.0") not in second.external
+    assert ("platformdirs", "4.9.1") not in first.external
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
@@ -1346,42 +1365,34 @@ def test_discover_test_files_is_exact_sorted_dedup_set(tmp_path):
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
-def test_discover_namespace_package_pins_owning_distribution_only(tmp_path, monkeypatch):
-    """For a module a shared namespace maps to several distributions, discovery pins ONLY the
+def test_discover_namespace_package_pins_owning_distribution_only(tmp_path):
+    """For a module whose shared namespace maps to several distributions, discovery pins ONLY the
     distribution that actually PROVIDES the imported module, not every namespace sibling.
 
-    technical: packages_distributions() maps pytest_reportlog to [OwnerDist, SiblingDist]; only
-    OwnerDist's files contain the imported module's origin. external contains exactly
-    (OwnerDist, version) and NOT the sibling (SiblingDist).
+    technical: sphinxcontrib-applehelp and sphinxcontrib-devhelp are two DIFFERENT dists sharing the
+    PEP420 ``sphinxcontrib`` namespace, both installed in a REAL venv (applehelp 1.0.8, devhelp 1.0.6);
+    a conftest imports ONLY ``sphinxcontrib.applehelp`` (which applehelp provides) -> external contains
+    ("sphinxcontrib-applehelp","1.0.8") and NOT the sibling ``sphinxcontrib-devhelp`` (installed in the
+    same namespace but not the provider of the imported module). sphinx is provisioned because
+    applehelp's __init__ imports it; sphinx does not import devhelp, so devhelp stays unreached.
     """
-    import importlib.metadata as m
-    from types import SimpleNamespace
-
-    import pytest_reportlog
-
-    origin = Path(pytest_reportlog.__file__)
-    owner = SimpleNamespace(files=[origin])
-    sibling = SimpleNamespace(files=[])
-
-    monkeypatch.setattr(
-        m, "packages_distributions", lambda: {"pytest_reportlog": ["OwnerDist", "SiblingDist"]}
-    )
-    monkeypatch.setattr(
-        m,
-        "distribution",
-        lambda dist: owner if dist == "OwnerDist" else sibling,
-    )
-    monkeypatch.setattr(m, "version", lambda dist: "3.0.0")
     repo = _s12_write_repo(
         tmp_path / "a18",
         {
-            "tests/conftest.py": "import pytest_reportlog  # noqa: F401\n",
+            "tests/conftest.py": "import sphinxcontrib.applehelp  # noqa: F401\n",
             "tests/test_x.py": "def test_x():\n    assert True\n",
         },
     )
-    closure = _s12_discover(repo)
-    assert ("OwnerDist", "3.0.0") in closure.external
-    assert all(dist != "SiblingDist" for dist, _ in closure.external)
+    closure = _s12_discover_prov(
+        repo,
+        {
+            "sphinxcontrib-applehelp": "1.0.8",
+            "sphinxcontrib-devhelp": "1.0.6",
+            "sphinx": "9.1.0",
+        },
+    )
+    assert ("sphinxcontrib-applehelp", "1.0.8") in closure.external
+    assert all(dist != "sphinxcontrib-devhelp" for dist, _ in closure.external)
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#18)")
