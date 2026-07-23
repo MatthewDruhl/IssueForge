@@ -225,7 +225,7 @@ def _reach(roots: set[str], adjacency: dict[str, set[str]]) -> set[str]:
 _DISCOVER_START = "<<<IFDISCOVER_START>>>"
 _DISCOVER_END = "<<<IFDISCOVER_END>>>"
 _DISCOVER_SRC = r"""
-import sys, os, json, builtins, importlib, importlib.abc, importlib.metadata
+import sys, os, json, builtins, importlib, importlib.abc, importlib.metadata, importlib.util
 
 _repo = sys.argv[1]
 os.chdir(_repo)
@@ -401,6 +401,23 @@ except Exception:
     _pkg_dist = {}
 
 
+def _module_origin(full_name):
+    # The REAL file origin of an imported module. Prefer the __file__ recorded from sys.modules, but
+    # fall back to find_spec when the module never landed there — a namespace SUBMODULE whose body
+    # raised (e.g. ``sphinxcontrib.applehelp`` importing an absent ``sphinx``) is dropped from
+    # sys.modules and carries no __file__, yet find_spec still LOCATES its origin without executing the
+    # body, so a multi-dist namespace stays disambiguable by file origin. Runs after the import hook is
+    # restored, so this lookup never pollutes the recorded edges.
+    _o = _module_files.get(full_name)
+    if _o:
+        return _o
+    try:
+        _spec = importlib.util.find_spec(full_name)
+    except BaseException:
+        return None
+    return getattr(_spec, "origin", None) if _spec is not None else None
+
+
 def _owning_dist(dists, origin):
     # A namespace shared by several distributions is disambiguated to the ONE whose installed files
     # equal the imported module's REAL origin path; ambiguous ownership resolves to no owner.
@@ -428,7 +445,7 @@ def _resolve(full_name):
     _dists = _pkg_dist.get(_top)
     if not _dists:
         return None
-    _chosen = _owning_dist(_dists, _module_files.get(full_name))
+    _chosen = _owning_dist(_dists, _module_origin(full_name))
     if _chosen is None:
         return None
     try:
