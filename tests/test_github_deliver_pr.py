@@ -483,7 +483,10 @@ def test_pr_body_assembled_deterministically_from_persisted_evidence():
     from issueforge import github
 
     def _body(record):
-        gw, store = _FakeGateway(), _FakeStore()
+        # origin_sha must match THIS record's candidate_sha so post-push verification passes for
+        # whichever record is under test (the default fake pins _CANDIDATE_SHA, which would (correctly)
+        # halt delivery of the `other` record before open_pr — a fixture bug, not an impl defect).
+        gw, store = _FakeGateway(origin_sha_value=record["candidate_sha"]), _FakeStore()
         store.seed(record["run_id"], record)
         github.deliver_pr(record, gateway=gw, store=store)
         return gw._kwargs("open_pr")["body"]
