@@ -60,8 +60,6 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 PENDING = "PENDING (#114)"
 
 REPO_ALIAS = "DandD"
@@ -437,7 +435,6 @@ def _call(record, fakes, approver=None):
 # =========================================================================== the suite
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_default_seams_reuse_the_real_provider_redproof_and_verify_code(isolated_state_home):
     """The candidate stage reuses the existing provider, red-proof, and baseline code: its seam
     defaults ARE providers.invoke, contract.prove_red, and verify.run_baseline.
@@ -455,7 +452,6 @@ def test_default_seams_reuse_the_real_provider_redproof_and_verify_code(isolated
     assert params["run_baseline"].default is verify.run_baseline
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_stage_runs_only_in_candidate_worktree_leaving_normal_checkout_untouched(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -479,7 +475,6 @@ def test_stage_runs_only_in_candidate_worktree_leaving_normal_checkout_untouched
     assert _head(candidate) != base_sha
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_authoring_invokes_provider_with_paths_baseline_and_a_no_git_instruction(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -514,7 +509,6 @@ def test_authoring_invokes_provider_with_paths_baseline_and_a_no_git_instruction
     assert _op_permitted(prompt, r"\bedit|\bmodif"), "no explicit edit/modify permission"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_authored_tests_are_red_proved_before_approval_reusing_prove_red(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -535,7 +529,6 @@ def test_authored_tests_are_red_proved_before_approval_reusing_prove_red(
     assert fakes.order.index("prove_red") < fakes.order.index("approver")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_a_rejected_red_proof_pauses_before_approval_with_no_commit_or_implementation(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -569,7 +562,6 @@ def test_a_rejected_red_proof_pauses_before_approval_with_no_commit_or_implement
     assert store.RunStore().read(run_id)["status"] == "paused"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_approver_sees_the_exact_test_diff_and_the_red_evidence(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -612,7 +604,6 @@ def test_approver_sees_the_exact_test_diff_and_the_red_evidence(
     assert "behavioral_red" in ev or "AssertionError" in ev
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_rejection_pauses_with_no_implementation_and_no_contract_commit(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -647,7 +638,6 @@ def test_rejection_pauses_with_no_implementation_and_no_contract_commit(
     assert saved.get("contract_commit") is None
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_engine_creates_the_contract_commit_after_approval_not_claude(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -675,7 +665,6 @@ def test_engine_creates_the_contract_commit_after_approval_not_claude(
     assert fakes.order.index("approver") < fakes.order.index("impl")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_implementation_invoked_after_the_contract_commit_with_scope_and_verification(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -705,7 +694,6 @@ def test_implementation_invoked_after_the_contract_commit_with_scope_and_verific
     assert " ".join(BASELINE_COMMAND) in impl
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_verification_runs_the_authoritative_acceptance_and_baseline_commands(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -728,7 +716,6 @@ def test_verification_runs_the_authoritative_acceptance_and_baseline_commands(
     assert fakes.order.index("impl") < first_baseline
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_claimed_success_does_not_override_a_non_green_authoritative_verdict(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -758,7 +745,6 @@ def test_claimed_success_does_not_override_a_non_green_authoritative_verdict(
     assert _head(candidate) == result.contract_commit
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_baseline_regression_pauses_even_when_acceptance_is_green(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -780,7 +766,6 @@ def test_baseline_regression_pauses_even_when_acceptance_is_green(
     assert _head(candidate) == result.contract_commit
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_acceptance_failure_pauses_even_when_baseline_is_green(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -802,7 +787,6 @@ def test_acceptance_failure_pauses_even_when_baseline_is_green(
     assert _head(candidate) == result.contract_commit
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_green_lands_as_a_separate_implementation_commit_after_the_contract_commit(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -823,7 +807,6 @@ def test_green_lands_as_a_separate_implementation_commit_after_the_contract_comm
     assert _parent(candidate, result.candidate_sha) == result.contract_commit
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_run_record_persists_the_candidate_fields_and_summarized_evidence(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -867,7 +850,6 @@ def test_run_record_persists_the_candidate_fields_and_summarized_evidence(
         assert entry["exit_code"] == 0
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_candidate_sha_resolves_to_a_clean_local_commit(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -887,7 +869,6 @@ def test_candidate_sha_resolves_to_a_clean_local_commit(
     assert _porcelain(candidate) == ""
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_no_push_pr_merge_override_or_cleanup_occurs_in_this_slice(
     make_git_repo, tmp_path, isolated_state_home, monkeypatch
 ):
@@ -944,7 +925,6 @@ def test_no_push_pr_merge_override_or_cleanup_occurs_in_this_slice(
         assert bad not in events_text, f"forbidden event marker {bad!r}"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_run_candidate_passes_the_real_seam_required_arguments(
     make_git_repo, tmp_path, isolated_state_home
 ):
@@ -988,7 +968,6 @@ def test_run_candidate_passes_the_real_seam_required_arguments(
         assert rb["worktree"].resolve() == candidate.resolve()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#114)")
 def test_candidate_stage_is_pluggable_into_the_engine_run_stage_seam(
     make_git_repo, tmp_path, isolated_state_home
 ):

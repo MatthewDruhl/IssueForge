@@ -16,15 +16,22 @@ paused/parked/failed its run is not overwritten to completed).
 
 from __future__ import annotations
 
+import ast
 import json
+import subprocess
 import uuid
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from io import StringIO
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-from issueforge import github, store
+from issueforge import contract, github, providers, store
+from issueforge import verify as _verify
+from issueforge.adapters.base import BaselineStatus
+from issueforge.adapters.base import registry as _adapter_registry
 from issueforge.registry import Registry
 from issueforge.state import IllegalTransition, State, transition
 
@@ -709,3 +716,285 @@ def continue_run(
     next_id = _finalize(s, run_id, result)
     _drain(s, next_id)
     return s.read(run_id)
+
+
+# ---------------------------------------------------------------------------
+# PoC-A (#114): the engine-owned local candidate stage
+# ---------------------------------------------------------------------------
+#
+# An engine-internal stage (plugged into ``run(stage=...)``, never reached through cli.py) that turns
+# one already-shaped pytest issue into ONE immutable local candidate commit WITHOUT pushing. It
+# reuses the existing seams — ``providers.invoke`` (authoring, then implementation),
+# ``contract.prove_red`` (the machine-checked red proof), and ``verify.run_baseline`` (the
+# AUTHORITATIVE per-command verdict) — and resolves the normal checkout AND the pytest adapter from
+# the REGISTERED repository entry (the ``repo`` alias on the record), never from a mandated
+# ``base_checkout`` record key. The engine (never the provider) creates the contract commit AFTER approval;
+# implementation runs only after approval; the authoritative acceptance + baseline verdicts (never the
+# provider's self-report) decide landing; a green result lands as a SEPARATE implementation commit.
+
+_CANDIDATE_TIMEOUT = 600.0
+
+
+@dataclass
+class CandidateResult:
+    """The outcome of the candidate stage: a pause verdict plus the local artifacts it produced."""
+
+    paused: bool
+    pause_reason: str | None
+    contract_commit: str | None
+    candidate_sha: str | None
+    evidence: dict | None
+
+
+def _candidate_git(worktree: Path, *args: str, check: bool = True) -> str:
+    """A plain ``git -C <worktree>`` read/write (never a push/PR/merge; the caller composes only
+    local verbs). Returns stripped stdout; raises on a non-zero exit when ``check``."""
+    result = subprocess.run(
+        ["git", "-C", str(worktree), *args], capture_output=True, text=True, check=check
+    )
+    return result.stdout.strip()
+
+
+def _candidate_head(worktree: Path) -> str:
+    return _candidate_git(worktree, "rev-parse", "HEAD")
+
+
+def _authored_node_ids(worktree: Path, contract_paths: list[str]) -> tuple[str, ...]:
+    """Derive the REAL pytest node ids of the authored tests by parsing the authored contract files
+    (``<path>::<test_fn>`` and ``<path>::<TestClass>::<test_method>``), so the id handed to
+    ``prove_red`` is the genuine authored id — not a fabricated placeholder."""
+    ids: list[str] = []
+    for rel in contract_paths:
+        path = Path(worktree) / rel
+        if not path.exists():
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
+                "test"
+            ):
+                ids.append(f"{rel}::{node.name}")
+            elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+                for item in node.body:
+                    if isinstance(
+                        item, (ast.FunctionDef, ast.AsyncFunctionDef)
+                    ) and item.name.startswith("test"):
+                        ids.append(f"{rel}::{node.name}::{item.name}")
+    return tuple(ids)
+
+
+def _authoring_prompt(
+    issue_body: str, contract_paths: list[str], baseline_command: list[str]
+) -> str:
+    """The authoring instruction: the full issue body, the allowed test paths, the baseline command,
+    and an explicit may-edit-but-no-git instruction whose prohibitions bind to their OWN operation
+    (each in its own sentence/clause), never a bare keyword list and never a permitted git verb."""
+    return (
+        "You are authoring pytest acceptance tests for the issue below.\n"
+        "ISSUE START\n"
+        f"{issue_body}\n"
+        "ISSUE END\n"
+        f"Author the failing tests only in these paths: {', '.join(contract_paths)}.\n"
+        f"After writing them the baseline command is: {' '.join(baseline_command)}.\n"
+        "You may edit and modify files in the worktree.\n"
+        "You may not run git in any form.\n"
+        "You must not push to any remote.\n"
+        "You may not open a pull request or a PR.\n"
+        "You must not merge anything.\n"
+    )
+
+
+def _implementation_prompt(
+    issue_body: str,
+    write_scope: list[str],
+    frozen_contract: str,
+    acceptance_command: list[str],
+    baseline_command: list[str],
+) -> str:
+    """The implementation instruction, after the contract is frozen: the issue, the approved write
+    scope, the FROZEN authored test blob verbatim (one contiguous block), and EVERY token of both
+    verification commands as ordered serializations."""
+    return (
+        "Implement the behavior so the frozen acceptance contract passes.\n"
+        "ISSUE START\n"
+        f"{issue_body}\n"
+        "ISSUE END\n"
+        f"Approved write scope: {', '.join(write_scope)}.\n"
+        "FROZEN CONTRACT START\n"
+        f"{frozen_contract}\n"
+        "FROZEN CONTRACT END\n"
+        f"The acceptance command is: {' '.join(acceptance_command)}.\n"
+        f"The full baseline command is: {' '.join(baseline_command)}.\n"
+        "You may edit and modify files in the worktree.\n"
+        "You may not run git in any form.\n"
+        "You must not push to any remote.\n"
+        "You may not open a pull request or a PR.\n"
+        "You must not merge anything.\n"
+    )
+
+
+def _evidence_entry(command: list[str], evidence: object) -> dict:
+    """Summarize one authoritative ``verify.run_baseline`` result into a JSON-safe, per-command entry
+    (the golden status/collected/executed/exit_code the downstream integration issues read)."""
+    status = getattr(evidence, "status", None)
+    return {
+        "command": list(command),
+        "status": getattr(status, "value", status),
+        "collected": getattr(evidence, "collected", None),
+        "executed": getattr(evidence, "executed", None),
+        "exit_code": getattr(evidence, "exit_code", None),
+    }
+
+
+def _pause_candidate(
+    st: store.RunStore, run_id: str, reason: str, *, contract_commit: str | None = None
+) -> CandidateResult:
+    """Persist ``paused`` and return a paused, no-candidate result (no push/PR/merge/cleanup)."""
+    st.apply(run_id, lambda _r: {"status": State.PAUSED.value})
+    return CandidateResult(
+        paused=True,
+        pause_reason=reason,
+        contract_commit=contract_commit,
+        candidate_sha=None,
+        evidence=None,
+    )
+
+
+def run_candidate(
+    record: dict,
+    *,
+    profile: object,
+    approver: Callable[[object], bool],
+    invoke: Callable[..., Any] = providers.invoke,
+    prove_red: Callable[..., Any] = contract.prove_red,
+    run_baseline: Callable[..., Any] = _verify.run_baseline,
+) -> CandidateResult:
+    """Produce ONE engine-owned local candidate SHA from one already-shaped pytest issue (see the
+    section doc). Reuses the real provider/red-proof/verify seams; resolves the normal checkout and
+    the pytest adapter from the REGISTERED repository entry; the engine (never the provider) freezes the
+    contract after approval; the AUTHORITATIVE acceptance + baseline verdicts decide landing."""
+    run_id = record["run_id"]
+    issue_body = record["issue"]
+    contract_paths = list(record["contract_paths"])
+    write_scope = list(record["write_scope"])
+    acceptance_command = list(record["acceptance_command"])
+    baseline_command = list(record["baseline_command"])
+    candidate_worktree = Path(record["candidate_worktree"])
+    base_sha = record["base_sha"]
+
+    # Resolve the normal checkout AND the verification adapter from the REGISTERED repository entry
+    # (the ``repo`` alias), NOT from any mandated ``base_checkout`` record key.
+    entry = Registry.load().get(record["repo"])
+    base_checkout = Path(entry.path)
+    adapter = _adapter_registry.resolve(framework=entry.framework, reporter=entry.reporter)
+
+    st = store.RunStore()
+
+    # 1) Authoring: ONE provider invocation in the candidate worktree; it MAY edit files but MAY NOT
+    #    run git/push/PR/merge. The provider edits the worktree; it never commits.
+    invoke(
+        profile,
+        _authoring_prompt(issue_body, contract_paths, baseline_command),
+        cwd=candidate_worktree,
+        run_id=run_id,
+        role="primary",
+        timeout=_CANDIDATE_TIMEOUT,
+    )
+
+    # 2) Red proof (reused) BEFORE approval: the authored tests must collect and FAIL for the named
+    #    behavior while the baseline stays green. A REFUSED proof pauses cold — no approval, no commit.
+    targeted_ids = _authored_node_ids(candidate_worktree, contract_paths)
+    proof = prove_red(
+        run_id,
+        targeted_ids=targeted_ids,
+        base_checkout=base_checkout,
+        candidate_worktree=candidate_worktree,
+        base_sha=base_sha,
+        adapter=adapter,
+    )
+    if not getattr(proof, "accepted", False):
+        return _pause_candidate(st, run_id, "red_proof_rejected")
+
+    # 3) Approval: the human sees the EXACT authored test diff (vs base) and the machine-checked red
+    #    evidence. Stage the authored contract paths (index only — HEAD stays at base_sha) so the
+    #    diff is bound to base; nothing is committed before approval.
+    _candidate_git(candidate_worktree, "add", "--", *contract_paths)
+    diff = _candidate_git(candidate_worktree, "diff", "--cached")
+    review = SimpleNamespace(diff=diff, red_evidence=proof)
+    if not approver(review):
+        return _pause_candidate(st, run_id, "rejected_by_approver")
+
+    # 4) Contract commit: the ENGINE (never the provider) freezes the approved tests as a commit whose
+    #    parent is base_sha.
+    _candidate_git(candidate_worktree, "commit", "-m", "Freeze authored acceptance contract (#114)")
+    contract_commit = _candidate_head(candidate_worktree)
+
+    # 5) Implementation: a SECOND provider invocation, on top of the frozen contract, carrying the
+    #    issue, the frozen authored test blob, the approved write scope, and both verification commands.
+    frozen_contract = "\n".join(
+        (candidate_worktree / rel).read_text(encoding="utf-8")
+        for rel in contract_paths
+        if (candidate_worktree / rel).exists()
+    )
+    invoke(
+        profile,
+        _implementation_prompt(
+            issue_body, write_scope, frozen_contract, acceptance_command, baseline_command
+        ),
+        cwd=candidate_worktree,
+        run_id=run_id,
+        role="primary",
+        timeout=_CANDIDATE_TIMEOUT,
+    )
+
+    # 6) Authoritative verification (reused): run the acceptance AND full baseline commands, each once
+    #    (no retry). The green/red verdict comes from IT, per command, never the provider's self-report.
+    acceptance_ev = run_baseline(candidate_worktree, acceptance_command, adapter=adapter)
+    baseline_ev = run_baseline(candidate_worktree, baseline_command, adapter=adapter)
+    evidence = {
+        "acceptance": _evidence_entry(acceptance_command, acceptance_ev),
+        "baseline": _evidence_entry(baseline_command, baseline_ev),
+    }
+
+    # Either command non-green PAUSES with the candidate HEAD left at the contract commit (no impl
+    # commit lands): the self-report never overrides the authoritative verdict.
+    if not (
+        acceptance_ev.status is BaselineStatus.GREEN and baseline_ev.status is BaselineStatus.GREEN
+    ):
+        return _pause_candidate(
+            st, run_id, "verification_not_green", contract_commit=contract_commit
+        )
+
+    # 7) Green landing: the ENGINE commits a SEPARATE implementation commit (child of the contract
+    #    commit); the worktree is clean at the resulting candidate SHA.
+    _candidate_git(candidate_worktree, "add", "-A")
+    _candidate_git(candidate_worktree, "commit", "-m", "Land candidate implementation (#114)")
+    candidate_sha = _candidate_head(candidate_worktree)
+
+    # 8) Persist the candidate run-record fields as FLAT keys plus summarized evidence.
+    st.apply(
+        run_id,
+        lambda _r: {
+            "status": State.COMPLETED.value,
+            "contract_commit": contract_commit,
+            "candidate_sha": candidate_sha,
+            "candidate_worktree": str(candidate_worktree),
+            "base_sha": base_sha,
+            "write_scope": write_scope,
+            "contract_paths": contract_paths,
+            "acceptance_command": acceptance_command,
+            "baseline_command": baseline_command,
+            "evidence": evidence,
+        },
+    )
+
+    return CandidateResult(
+        paused=False,
+        pause_reason=None,
+        contract_commit=contract_commit,
+        candidate_sha=candidate_sha,
+        evidence=evidence,
+    )
