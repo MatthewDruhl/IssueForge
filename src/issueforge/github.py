@@ -205,7 +205,7 @@ def _pr_body(record: dict) -> str:
     the candidate sha, and the four evidence summaries (acceptance / baseline / scope / integrity).
     """
     return (
-        "## Automated delivery\n\n"
+        "## IssueForge delivery\n\n"
         f"Issue: {_issue_ref(record['issue'])}\n"
         f"Contract commit: {record['contract_commit']}\n"
         f"Candidate SHA: {record['candidate_sha']}\n\n"
@@ -233,6 +233,7 @@ def deliver_pr(record: dict, *, gateway: Any, store: Any) -> dict:
     repo = record["repo"]
     branch = record["candidate_branch"]
     candidate_sha = record["candidate_sha"]
+    checkout = record["registered_checkout"]
 
     # --- readiness gate (from the record + the AUTHORITATIVE registered default branch) ----------
     if record.get("readiness") != "ready":
@@ -252,8 +253,10 @@ def deliver_pr(record: dict, *, gateway: Any, store: Any) -> dict:
         )
 
     # --- push, then verify origin/<branch> is EXACTLY the candidate sha before opening a PR -------
-    gateway.push(repo=repo, branch=branch)
-    origin = gateway.origin_sha(repo=repo, branch=branch)
+    # The git operations are bound to the record's REGISTERED candidate checkout, so a real delivery
+    # pushes/verifies THAT repository's origin, never IssueForge's own working directory.
+    gateway.push(repo=repo, branch=branch, checkout=checkout)
+    origin = gateway.origin_sha(repo=repo, branch=branch, checkout=checkout)
     if origin != candidate_sha:
         raise ValueError(
             f"refusing delivery: origin/{branch} is {origin!r}, not the candidate sha "
@@ -293,9 +296,13 @@ class GhWriteGateway:
     def _slug(ref: tuple) -> str:
         return f"{ref[0]}/{ref[1]}"
 
-    def _exec(self, argv: list[str]) -> str:
-        """Shell one argv array through the seam; a non-zero exit RAISES (never a silent write)."""
-        result = self._run(argv, capture_output=True, text=True)
+    def _exec(self, argv: list[str], *, cwd: str | None = None) -> str:
+        """Shell one argv array through the seam; a non-zero exit RAISES (never a silent write).
+
+        ``cwd`` binds the command to a specific directory (the registered candidate checkout for the
+        git operations), so a delivery can never push/verify IssueForge's own working directory.
+        """
+        result = self._run(argv, capture_output=True, text=True, cwd=cwd)
         if result.returncode != 0:
             raise RuntimeError(
                 f"{' '.join(argv)} failed (exit {result.returncode}): {result.stderr}"
@@ -349,17 +356,23 @@ class GhWriteGateway:
         )
         return out.strip()
 
-    def push(self, *, repo, branch) -> None:
-        """Push the candidate ``branch`` to origin via ``git push``; a non-zero exit RAISES."""
-        self._exec(["git", "push", "origin", branch])
+    def push(self, *, repo, branch, checkout: str | None = None) -> None:
+        """Push the candidate ``branch`` to origin via ``git push`` IN ``checkout``; non-zero RAISES.
 
-    def origin_sha(self, *, repo, branch) -> str:
+        ``checkout`` is the registered candidate checkout of ``repo``; the push runs there (``cwd``),
+        so IssueForge pushes THAT repository's origin, never its own working directory.
+        """
+        self._exec(["git", "push", "origin", branch], cwd=checkout)
+
+    def origin_sha(self, *, repo, branch, checkout: str | None = None) -> str:
         """Fetch origin, then read ``origin/<branch>``'s sha via ``git rev-parse``; a bad read RAISES.
 
-        The fetch MUST precede the read so a stale local ref is never verified.
+        Both git commands run in ``checkout`` (the registered candidate checkout of ``repo``), so the
+        verified ref belongs to THAT repository. The fetch MUST precede the read so a stale local ref
+        is never verified.
         """
-        self._exec(["git", "fetch", "origin", branch])
-        out = self._exec(["git", "rev-parse", f"origin/{branch}"])
+        self._exec(["git", "fetch", "origin", branch], cwd=checkout)
+        out = self._exec(["git", "rev-parse", f"origin/{branch}"], cwd=checkout)
         return out.strip()
 
     def open_pr(self, *, repo, base, head, issue, title, body) -> dict:
