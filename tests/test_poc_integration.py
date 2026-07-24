@@ -238,15 +238,19 @@ def _push_count(instances: list) -> int:
 # --------------------------------------------------------------------------- shared harness
 
 
-def _seed_dandd(tmp_path: Path) -> Path:
-    """Build a REAL temp DandD checkout with a LOCAL FETCHABLE bare origin and register it.
+def _seed_dandd(tmp_path: Path) -> SimpleNamespace:
+    """Build a REAL temp DandD checkout with a LOCAL FETCHABLE bare origin and register it, then
+    advance origin so a FRESH fetch is provably required.
 
-    A bare origin holds the DandD pytest layout (green baseline) on ``main``; a clone is the checkout.
-    The checkout is registered while its origin URL is the GitHub URL (so ``entry.slug`` persists as
-    ``MatthewDruhl/DandD`` and the default branch resolves), THEN the origin URL is repointed at the
-    local bare so the REAL offline ``git fetch origin main`` succeeds. Returns the checkout path.
+    A bare origin holds the DandD pytest layout (green baseline) on ``main`` (S1); a clone is the
+    checkout. The checkout is registered while its origin URL is the GitHub URL (so ``entry.slug``
+    persists as ``MatthewDruhl/DandD`` and the default branch resolves), THEN the origin URL is
+    repointed at the local bare. Finally origin/main is advanced by ONE commit (S2, pytest layout
+    intact) WITHOUT fetching into the checkout — so the checkout's local HEAD stays S1 while origin is
+    S2, and only a real ``git fetch origin main`` yields S2. Returns
+    ``SimpleNamespace(checkout, stale_head=S1, fresh_tip=S2)``.
     """
-    from issueforge import registry, workspace
+    from issueforge import registry
 
     origin = tmp_path / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
@@ -274,9 +278,25 @@ def _seed_dandd(tmp_path: Path) -> Path:
     assert entry.slug == EXPECTED_SLUG  # sanity: the persisted slug the composed path must resolve
     _git(checkout, "remote", "set-url", "origin", str(origin))
 
-    # Sanity self-check: the REAL offline fetch the composed stage runs must succeed against the bare.
-    assert workspace.fetch_default_sha(checkout).ok is True, "fixture bare origin is not fetchable"
-    return checkout
+    stale_head = _head(
+        checkout
+    )  # S1: the checkout's local HEAD (what a fetch-skipping stage reuses)
+
+    # Advance origin/main by ONE commit (S2) so a FRESH fetch is provably required: the checkout's
+    # local HEAD stays S1 while origin/main moves to S2. The pytest layout is untouched (only a NOTES
+    # file is added), so the baseline stays green at S2. We do NOT fetch into the checkout here (that
+    # would populate its FETCH_HEAD/tracking to S2 and defeat the freshness proof); the advance clone's
+    # successful push is itself the offline-fetchability proof.
+    advance = tmp_path / "advance"
+    subprocess.run(["git", "clone", "-q", str(origin), str(advance)], check=True)
+    (advance / "NOTES.md").write_text("origin advanced to S2\n")
+    _git(advance, "add", "-A")
+    _git(advance, "commit", "-qm", "advance origin main to S2")
+    _git(advance, "push", "-q", "origin", "main")
+    fresh_tip = _head(advance)
+    assert fresh_tip != stale_head  # S2 is genuinely ahead of the checkout's stale local HEAD
+
+    return SimpleNamespace(checkout=checkout, stale_head=stale_head, fresh_tip=fresh_tip)
 
 
 def _install_seams(
@@ -341,10 +361,12 @@ def test_run_composes_end_to_end_to_waiting_for_merge(tmp_path, monkeypatch):
     ["default_branch","push","origin_sha","open_pr"] (open_pr never bypasses push/verify).
     contract_commit is a 40-hex commit DISTINCT from candidate_sha with ancestry
     base_sha -> contract_commit -> candidate_sha. candidate_sha is 40-hex and EQUALS both the pushed
-    branch sha the gateway recorded AND ready_sha. The checkout's HEAD sha and `git status
-    --porcelain` are identical before and after.
+    branch sha the gateway recorded AND ready_sha. base_sha == the FRESH origin tip (S2), not the
+    checkout's stale local HEAD (S1). write_scope == the files read_issue_body returned for issue 111.
+    The checkout's HEAD sha and `git status --porcelain` are identical before and after.
     """
-    checkout = _seed_dandd(tmp_path)
+    seeded = _seed_dandd(tmp_path)
+    checkout = seeded.checkout
     handles = _install_seams(monkeypatch)
     before_head = _head(checkout)
     before_status = _porcelain(checkout)
@@ -358,6 +380,16 @@ def test_run_composes_end_to_end_to_waiting_for_merge(tmp_path, monkeypatch):
     assert record["status"] == "waiting-for-merge"
     assert record.get("readiness") == "ready"
     assert record.get("pr_url") == PR_URL
+
+    # The base was FETCHED fresh from origin (S2), not reused from the checkout's stale local HEAD (S1)
+    # — a fetch-skipping stage that reuses local HEAD/FETCH_HEAD would bind S1 and fail here.
+    assert record.get("base_sha") == seeded.fresh_tip
+    assert record.get("base_sha") != seeded.stale_head
+
+    # The approved write scope persisted for #112 is EXACTLY the files read_issue_body returned for
+    # issue 111 — proving the seam's output feeds the persisted write_scope that the scope check reads,
+    # not a hardcoded path.
+    assert record.get("write_scope") == [WRITE_SCOPE_PATH]
 
     # FULL delivery path: the one composed gateway pushed and verified origin BEFORE opening the PR.
     gateway = _sole_gateway(handles.gateways)
@@ -460,9 +492,11 @@ def test_candidate_authored_in_detached_isolated_worktree_with_green_baseline(
     technical (contract): after engine.run("DandD#111") the fake invoker's first (authoring) call ran
     in a cwd that is NOT the registered checkout and NOT inside it; that cwd equals the persisted
     candidate_worktree; the worktree's HEAD is detached (symbolic-ref -q HEAD is non-zero); and the
-    persisted evidence records the baseline command GREEN.
+    persisted evidence records the baseline command GREEN. (Strict baseline-green-BEFORE-first-AI-edit
+    ORDERING is deferred to #124; this M1 test asserts the observable green baseline + isolated
+    detached worktree, not the internal ordering.)
     """
-    checkout = _seed_dandd(tmp_path)
+    checkout = _seed_dandd(tmp_path).checkout
     handles = _install_seams(monkeypatch)
 
     from issueforge import engine, store
@@ -492,7 +526,10 @@ def test_readiness_scope_gate_blocks_delivery(tmp_path, monkeypatch):
     technical (contract): with the impl writing both the in-scope fix (acceptance goes green so
     run_candidate lands the candidate) AND an out-of-scope file, after engine.run("DandD#111")
     readiness != "ready", status == "paused", and across every composed gateway push and open_pr were
-    called ZERO times. (Scope is enforced by issue_readiness, NOT run_candidate, so this isolates #112.)
+    called ZERO times. Crucially the candidate LANDED (candidate_sha is a real 40-hex commit), so the
+    refusal is necessarily POST-candidate = #112's scope predicate (run_candidate reads and persists
+    write_scope but NEVER checks it; verify._scope_offenders does, on the PERSISTED write_scope ==
+    the files read_issue_body returned for issue 111).
     """
     _seed_dandd(tmp_path)
     handles = _install_seams(monkeypatch, impl_mode="scope")
@@ -506,6 +543,13 @@ def test_readiness_scope_gate_blocks_delivery(tmp_path, monkeypatch):
     assert record.get("readiness") != "ready"
     assert _push_count(handles.gateways) == 0
     assert _open_pr_count(handles.gateways) == 0
+
+    # The candidate LANDED through run_candidate (acceptance green via the in-scope fix); a run that
+    # refused the out-of-scope write INSIDE run_candidate, or paused before ever computing a candidate,
+    # would have no candidate_sha. So a real 40-hex candidate_sha proves the refusal came AFTER the
+    # candidate landed — i.e. from #112's scope predicate, which reads the PERSISTED write_scope.
+    assert re.match(r"^[0-9a-f]{40}$", record["candidate_sha"])
+    assert record["write_scope"] == [WRITE_SCOPE_PATH]
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#115)")
