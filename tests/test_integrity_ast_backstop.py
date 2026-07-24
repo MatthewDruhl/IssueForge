@@ -767,3 +767,46 @@ class TestBeta:
         assert beta() == 409
 """
     assert integrity.is_pending(src, method) is False
+
+
+# --- AST-BACKSTOP OFFENDER DETAIL (#13) ----------------------------------------
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
+def test_ast_backstop_class_decorator_weakening_names_qualified_methods():
+    """A class-level guard decorator (@mock_aws) stripped from a class holding
+    two methods (test_a, test_b) is a weakening (the class decorator list shapes
+    the environment every method's assertions run in). The canonical R1 detail
+    for an ast_backstop offender is the QUALIFIED ``Class::method`` per affected
+    method — NOT a bare ``ClassName``. Today ``integrity._analyze`` returns the
+    bare class name for a class-decorator weakening, so the surfaced offender
+    detail is ``TestMatching`` instead of ``TestMatching::test_a`` /
+    ``TestMatching::test_b``; this LOCKs one offender per affected method,
+    each qualified."""
+    from issueforge import contract, integrity
+
+    old_src = """import pytest
+from moto import mock_aws
+
+
+@mock_aws
+class TestMatching:
+
+    def test_a(self):
+        resp = match_expense(expense_id=1, txn_id=2)
+        assert resp.status_code == 409
+
+    def test_b(self):
+        resp = match_expense(expense_id=3, txn_id=4)
+        assert resp.status_code == 409
+"""
+    # Weaken: strip the class-level guard decorator; every method body and the
+    # method decorator list stay byte-identical.
+    new_src = old_src.replace("@mock_aws\n", "")
+    assert "@mock_aws" not in new_src  # fixture self-check
+
+    assert integrity.classify_acceptance_change(old_src, new_src) == "weakened"
+
+    offenders = contract._ast_backstop_offenders(old_src.encode("utf-8"), new_src.encode("utf-8"))
+    # One QUALIFIED offender per affected method — never the bare class name.
+    assert set(offenders) == {"TestMatching::test_a", "TestMatching::test_b"}

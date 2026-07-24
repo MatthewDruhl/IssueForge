@@ -1398,3 +1398,216 @@ def test_engine_gate_blocks_every_predicate(tmp_path, monkeypatch, predicate):
     assert predicate in str(excinfo.value)
     events = store.RunStore().replay_events(run)
     assert not any(e.get("transition") == "revision" for e in events)
+
+
+# =============================================================== S13 remediation (#19) — T7/T9/T11
+# PENDING acceptance tests closing the Codex NO-SHIP holes where a wrong/inert impl passes the
+# existing suite (see s13 Phase A contract, findings #7/#9/#11). Each FAILS the branch impl today.
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
+def test_engine_gate_runs_from_worktree_persisted_by_real_build_lifecycle(tmp_path):
+    """Finding #7: the engine gate is inert in production because NOTHING production-side persists a
+    run's ``candidate_worktree`` — only the ``_seed_candidate_worktree`` TEST helper does, so every
+    green gate test is fake-green. The REAL persistence seam is the baseline-establishment lifecycle:
+    ``verify.establish_green_baseline`` creates the isolated worktree
+    (``workspace.create_isolated_worktree``) and MUST persist that path onto the run record for
+    ``run_id`` via the store. This drives that real lifecycle — with ``run_id`` + a real ``RunStore``,
+    the REQUIRED new signature — and, WITHOUT ever calling ``_seed_candidate_worktree``, proves the
+    persisted worktree is what the gate then consults to refuse a violating HEAD before any mutation.
+
+    technical: verify.establish_green_baseline(checkout, run_id=<run>, store=RunStore(), ...) persists
+    store.RunStore().read(run)["candidate_worktree"] == the worktree create_isolated_worktree returned;
+    engine.apply_revision(run, plan, _ExplodingGateway(), approver=_approve_all) — no integrity kwargs
+    — then raises naming "protected_path_diff" before touching the gateway, and records no "revision"
+    event. Fail-closed control: a run WITH a frozen manifest but NO persisted candidate_worktree does
+    NOT silently skip the gate — apply_revision raises and the gateway is touched for ZERO ops.
+    """
+    from issueforge import engine, verify
+    from issueforge.adapters.base import BaselineStatus
+
+    run = _mk_run()
+    repo = _repo(
+        tmp_path,
+        "gate-lifecycle",
+        candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
+    )
+    _freeze(run, repo)
+    # Advance HEAD so the worktree the lifecycle persists has a protected-path violation.
+    _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+
+    # Documented injection seams (workspace/run_baseline) so no real remote is needed — but the
+    # worktree the lifecycle CREATES is a real checkout whose HEAD violates the frozen contract.
+    fake_ws = SimpleNamespace(
+        fetch_default_sha=lambda checkout: SimpleNamespace(ok=True, sha=repo.base_sha, reason=None),
+        create_isolated_worktree=lambda checkout, sha: SimpleNamespace(
+            ok=True, isolated=True, path=repo.path, reason=None
+        ),
+    )
+
+    def _green_runner(worktree, command, *, adapter, provisioner):
+        return SimpleNamespace(status=BaselineStatus.GREEN)
+
+    # The REAL baseline-establishment lifecycle with run_id + a real RunStore. PRODUCTION must persist
+    # candidate_worktree here; today establish_green_baseline does not accept run_id/store at all,
+    # which is exactly the inert-gate hole this test pins.
+    verify.establish_green_baseline(
+        repo.path,
+        run_id=run,
+        store=store.RunStore(),
+        adapter=_adapter(),
+        workspace=fake_ws,
+        provisioner=_provisioner(),
+        run_baseline=_green_runner,
+        dispatch=None,
+    )
+
+    # Persisted by the lifecycle, NOT by a test helper (_seed_candidate_worktree is never called).
+    assert Path(store.RunStore().read(run)["candidate_worktree"]) == repo.path
+
+    # The gate sources its candidate ENTIRELY from that persisted state and refuses before mutating.
+    with pytest.raises(Exception, match=r"(?i)protected_path_diff"):
+        engine.apply_revision(run, _plan(), _ExplodingGateway(), approver=_approve_all)
+    assert not any(e.get("transition") == "revision" for e in store.RunStore().replay_events(run))
+
+    # Fail-closed control: a frozen run with NO persisted candidate_worktree must refuse, never fall
+    # through to a mutation — missing gate context is a refusal, not a pass-through.
+    run2 = _mk_run("gate-lifecycle-failclosed")
+    repo2 = _repo(
+        tmp_path,
+        "gate-lifecycle-failclosed",
+        candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
+    )
+    _freeze(run2, repo2)
+    gw2 = _SpyGateway()
+    with pytest.raises(Exception):
+        engine.apply_revision(run2, _plan(), gw2, approver=_approve_all)
+    assert gw2.calls == []
+    assert not any(e.get("transition") == "revision" for e in store.RunStore().replay_events(run2))
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
+def test_verify_after_successful_amendment_loads_the_new_manifest(tmp_path):
+    """Finding #9: amend writes a content-addressed ``contract-manifest-<hash>.json``, but verify's
+    ``_load_frozen_manifest`` always reads the fixed ``contract-manifest.json`` — so an AUTHORIZED
+    amendment never takes effect: verify keeps reloading the pre-amend manifest M0 and re-flags the
+    now-authorized change. This freezes M0, advances HEAD across a real boundary change, amends to a
+    new authoritative manifest M1 at the new commit, and proves a re-run verify passes.
+
+    technical: freeze M0 (protects tests/test_new.py at C0); a real edit advances HEAD to C1; verify
+    at C1 against M0 flags ("protected_path_diff","tests/test_new.py"); amend_contract(reason="#19: ...",
+    diff_text=<real C0..C1 diff>, ...) succeeds with contract_commit == C1; a re-run
+    verify_contract_integrity for the SAME run reports ok is True (M1 authoritative). Control: the
+    prior M0 artifact stays retained byte-for-byte (audit history intact).
+    """
+    from issueforge import contract
+
+    run = _mk_run()
+    repo = _repo(
+        tmp_path,
+        "verify-after-amend",
+        candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
+    )
+    original = _freeze(run, repo)
+    original_bytes = original.artifact_path.read_bytes()
+    assert "tests/test_new.py" in original.manifest["contract_paths"]
+
+    c0 = repo.candidate_sha
+    c1 = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    repo.candidate_sha = c1
+
+    # Pre-amend: verify at C1 against M0 flags the as-yet-unauthorized boundary change.
+    pre = contract.verify_contract_integrity(
+        run,
+        candidate_worktree=repo.path,
+        base_sha=repo.base_sha,
+        adapter=_adapter(),
+        provisioner=_provisioner(),
+    )
+    assert pre.ok is False
+    assert ("protected_path_diff", "tests/test_new.py") in {
+        (v.predicate, v.detail) for v in pre.violations
+    }
+
+    # Authorize it: amend to a genuinely new authoritative manifest M1 at contract_commit C1.
+    _seed_freeze_evidence(run, repo, head=c1)
+    diff_text = _real_diff(repo.path, c0, c1)
+    amended = contract.amend_contract(
+        run,
+        reason="#19: authorized boundary change",
+        diff_text=diff_text,
+        candidate_worktree=repo.path,
+        base_sha=repo.base_sha,
+        adapter=_adapter(),
+        provisioner=_provisioner(),
+        approver=_approve_all,
+    )
+    assert amended.approved is True
+    assert amended.manifest["contract_commit"] == c1
+
+    # M1 is now authoritative: the previously-flagged change is authorized, so verify passes.
+    post = contract.verify_contract_integrity(
+        run,
+        candidate_worktree=repo.path,
+        base_sha=repo.base_sha,
+        adapter=_adapter(),
+        provisioner=_provisioner(),
+    )
+    assert post.ok is True
+
+    # Audit history intact: the prior M0 artifact remains retained, byte-for-byte.
+    assert original.artifact_path.read_bytes() == original_bytes
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
+def test_amend_refused_on_noop_empty_diff_unchanged_head(tmp_path):
+    """Finding #11: amend_contract has no guard that the diff is non-empty / HEAD advanced / the new
+    manifest hash differs. With HEAD unchanged from contract_commit the real diff is empty, so an
+    empty diff_text matches it and approval succeeds — persisting the original bytes as a "new"
+    content-addressed artifact. A no-op amendment must instead be REFUSED and write nothing.
+
+    technical: freeze M0 at HEAD C0; HEAD is NOT advanced (real diff is ""); amend_contract(reason=
+    "#19: no-op", diff_text="", ...) is refused (raises ValueError OR returns FreezeResult(approved=
+    False, manifest=None)); no new manifest artifact is written (only contract-manifest.json exists);
+    the on-disk manifest bytes and sha256 are unchanged.
+    """
+    from issueforge import contract
+    from issueforge.paths import run_dir
+
+    run = _mk_run()
+    repo = _repo(
+        tmp_path,
+        "amend-noop",
+        candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
+    )
+    original = _freeze(run, repo)
+    before = _manifest_bytes(run)
+
+    # HEAD is NOT advanced: candidate HEAD == contract_commit C0, so the real diff is empty.
+    assert _real_diff(repo.path, repo.candidate_sha, repo.candidate_sha) == ""
+
+    refused = False
+    try:
+        result = contract.amend_contract(
+            run,
+            reason="#19: no-op",
+            diff_text="",
+            candidate_worktree=repo.path,
+            base_sha=repo.base_sha,
+            adapter=_adapter(),
+            provisioner=_provisioner(),
+            approver=_approve_all,
+        )
+        assert result.approved is False
+        assert result.manifest is None
+        refused = True
+    except ValueError:
+        refused = True
+    assert refused
+
+    # No new manifest artifact was written — only the original contract-manifest.json exists.
+    manifests = sorted(p.name for p in run_dir(run).glob("contract-manifest*.json"))
+    assert manifests == ["contract-manifest.json"]
+    # The retained manifest bytes and hash are unchanged.
+    assert _manifest_bytes(run) == before == original.artifact_path.read_bytes()
+    assert hashlib.sha256(_manifest_bytes(run)).hexdigest() == original.manifest_hash

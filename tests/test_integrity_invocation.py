@@ -683,3 +683,103 @@ def test_validate_invocation_never_invokes_the_ai_provider(tmp_path, monkeypatch
     with pytest.raises(ValueError) as excinfo:
         adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", "-x"]))
     assert "-x" in str(excinfo.value)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
+@pytest.mark.parametrize(
+    "flag_tokens,needle",
+    [
+        (["--numprocesses", "4"], "--numprocesses"),
+        (["--numprocesses=4"], "--numprocesses"),
+        (["-d"], "-d"),
+        (["--tx=popen"], "--tx"),
+        (["--exitfirst"], "--exitfirst"),
+    ],
+)
+def test_validate_invocation_rejects_all_dangerous_aliases(tmp_path, flag_tokens, needle):
+    """(Finding #5) ``_first_dangerous_token`` misses the xdist aliases ``--numprocesses``/``-d``/
+    ``--tx`` and the pytest bail alias ``--exitfirst`` — the SAME dangerous modes it already
+    rejects under their canonical spellings (``-n``/``--dist``/``-x``). Each alias, in split
+    (``--numprocesses 4``) and attached (``--numprocesses=4`` / ``--tx=popen``) form, must raise
+    ``ValueError`` naming the offending token; the harmless ``-p no:randomly`` disable-form control
+    stays clean.
+
+    A wrong-but-plausible impl that only enumerates the canonical spellings returns ``None`` for
+    every alias here and silently accepts the dangerous mode.
+    """
+    repo, _base_sha = _repo(
+        tmp_path,
+        f"alias-{needle.strip('-')}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
+    )
+    adapter = _adapter()
+    with pytest.raises(ValueError) as excinfo:
+        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", *flag_tokens]))
+    assert needle in str(excinfo.value)
+
+    # Clean control: the ``no:`` plugin-disable form is explicitly sanctioned and must not raise.
+    adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", "-p", "no:randomly"]))
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
+@pytest.mark.parametrize(
+    "case_id,repo_files,command,test_config",
+    [
+        (
+            "multiline-ini-continuation",
+            {"tests/test_x.py": "def test_x():\n    assert True\n"},
+            ["pytest", "tests/"],
+            {
+                "source": "pytest.ini",
+                "content": "[pytest]\naddopts =\n    -p no:cacheprovider\n    -x\n",
+            },
+        ),
+        (
+            "toml-array",
+            {"tests/test_x.py": "def test_x():\n    assert True\n"},
+            ["pytest", "tests/"],
+            {
+                "source": "pyproject.toml",
+                "content": '[tool.pytest.ini_options]\naddopts = ["-x"]\n',
+            },
+        ),
+        (
+            "dash-c-custom-ini-file",
+            {
+                "tests/test_x.py": "def test_x():\n    assert True\n",
+                "custompytest.ini": "[pytest]\naddopts = -x\n",
+            },
+            ["pytest", "-c", "custompytest.ini", "tests/"],
+            None,
+        ),
+    ],
+)
+def test_validate_invocation_rejects_dangerous_opts_in_all_frozen_config_forms(
+    tmp_path, case_id, repo_files, command, test_config
+):
+    """(Finding #6) ``_config_addopts_tokens`` parses ONLY a single-line ``[pytest]`` ``addopts``.
+    A dangerous ``-x`` still smuggled through a FROZEN CONFIG in another shape is silently accepted
+    today: (a) a MULTILINE ini ``addopts`` continuation line, (b) a ``pyproject.toml``
+    ``[tool.pytest.ini_options] addopts = ["-x"]`` TOML array, or (c) a config file referenced by a
+    frozen ``-c custompytest.ini`` (never read at all). Each form must raise ``ValueError`` naming
+    the config-sourced ``-x`` token (R1's canonical config detail ``addopts:-x``, of which ``-x`` is
+    a substring).
+
+    The single-line ini form is already caught (see
+    ``test_validate_invocation_rejects_dangerous_modes_from_frozen_config_addopts``); these three
+    forms are the enumerative gaps the current one-line parser misses.
+    """
+    repo, _base_sha = _repo(tmp_path, f"cfgform-{case_id}", repo_files)
+    if test_config is None:
+        invocation = _invocation(repo, command)
+    else:
+        invocation = _invocation_with_config(
+            repo,
+            command,
+            config_source=test_config["source"],
+            config_content=test_config["content"],
+        )
+    adapter = _adapter()
+    with pytest.raises(ValueError) as excinfo:
+        adapter.validate_invocation(invocation)
+    assert "-x" in str(excinfo.value)

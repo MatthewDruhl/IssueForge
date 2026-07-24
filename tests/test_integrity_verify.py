@@ -1011,3 +1011,201 @@ def test_permanent_verdict_persists_exact_violation_and_commit_binding(tmp_path)
         "expected the violating verdict's violations list to contain a structured "
         '("protected_path_diff", "tests/test_new.py") entry'
     )
+
+
+# =============================================================== dirty-tree (finding #1)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
+def test_verify_flags_uncommitted_assertion_weakening_in_frozen_test(tmp_path):
+    """Finding #1: ``protected_path_diff`` diffs committed(contract_commit) vs committed(HEAD), so an
+    UNCOMMITTED edit to a frozen test file is invisible to it, and ``recollection`` only set-compares
+    node ids (which an ``assert True`` swap leaves unchanged). A candidate that weakens a frozen
+    acceptance test's assertion to a no-op WITHOUT committing it therefore slips every predicate today.
+
+    technical (contract): the frozen tests/test_new.py (``assert 1 == 2``) is weakened in the WORKING
+    TREE to ``assert True`` and NEVER committed — the node id tests/test_new.py::test_x is unchanged and
+    the independent ``_collect_ids`` oracle confirms the recollected set equals the frozen set exactly.
+    verify_contract_integrity must still catch the uncommitted weakening: report.ok is False and an EXACT
+    violation ("protected_path_diff", "tests/test_new.py") names the offending frozen path (verify reads
+    the working tree / refuses a dirty tree). A committed-vs-committed impl misses it (no diff, no
+    recollection delta) and wrongly reports ok True.
+    """
+    fz = _frozen(tmp_path, "dirty-weaken")
+    assert _NEW_FILE in fz.manifest["contract_paths"]
+
+    # An UNCOMMITTED weakening of the frozen assertion to a no-op — nothing is committed, so the
+    # committed contract_commit..HEAD diff is empty and the collected-id set is byte-for-byte identical.
+    (fz.scen.candidate_worktree / _NEW_FILE).write_text("def test_x():\n    assert True\n")
+    assert _collect_ids(fz.scen.candidate_worktree) == set(fz.manifest["collected_ids"]), (
+        "fixture setup: the node-id set must stay identical so recollection cannot be what catches this"
+    )
+
+    report = _verify(fz)
+    assert report.ok is False
+    assert any(
+        v.predicate == "protected_path_diff" and v.detail == _NEW_FILE for v in report.violations
+    )
+
+
+# =============================================================== boundary addition (finding #2)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
+def test_verify_flags_new_higher_precedence_config_added_after_freeze(tmp_path):
+    """Finding #2: there is no full-closure recompute at HEAD. A brand-new committed tests/conftest.py
+    carrying an autouse fixture that alters runtime outcomes does NOT change the collected-id set and
+    was never a frozen boundary member, so it slips protected_path_diff (not a frozen path), dep_hash
+    (not a frozen path), and recollection (the id set is unchanged).
+
+    technical (contract): freeze a scenario whose closure has NO tests/conftest.py; at HEAD COMMIT a new
+    tests/conftest.py with an autouse fixture, and prove via the independent ``_collect_ids`` oracle that
+    the collected-id set is unchanged. verify_contract_integrity must recompute the frozen boundary/
+    config closure at HEAD, notice it gained a member, and report it: report.ok is False and an EXACT
+    violation ("dep_hash", "tests/conftest.py"). (D-T2 resolved: a new in-closure config file maps to
+    the dep_hash family — the closure hash-set gained a path — not an 8th boundary predicate.) A
+    recollection/frozen-path-only impl misses it entirely (ok True).
+    """
+    conftest_rel = "tests/conftest.py"
+    fz = _frozen(tmp_path, "boundary-config-add")
+    assert conftest_rel not in fz.manifest["contract_paths"]
+    frozen_ids = set(fz.manifest["collected_ids"])
+    worktree = fz.scen.candidate_worktree
+
+    # A collection-time config hook added AFTER freeze that neuters every test's runtime outcome. It
+    # imports NO distribution (so it introduces no external_pin) and adds/removes no collected node id
+    # (so recollection is inert) — it slips every current predicate yet silently rewrites behaviour.
+    (worktree / conftest_rel).write_text(
+        "def pytest_runtest_setup(item):\n"
+        "    # Neuter every test's outcome at runtime — a real behaviour change added after freeze,\n"
+        "    # invisible to the collected-id set and importing nothing external.\n"
+        "    item.obj = lambda *a, **k: None\n"
+    )
+    _commit_all(worktree, "add a new higher-precedence tests/conftest.py after freeze")
+
+    assert _collect_ids(worktree) == frozen_ids, (
+        "fixture setup: the collected-id set must stay identical so recollection cannot catch this"
+    )
+
+    report = _verify(fz)
+    assert report.ok is False
+    assert any(v.predicate == "dep_hash" and v.detail == conftest_rel for v in report.violations)
+
+
+# =============================================================== tracked bytecode (finding #12)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
+def test_dirty_refusal_does_not_exempt_tracked_bytecode(tmp_path):
+    """Finding #12: ``_is_cache_noise`` exempts ``.pyc``/``__pycache__`` members UNCONDITIONALLY, even
+    when TRACKED (committed via ``git add -A``). A sourceless bytecode artifact that is TRACKED is not
+    cache noise — it can execute altered logic during collection while the integrity gate blanket-skips
+    it. The exemption must apply only to UNTRACKED cache noise; a tracked bytecode change must be caught.
+
+    technical (contract): (1) a tracked ``tests/__pycache__/helper.pyc`` is committed into the frozen
+    tree (never a boundary member) and then its committed bytes are CHANGED at HEAD -> verify reports
+    report.ok False and a violation whose detail names the exact tracked path "tests/__pycache__/
+    helper.pyc" (predicate left open per the finding: the change is caught, path named). (2) CONTROL: an
+    UNTRACKED ``.pyc`` in a separate frozen scenario is genuine cache noise and stays exempted — verify
+    reports report.ok True and no violation names a ``.pyc`` (no false refusal). Today the unconditional
+    exemption misses the tracked change (ok True) and thus fails part (1).
+    """
+    pyc_rel = "tests/__pycache__/helper.pyc"
+
+    # (1) TRACKED bytecode: committed into the frozen tree, then its committed bytes CHANGED at HEAD.
+    fz = _frozen(tmp_path, "tracked-pyc", extra={pyc_rel: "original tracked bytecode\n"})
+    worktree = fz.scen.candidate_worktree
+    assert pyc_rel in set(_git(worktree, "ls-files", "--", pyc_rel).stdout.split()), (
+        "fixture setup: the bytecode artifact must be TRACKED at the frozen contract_commit"
+    )
+    assert pyc_rel not in fz.manifest["contract_paths"], (
+        "fixture setup: a .pyc is never a frozen boundary member — this proves the exemption, not the "
+        "boundary, is what must catch it"
+    )
+    (worktree / pyc_rel).write_text("altered tracked bytecode\n")
+    _commit_all(worktree, "alter the tracked bytecode artifact at HEAD")
+
+    report = _verify(fz)
+    assert report.ok is False
+    assert any(v.detail == pyc_rel for v in report.violations), (
+        "a TRACKED .pyc byte change must be caught and its path named, never exempted as cache noise"
+    )
+
+    # (2) CONTROL: an UNTRACKED .pyc is real cache noise and must stay exempted — no false refusal.
+    ctl = _frozen(tmp_path, "untracked-pyc")
+    noise = ctl.scen.candidate_worktree / "tests/__pycache__/noise.pyc"
+    noise.parent.mkdir(parents=True, exist_ok=True)
+    noise.write_text("uncommitted cache noise\n")  # NEVER git-added
+    ctl_report = _verify(ctl)
+    assert ctl_report.ok is True
+    assert not any(v.detail.endswith(".pyc") for v in ctl_report.violations)
+
+
+# =============================================================== gate provisioner (finding #8)
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
+def test_engine_gate_resolves_deps_in_provisioned_authoritative_env_not_host(tmp_path, monkeypatch):
+    """Finding #8: the engine's integrity gate provisions its collection under ``_gate_provisioner``
+    (engine.py:481), which returns ``interpreter=sys.executable`` — the HOST. External pins must be
+    re-resolved in the TARGET's provisioned authoritative env (a real venv via ``provision_environment``),
+    never the host, or a host that happens to match the frozen version masks a real authoritative drift.
+
+    D-T8 resolved: rather than a heavy engine-driven venv-diff, this pins the OBSERVABLE that the gate's
+    authoritative pin re-resolution runs under a provisioned interpreter, NOT ``sys.executable``. A spy
+    wraps ``contract._authoritative_versions`` (delegating to the real resolver so behavior is untouched)
+    and records which interpreter each re-resolution ran under; the real engine gate is driven via
+    ``engine.apply_revision`` (which derives its context entirely from persisted run state).
+
+    technical (contract): freeze with platformdirs pinned 4.10.0 in a real venv and a frozen
+    tests/conftest.py importing platformdirs; persist the run's candidate_worktree; drive
+    ``engine.apply_revision(run_id, [], gateway, approver=...)``. The gate must re-resolve external pins
+    at least once, under a provisioned interpreter that is NOT ``sys.executable``. Today the host
+    provisioner either resolves under ``sys.executable`` or (platformdirs absent on the host) never
+    re-resolves authoritatively at all — both fail this; a provisioned-venv impl passes.
+    """
+    from issueforge import contract, engine
+
+    fz = _frozen(
+        tmp_path,
+        "gate-authoritative-env",
+        extra={"tests/conftest.py": "import platformdirs  # noqa: F401\n"},
+        provisioner=_real_pin_provisioner({"platformdirs": "4.10.0"}),
+    )
+    assert ("platformdirs", "4.10.0") in {(d, v) for d, v in fz.manifest["external_pins"]}
+
+    # The engine gate takes no worktree kwarg — it derives context entirely from persisted run state.
+    store.RunStore().apply(
+        fz.run_id,
+        lambda _r: {"candidate_worktree": str(fz.scen.candidate_worktree)},
+    )
+
+    # Spy the authoritative pin-resolution seam: record WHICH interpreter each re-resolution runs under.
+    used_interpreters: list[object] = []
+    real_authoritative = contract._authoritative_versions
+
+    def _recording_authoritative(interpreter, env, names):
+        used_interpreters.append(interpreter)
+        return real_authoritative(interpreter, env, names)
+
+    monkeypatch.setattr(contract, "_authoritative_versions", _recording_authoritative)
+
+    class _ExplodingGateway:
+        def __getattr__(self, _name):
+            raise AssertionError("gateway must not be touched")
+
+    try:
+        engine.apply_revision(fz.run_id, [], _ExplodingGateway(), approver=lambda _plan: True)
+    except Exception:
+        # The gate may block (or a downstream step may raise); the observable is which interpreter the
+        # authoritative pin re-resolution ran under, captured above BEFORE any raise.
+        pass
+
+    assert used_interpreters, (
+        "the integrity gate never re-resolved external pins in a provisioned authoritative env "
+        "(it provisioned the host interpreter, which cannot see the frozen dependency)"
+    )
+    assert all(interp != sys.executable for interp in used_interpreters), (
+        "the integrity gate resolved external pins under the HOST interpreter (sys.executable), not "
+        "the target's provisioned authoritative env"
+    )
