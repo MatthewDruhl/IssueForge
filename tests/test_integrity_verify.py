@@ -1296,7 +1296,7 @@ def test_engine_gate_resolves_deps_in_provisioned_authoritative_env_not_host(tmp
 # Phase B flips them.
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
+@pytest.mark.xfail(strict=True, reason="PENDING (#105 finding #4) — deferred, complete fix pending")
 def test_dirty_refusal_does_not_exempt_tracked_bytecode_when_source_present(tmp_path):
     """Finding #4: a TRACKED ``.pyc`` whose source ``.py`` also exists is still cache-EXEMPTED today
     (``_is_cache_noise`` returns True the moment ``<mod>.py`` is present), so a forged-bytecode
@@ -1330,7 +1330,6 @@ def test_dirty_refusal_does_not_exempt_tracked_bytecode_when_source_present(tmp_
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
 def test_verify_flags_declared_dependency_version_drift_in_env_defining_file(tmp_path):
     """Finding #2: the external-pin gate installs the FROZEN versions into its venv and then re-resolves
     them, so the check is tautological — a candidate that changes a DECLARED dependency version is never
@@ -1358,18 +1357,23 @@ def test_verify_flags_declared_dependency_version_drift_in_env_defining_file(tmp
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
-def test_freeze_provisioner_disables_plugin_autoload_symmetric_with_gate(tmp_path):
-    """Finding #1: the integrity gate disables pytest plugin autoload in its authoritative env, but the
-    FREEZE provisioner (``_provision_default``) leaves it ON — so a plugin autoloaded and discovered at
-    freeze reads as a MISSING pin at verify (an asymmetry that both hides drift and false-flags a clean
-    candidate). Freeze and verify must apply the SAME plugin-load policy: ``_provision_default`` must set
-    ``PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`` in the env it hands back, exactly as the gate wrapper does."""
+def test_gate_provisioner_uses_symmetric_plugin_autoload_policy_with_freeze(tmp_path):
+    """Finding #1: freeze and the integrity gate must provision under the SAME plugin-autoload policy.
+    Freeze runs with autoload ON (``_provision_default``) and intentionally pins entry-point plugins as
+    external deps (see ``test_freeze_pins_externally_autoloaded_plugin_from_provisioned_env``), but the
+    gate wrapper DISABLED autoload — so a plugin freeze discovered+pinned read as a MISSING pin at verify,
+    false-flagging a clean candidate. The gate provisioner's autoload policy must match freeze's exactly."""
+    from issueforge import engine
     from issueforge.adapters.pytest_adapter import _provision_default
 
-    (tmp_path / "wt").mkdir()
-    handle = _provision_default(tmp_path / "wt", None)
-    assert getattr(handle, "env", {}).get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1", (
-        "the freeze provisioner must disable plugin autoload to stay symmetric with the gate; today it "
-        f"does not (env autoload flag = {getattr(handle, 'env', {}).get('PYTEST_DISABLE_PLUGIN_AUTOLOAD')!r})"
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    freeze_env = getattr(_provision_default(tmp_path / "a", None), "env", {}) or {}
+    gate_env = getattr(engine._gate_provisioner()(tmp_path / "b", None), "env", {}) or {}
+    assert freeze_env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == gate_env.get(
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD"
+    ), (
+        "the gate provisioner must apply the SAME plugin-autoload policy as freeze; today the gate "
+        f"disables autoload ({gate_env.get('PYTEST_DISABLE_PLUGIN_AUTOLOAD')!r}) while freeze does not "
+        f"({freeze_env.get('PYTEST_DISABLE_PLUGIN_AUTOLOAD')!r})"
     )

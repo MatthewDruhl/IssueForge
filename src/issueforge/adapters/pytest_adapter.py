@@ -9,6 +9,7 @@ than a silent stub, so a caller can never mistake an unbuilt operation for a rea
 
 from __future__ import annotations
 
+import configparser
 import importlib.metadata
 import json
 import os
@@ -969,7 +970,22 @@ class PytestAdapter:
                 f"instrumented contract discovery did not complete cleanly "
                 f"(collect_rc={collect_rc!r}); refusing a partial closure"
             )
-        external = tuple(sorted({(str(d), str(v)) for d, v in graph.get("external") or []}))
+        # The harness injects ``pytest-reportlog`` as its OWN report-log reporter (installed by
+        # ``_provision_default``, force-loaded via ``verify._BASELINE``). With plugin autoload ON it is
+        # discovered like any entry-point plugin, but it is IssueForge instrumentation — NOT a candidate
+        # contract dependency — so it is never pinned as an external. Otherwise it pollutes external_pins
+        # and, because freeze and the gate must share ONE autoload policy (#105 finding #1), a
+        # host-provisioned freeze that lacks it would read the venv-provisioned gate's reportlog as a
+        # phantom drift.
+        external = tuple(
+            sorted(
+                {
+                    (str(d), str(v))
+                    for d, v in (graph.get("external") or [])
+                    if str(d).lower().replace("_", "-") != "pytest-reportlog"
+                }
+            )
+        )
 
         def _relrepo(fpath: object) -> str | None:
             if not fpath:
@@ -1065,21 +1081,21 @@ class PytestAdapter:
             config_needle = _first_dangerous_token(addopts)
             if config_needle is not None:
                 raise InvocationError(f"addopts:{config_needle}")
-        # A config file the command references via ``-c <cfg>`` is a frozen config source too: read it
-        # from the worktree and check its ``addopts`` (a dangerous mode smuggled through an otherwise
-        # unprotected ``-c custompytest.ini`` file the one-line parser never opened — S13 finding #6).
+        # A config file the command references via ANY ``-c`` spelling is a frozen config source too:
+        # read it from the worktree and check its ``addopts`` (a dangerous mode smuggled through an
+        # otherwise unprotected config file the parser never opened — S13 finding #6). Every spelling
+        # must be recognized, not only the split ``-c <cfg>`` form: ``-c<cfg>``, ``-c=<cfg>``, and
+        # ``--config-file[= ]<cfg>`` all point pytest at the same file (#105 finding #6).
         worktree = getattr(command, "worktree", None)
         if worktree:
-            for i, tok in enumerate(argv):
-                if str(tok) == "-c" and i + 1 < len(argv):
-                    cfg_rel = str(argv[i + 1])
-                    cfg_path = Path(worktree) / cfg_rel
-                    if cfg_path.is_file():
-                        cfg_needle = _first_dangerous_token(
-                            _config_addopts_tokens(cfg_path.read_text(), source=cfg_rel)
-                        )
-                        if cfg_needle is not None:
-                            raise InvocationError(f"addopts:{cfg_needle}")
+            for cfg_rel in _referenced_config_files(argv):
+                cfg_path = Path(worktree) / cfg_rel
+                if cfg_path.is_file():
+                    cfg_needle = _first_dangerous_token(
+                        _config_addopts_tokens(cfg_path.read_text(), source=cfg_rel)
+                    )
+                    if cfg_needle is not None:
+                        raise InvocationError(f"addopts:{cfg_needle}")
         return None
 
 
@@ -1106,7 +1122,16 @@ _DANGEROUS_BARE_FLAGS = (
     "--suppress-no-test-exit-code",
     "-d",
     "--exitfirst",
+    # ``--forked`` (pytest-forked: each test in its own forked process) is a candidate-controlled
+    # execution-mode plugin flag in the same family as ``--reruns``/``-n`` (#105 finding #5).
+    "--forked",
 )
+# Short options that CONSUME the remainder of a single-dash cluster as their value (so chars after
+# them are a value, not further flags): ``-k``/``-m``/``-o``/``-c``/``-p``/``-r``/``-W`` and kin.
+# ``-n`` is handled separately (it is itself dangerous, whatever its attached value).
+_VALUE_TAKING_SHORT = frozenset("kmocprwW")
+# Dangerous SHORT bare flags (single char) that must still be caught INSIDE a cluster like ``-qx``.
+_DANGEROUS_SHORT = {"x": "-x", "d": "-d"}
 
 
 def _first_dangerous_token(tokens: object) -> str | None:
@@ -1114,11 +1139,17 @@ def _first_dangerous_token(tokens: object) -> str | None:
 
     A ``-p <plugin>`` selecting anything other than a ``no:`` disable form returns the plugin name
     (a candidate reporter/postprocessor). Value-bearing flags are matched exactly or with an attached
-    ``=value``; ``-n`` also matches the attached ``-n4`` spelling."""
+    ``=value``; ``-n`` also matches the attached ``-n4`` spelling. A dangerous short flag hidden inside
+    a cluster (``-qx``), and any ``@argfile`` (which smuggles further args past argv scanning), are
+    both caught (#105 finding #5)."""
     toks = [str(t) for t in (tokens or ())]
     i = 0
     while i < len(toks):
         tok = toks[i]
+        # An ``@argfile`` makes pytest read further args from a file, bypassing argv scanning entirely;
+        # a sanctioned frozen command never needs one, so reject it outright.
+        if tok.startswith("@"):
+            return tok
         if tok == "-p":
             plugin = toks[i + 1] if i + 1 < len(toks) else ""
             if plugin and not plugin.startswith("no:"):
@@ -1138,8 +1169,44 @@ def _first_dangerous_token(tokens: object) -> str | None:
             return tok
         if tok.startswith("-n") and not tok.startswith("--"):  # -n, -n4, -n=4
             return "-n"
+        # Short-option CLUSTER (single dash, >2 chars, e.g. ``-qx``/``-qd``/``-xq``): scan each member.
+        # A dangerous short flag anywhere in the cluster is caught; a value-taking short option consumes
+        # the cluster remainder as its value, so scanning stops there. ``-n`` inside a cluster is xdist.
+        if tok.startswith("-") and not tok.startswith("--") and len(tok) > 2:
+            for ch in tok[1:]:
+                if ch in _DANGEROUS_SHORT:
+                    return _DANGEROUS_SHORT[ch]
+                if ch == "n":
+                    return "-n"
+                if ch in _VALUE_TAKING_SHORT:
+                    break
         i += 1
     return None
+
+
+def _referenced_config_files(argv: object) -> list[str]:
+    """Every config-file path an argv references through a ``-c``/``--config-file`` flag, across all
+    spellings: split (``-c <cfg>`` / ``--config-file <cfg>``), attached (``-c<cfg>``), and ``=`` forms
+    (``-c=<cfg>`` / ``--config-file=<cfg>``) — the enumerative gap the split-only reader missed (#105
+    finding #6)."""
+    toks = [str(t) for t in (argv or ())]
+    files: list[str] = []
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if tok in ("-c", "--config-file"):
+            if i + 1 < len(toks):
+                files.append(toks[i + 1])
+                i += 2
+                continue
+        elif tok.startswith("-c="):
+            files.append(tok[3:])
+        elif tok.startswith("--config-file="):
+            files.append(tok[len("--config-file=") :])
+        elif tok.startswith("-c") and len(tok) > 2:  # attached -c<cfg>
+            files.append(tok[2:])
+        i += 1
+    return [f for f in files if f]
 
 
 def _split_addopts(text: str) -> list[str]:
@@ -1170,23 +1237,19 @@ def _config_addopts_tokens(content: str, source: str | None = None) -> list[str]
         if isinstance(addopts, list):
             return [str(tok) for tok in addopts]
         return []
-    # ini: find the ``addopts`` key, take its inline value plus any indented continuation lines.
-    lines = content.splitlines()
-    for idx, raw in enumerate(lines):
-        key, sep, value = raw.strip().partition("=")
-        if not (sep and key.strip() == "addopts"):
-            continue
-        parts = [value.strip()]
-        j = idx + 1
-        while j < len(lines):
-            follow = lines[j]
-            if follow.strip() == "" or follow[:1] not in (" ", "\t"):
-                break
-            if follow.strip().startswith("["):
-                break
-            parts.append(follow.strip())
-            j += 1
-        return _split_addopts(" ".join(p for p in parts if p))
+    # ini: read ``addopts`` ONLY from pytest's OWN section — ``[pytest]`` (pytest.ini / tox.ini) or
+    # ``[tool:pytest]`` (setup.cfg) — via a real INI parser, never the first ``addopts``-shaped line in
+    # ANY section. A naive line scan lets a decoy ``addopts`` in a foreign section (placed before the
+    # real one) mask a dangerous mode in the true pytest section (#105 finding #6). configparser folds
+    # indented continuation lines into the value, so the multiline ``addopts`` form is still covered.
+    cp = configparser.ConfigParser(strict=False, interpolation=None)
+    try:
+        cp.read_string(content)
+    except configparser.Error:
+        return []
+    for section in ("pytest", "tool:pytest"):
+        if cp.has_section(section) and cp.has_option(section, "addopts"):
+            return _split_addopts(cp.get(section, "addopts"))
     return []
 
 

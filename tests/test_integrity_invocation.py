@@ -800,7 +800,6 @@ def test_validate_invocation_rejects_dangerous_opts_in_all_frozen_config_forms(
     "cluster,needle",
     [("-qx", "-x"), ("-xq", "-x"), ("-qd", "-d")],
 )
-@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
 def test_validate_invocation_rejects_dangerous_flag_in_short_option_cluster(tmp_path, cluster, needle):
     """A dangerous short flag CLUSTERED with a benign one (``-qx`` = quiet+exitfirst, ``-qd`` =
     quiet+xdist-distributed) must be rejected naming the dangerous member. Today ``_first_dangerous_token``
@@ -817,7 +816,6 @@ def test_validate_invocation_rejects_dangerous_flag_in_short_option_cluster(tmp_
     assert excinfo.value.token == needle
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
 def test_validate_invocation_rejects_forked_plugin_flag(tmp_path):
     """``--forked`` (pytest-forked: each test in its own forked process) is a candidate-controlled
     execution-mode plugin flag in the same family as ``--reruns``/``-n``; it must be rejected naming
@@ -833,7 +831,6 @@ def test_validate_invocation_rejects_forked_plugin_flag(tmp_path):
     assert excinfo.value.token == "--forked"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
 def test_validate_invocation_rejects_dangerous_flag_smuggled_via_argfile(tmp_path):
     """pytest reads extra args from a file referenced as ``@argfile``; a dangerous flag hidden inside
     the argfile bypasses argv scanning entirely. The frozen sanctioned command has no need for an
@@ -855,7 +852,6 @@ def test_validate_invocation_rejects_dangerous_flag_smuggled_via_argfile(tmp_pat
     "cflag",
     ["-ccustom.ini", "-c=custom.ini", "--config-file custom.ini", "--config-file=custom.ini"],
 )
-@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
 def test_validate_invocation_rejects_dangerous_addopts_via_all_config_flag_spellings(tmp_path, cflag):
     """A dangerous ``addopts`` smuggled through a config file the command names via any ``-c`` spelling
     OTHER than the split ``-c FILE`` (attached ``-cFILE``, ``-c=FILE``, or ``--config-file``) must be
@@ -876,7 +872,6 @@ def test_validate_invocation_rejects_dangerous_addopts_via_all_config_flag_spell
     assert excinfo.value.token == "addopts:-x"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
 def test_validate_invocation_reads_addopts_only_from_the_pytest_config_section(tmp_path):
     """The ini ``addopts`` scan must bind to pytest's OWN section (``[tool:pytest]`` in setup.cfg,
     ``[pytest]`` in pytest.ini), not the first ``addopts``-shaped line in ANY section. A decoy benign

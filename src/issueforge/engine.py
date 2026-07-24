@@ -503,11 +503,12 @@ def _gate_provisioner(frozen_pins: dict | None = None) -> Callable[..., Any]:
         if isinstance(frozen_deps, dict):
             merged.update(frozen_deps)
         handle = _provision_default(worktree, merged or None)
-        # Disable pytest plugin autoload in the authoritative env so the gate's discovery/collection
-        # is deterministic and MATCHES the freeze's own (which runs with autoload disabled): otherwise
-        # an autoloaded plugin (e.g. pytest-reportlog installed in the venv) would be discovered as a
-        # phantom external pin the frozen manifest never saw, spuriously failing a clean candidate.
-        handle.env = {**(getattr(handle, "env", None) or {}), "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+        # The gate must provision under the SAME plugin-autoload policy as freeze (#105 finding #1). The
+        # earlier wrapper DISABLED autoload here on the (mistaken) premise that freeze also disables it;
+        # freeze in fact runs with autoload ON via ``_provision_default`` and intentionally pins entry-
+        # point plugins as external deps (see test_freeze_pins_externally_autoloaded_plugin_...). With
+        # autoload OFF here, a plugin freeze discovered+pinned read as a MISSING pin at verify, spuriously
+        # failing a clean candidate. Provisioning identically to freeze keeps the two symmetric.
         return handle
 
     return _provision
@@ -536,9 +537,15 @@ def _integrity_gate(run_id: str, record: dict) -> None:
 
     adapter = registry.resolve(framework="pytest", reporter="pytest")
     base_sha = (record.get("red_proof") or {}).get("base_sha")
+    # Derive the provisioner's frozen external pins from the ACTIVE manifest — the latest APPROVED
+    # amendment when one exists — via the SAME loader ``verify_contract_integrity`` uses
+    # (``contract._load_frozen_manifest``), NOT the original ``contract-manifest.json`` on disk (#105
+    # finding #3). Provisioning M0's pins while verify checks against an amended M1 false-blocks a
+    # legitimately amended candidate; both sides must read the same active manifest.
+    active_manifest = contract._load_frozen_manifest(run_id)
     frozen_pins = {
         str(pin[0]): str(pin[1])
-        for pin in (json.loads(manifest_path.read_bytes()).get("external_pins") or [])
+        for pin in (active_manifest.get("external_pins") or [])
         if len(pin) >= 2
     }
     report = contract.verify_contract_integrity(

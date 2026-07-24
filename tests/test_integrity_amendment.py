@@ -209,7 +209,7 @@ def _seed_freeze_evidence(run_id: str, repo: SimpleNamespace, *, head: str | Non
     )
 
 
-def _freeze(run_id: str, repo: SimpleNamespace, *, approver=None):
+def _freeze(run_id: str, repo: SimpleNamespace, *, approver=None, provisioner=None):
     from issueforge import contract
 
     _seed_freeze_evidence(run_id, repo)
@@ -218,7 +218,7 @@ def _freeze(run_id: str, repo: SimpleNamespace, *, approver=None):
         candidate_worktree=repo.path,
         base_sha=repo.base_sha,
         adapter=_adapter(),
-        provisioner=_provisioner(),
+        provisioner=provisioner or _provisioner(),
         approver=_approve_all if approver is None else approver,
     )
 
@@ -1234,7 +1234,10 @@ def test_engine_proceeds_to_mutation_when_candidate_is_clean(tmp_path):
         "gate-clean",
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
-    _freeze(run, repo)
+    # Freeze under a REAL venv (autoload ON), the SAME policy the gate provisions under, so the frozen
+    # external pins (pytest + its infra) match what the gate re-resolves — a host-provisioned freeze
+    # would pin nothing and the venv-provisioned gate would read every infra dist as a phantom (#105 #1).
+    _freeze(run, repo, provisioner=_real_pin({}))
     _seed_candidate_worktree(run, repo.path)
 
     oracle = contract.verify_contract_integrity(
@@ -1242,7 +1245,7 @@ def test_engine_proceeds_to_mutation_when_candidate_is_clean(tmp_path):
         candidate_worktree=repo.path,
         base_sha=repo.base_sha,
         adapter=_adapter(),
-        provisioner=_provisioner(),
+        provisioner=_real_pin({}),
     )
     assert oracle.ok is True
 
@@ -1314,7 +1317,9 @@ def test_engine_gate_check_never_invokes_the_ai_provider_on_clean_path(tmp_path,
         "gate-noai-clean",
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
-    _freeze(run, repo)
+    # Freeze under a REAL venv (autoload ON), symmetric with the gate's provisioner, so the frozen infra
+    # pins match what the gate re-resolves and the clean candidate is not phantom-blocked (#105 #1).
+    _freeze(run, repo, provisioner=_real_pin({}))
     _seed_candidate_worktree(run, repo.path)
 
     oracle = contract.verify_contract_integrity(
@@ -1322,7 +1327,7 @@ def test_engine_gate_check_never_invokes_the_ai_provider_on_clean_path(tmp_path,
         candidate_worktree=repo.path,
         base_sha=repo.base_sha,
         adapter=_adapter(),
-        provisioner=_provisioner(),
+        provisioner=_real_pin({}),
     )
     assert oracle.ok is True
 
@@ -1645,7 +1650,6 @@ def _real_pin(pins: dict[str, str]):
     return _provision
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
 def test_engine_gate_provisions_from_the_amended_manifest_not_the_original(tmp_path):
     """Finding #3: after an approved amendment changes an external pin (M0 platformdirs 4.10.0 ->
     M1 4.9.0), the engine gate must provision under the ACTIVE amended manifest's pins, exactly as
@@ -1662,6 +1666,9 @@ def test_engine_gate_provisions_from_the_amended_manifest_not_the_original(tmp_p
         candidate_files={
             "tests/test_new.py": "def test_x():\n    assert 1 == 2\n",
             "tests/conftest.py": "import platformdirs  # noqa: F401\n",
+            # gitignore bytecode so collection's regenerated .pyc stays UNTRACKED (as in any real repo)
+            # — otherwise _commit's `git add -A` would track a stale .pyc and trip the freeze TOCTOU.
+            ".gitignore": "__pycache__/\n*.pyc\n",
         },
     )
     _seed_freeze_evidence(run, repo)

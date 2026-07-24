@@ -1653,6 +1653,32 @@ def _expand_added_paths(added_paths: tuple[str, ...], committed: set[str]) -> li
     return expanded
 
 
+# Files that DECLARE a project's dependency versions. A change to any of these is a declared-dependency
+# drift the frozen-pin re-resolution cannot see, so they are frozen+hashed and byte-compared at verify
+# (#105 finding #2). Matched by exact basename, plus any ``requirements*.txt``.
+_ENV_DEFINING_BASENAMES = frozenset(
+    {
+        "pyproject.toml",
+        "setup.cfg",
+        "setup.py",
+        "uv.lock",
+        "Pipfile",
+        "Pipfile.lock",
+        "poetry.lock",
+        "constraints.txt",
+    }
+)
+
+
+def _is_env_defining_file(path: str) -> bool:
+    """Whether ``path`` declares dependency versions (a lock/requirements/project-metadata file)."""
+    base = path.rsplit("/", 1)[-1]
+    return (
+        base in _ENV_DEFINING_BASENAMES
+        or (base.startswith("requirements") and base.endswith(".txt"))
+    )
+
+
 def _compose_contract_manifest(
     st: object,
     run_id: str,
@@ -1859,12 +1885,25 @@ def _compose_contract_manifest(
 
     external_pins = [list(pin) for pin in closure.external]
 
+    # (11a) Env-defining files (files that DECLARE dependencies): hash each committed one so a candidate
+    # that changes a declared dependency version is caught at verify. The frozen-pin re-resolution alone
+    # is tautological — the gate installs the frozen versions and then re-resolves them — so declared
+    # drift is otherwise invisible (#105 finding #2). The selected pytest config is EXCLUDED: its drift
+    # is already caught as an ``invocation`` violation, so nothing is double-reported and nothing missed.
+    env_hashes: dict[str, str] = {}
+    for path in sorted(committed):
+        if config_name is not None and path == config_name:
+            continue
+        if _is_env_defining_file(path):
+            env_hashes[path] = _sha256_hex(_committed_blob(worktree, contract_commit, path))
+
     manifest = {
         "contract_commit": contract_commit,
         "contract_paths": list(contract_paths),
         "dep_hashes": dep_hashes,
         "symlinks": symlinks,
         "external_pins": external_pins,
+        "env_hashes": env_hashes,
         "excluded_sut": sorted(excluded_sut),
         "test_config": test_config,
         "command": command,
@@ -2229,6 +2268,16 @@ def verify_contract_integrity(
         recomputed = _sha256_hex(blob) if rc == 0 else None
         if recomputed != dep_hashes.get(path):
             violations.append(("dep_hash", path))
+
+    # env_hash — a DECLARED-dependency drift in a frozen env-defining file (requirements / lock /
+    # project metadata). The external-pin re-resolution is tautological (the gate installs the frozen
+    # versions then re-resolves them), so this committed-blob byte-compare is the real declared-drift
+    # detector: a changed or removed env-defining file fires external_pin naming the file (#105 #2).
+    for path, frozen_hash in (manifest.get("env_hashes") or {}).items():
+        rc, blob = _git_bytes(worktree, "show", f"{head}:{path}")
+        recomputed = _sha256_hex(blob) if rc == 0 else None
+        if recomputed != frozen_hash:
+            violations.append(("external_pin", path))
 
     # invocation — the FROZEN command/config drives validate_invocation (never candidate HEAD).
     command_field = manifest.get("command") or []
