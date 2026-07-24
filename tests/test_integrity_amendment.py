@@ -232,7 +232,6 @@ def _manifest_bytes(run_id: str) -> bytes:
 # =============================================================== Group A — amend_contract (§4)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_happy_path_writes_new_manifest_and_preserves_review_block(tmp_path):
     """A valid amendment (issue-linked reason + the exact real diff + renewed approval) writes a
     genuinely NEW manifest with a different hash and an updated contract_commit, while leaving the
@@ -254,7 +253,7 @@ def test_amend_happy_path_writes_new_manifest_and_preserves_review_block(tmp_pat
     assert original.approved is True
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     repo.candidate_sha = new_head
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
@@ -277,7 +276,6 @@ def test_amend_happy_path_writes_new_manifest_and_preserves_review_block(tmp_pat
 
 
 @pytest.mark.parametrize("reason", [None, "", "cleanup"])
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_refused_when_reason_missing(tmp_path, reason):
     """An amendment with no issue-linked reason is refused, even when the diff is the exact real
     diff and the approver would have approved — no new manifest is ever persisted. This covers
@@ -299,7 +297,7 @@ def test_amend_refused_when_reason_missing(tmp_path, reason):
     before = _manifest_bytes(run)
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
 
@@ -317,7 +315,6 @@ def test_amend_refused_when_reason_missing(tmp_path, reason):
     assert _manifest_bytes(run) == before == original.artifact_path.read_bytes()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_refused_when_diff_text_does_not_match_real_diff(tmp_path):
     """A candidate ``diff_text`` that does not match the ACTUAL contract_commit..HEAD diff is
     refused — a caller cannot authorize one change while a different change is really staged.
@@ -336,7 +333,7 @@ def test_amend_refused_when_diff_text_does_not_match_real_diff(tmp_path):
     original = _freeze(run, repo)
     before = _manifest_bytes(run)
 
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     fabricated_diff = (
         "--- a/tests/test_new.py\n+++ b/tests/test_new.py\n"
@@ -358,7 +355,6 @@ def test_amend_refused_when_diff_text_does_not_match_real_diff(tmp_path):
     assert _manifest_bytes(run) == before == original.artifact_path.read_bytes()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_refused_when_approver_returns_false(tmp_path):
     """Rejecting the renewed approval writes nothing: FreezeResult.approved is False and the
     manifest fields are all None, and the original manifest artifact is untouched on disk.
@@ -378,7 +374,7 @@ def test_amend_refused_when_approver_returns_false(tmp_path):
     before = _manifest_bytes(run)
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
 
@@ -400,7 +396,6 @@ def test_amend_refused_when_approver_returns_false(tmp_path):
     assert _manifest_bytes(run) == before == original.artifact_path.read_bytes()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_body_byte_identical_does_not_bypass_exact_diff_check(tmp_path):
     """R6 finding #16: the ORIGINAL test proved nothing (its diff was empty, so it failed only on
     the missing reason). This constructs a REAL boundary change — a decorator line — while the
@@ -426,7 +421,7 @@ def test_amend_body_byte_identical_does_not_bypass_exact_diff_check(tmp_path):
     before = _manifest_bytes(run)
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": new_src})
+    new_head = _commit(repo.path, {"tests/test_new.py": new_src})
     _seed_freeze_evidence(run, repo, head=new_head)
     real_diff = _real_diff(repo.path, old_head, new_head)
     assert real_diff  # a REAL, non-empty diff despite the byte-identical function body
@@ -458,7 +453,6 @@ def test_amend_body_byte_identical_does_not_bypass_exact_diff_check(tmp_path):
     assert result.manifest["contract_commit"] == new_head
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_approver_receives_the_exact_bytes_subsequently_persisted(tmp_path):
     """R6 finding #17: the renewed-approval callback is not a rubber stamp — it must receive the
     EXACT canonical bytes amend_contract goes on to persist (happy path), and the exact real
@@ -481,7 +475,7 @@ def test_amend_approver_receives_the_exact_bytes_subsequently_persisted(tmp_path
     _freeze(run, repo)
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
 
@@ -516,7 +510,7 @@ def test_amend_approver_receives_the_exact_bytes_subsequently_persisted(tmp_path
     )
     _freeze(run2, repo2)
     old_head2 = repo2.candidate_sha
-    new_head2 = _commit(repo2, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head2 = _commit(repo2.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run2, repo2, head=new_head2)
     diff_text2 = _real_diff(repo2.path, old_head2, new_head2)
     reject_kwargs = dict(
@@ -560,7 +554,6 @@ def test_amend_approver_receives_the_exact_bytes_subsequently_persisted(tmp_path
     assert captured2[0] == oracle.artifact_path.read_bytes()  # whole-payload byte-for-byte
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_new_manifest_is_a_genuinely_new_retained_artifact_prior_preserved(tmp_path):
     """R6 finding #18: "writes a new manifest" must be proven on the RETAINED ARTIFACT, not only
     the returned dataclass — and the prior manifest must remain auditable (never clobbered), exactly
@@ -582,7 +575,7 @@ def test_amend_new_manifest_is_a_genuinely_new_retained_artifact_prior_preserved
     original_bytes = original.artifact_path.read_bytes()
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
 
@@ -608,7 +601,6 @@ def test_amend_new_manifest_is_a_genuinely_new_retained_artifact_prior_preserved
     assert original.artifact_path.read_bytes() == original_bytes
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_records_a_permanent_audit_event_binding_reason_diff_approval_and_manifest(tmp_path):
     """R6 finding #19: a successful amendment appends exactly one PERMANENT "amend" event to the
     run's append-only event log that binds all four amendment facts together — the issue-linked
@@ -630,7 +622,7 @@ def test_amend_records_a_permanent_audit_event_binding_reason_diff_approval_and_
     _freeze(run, repo)
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
     reason = "#19: widen the assertion tolerance per reviewer feedback"
@@ -656,7 +648,6 @@ def test_amend_records_a_permanent_audit_event_binding_reason_diff_approval_and_
     assert event.get("manifest_hash") == result.manifest_hash
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_rejects_when_a_real_s9_observability_amendment_has_since_landed(tmp_path):
     """R6 finding #20: the ORIGINAL test hand-mutated a dict field (never a real transition) and
     asserted on a message substring that a stale head_sha alone could also trigger. This drives an
@@ -761,7 +752,7 @@ def test_amend_rejects_when_a_real_s9_observability_amendment_has_since_landed(t
     assert record["shape"]["observability"]["verdict"] == "existing coverage sufficient"
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     diff_text = _real_diff(repo.path, old_head, new_head)
     # Re-bind the S11 review to the CURRENT head so currency alone cannot explain a refusal.
     _seed_freeze_evidence(run, repo, head=new_head)
@@ -781,7 +772,6 @@ def test_amend_rejects_when_a_real_s9_observability_amendment_has_since_landed(t
 
 
 @pytest.mark.parametrize("path", ["success", "refusal"])
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_contract_never_invokes_the_ai_provider(tmp_path, monkeypatch, path):
     """R7 finding #21: amend_contract's every precondition (reason validation, exact-diff
     verification, renewed approval) is fully deterministic — no AI/provider call on either the
@@ -806,7 +796,7 @@ def test_amend_contract_never_invokes_the_ai_provider(tmp_path, monkeypatch, pat
     )
     _freeze(run, repo)
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
 
@@ -830,7 +820,6 @@ def test_amend_contract_never_invokes_the_ai_provider(tmp_path, monkeypatch, pat
 # =============================================================== Group B — verify_contract_integrity (§2)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_ok_true_for_clean_candidate(tmp_path):
     """A candidate HEAD that exactly matches the frozen contract passes every check: ok is True and
     violations is empty.
@@ -859,7 +848,6 @@ def test_verify_contract_integrity_ok_true_for_clean_candidate(tmp_path):
     assert report.violations == ()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_flags_protected_path_diff_by_name(tmp_path):
     """Editing a frozen (protected) contract file at HEAD is caught as a named "protected_path_diff"
     violation naming the changed path — never silently absorbed as "ok".
@@ -879,7 +867,7 @@ def test_verify_contract_integrity_flags_protected_path_diff_by_name(tmp_path):
     frozen = _freeze(run, repo)
     assert "tests/test_new.py" in frozen.manifest["contract_paths"]
 
-    _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
 
     report = contract.verify_contract_integrity(
         run,
@@ -894,7 +882,6 @@ def test_verify_contract_integrity_flags_protected_path_diff_by_name(tmp_path):
 
 
 @pytest.mark.parametrize("outcome", ["clean", "violation"])
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_never_invokes_the_ai_provider(tmp_path, monkeypatch, outcome):
     """The static integrity check is fully deterministic: it never calls out to the AI/provider seam,
     on either the clean or the violating path — the harness runs this, never the policed session.
@@ -918,7 +905,7 @@ def test_verify_contract_integrity_never_invokes_the_ai_provider(tmp_path, monke
     )
     _freeze(run, repo)
     if outcome == "violation":
-        _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+        _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
 
     report = contract.verify_contract_integrity(
         run,
@@ -930,7 +917,6 @@ def test_verify_contract_integrity_never_invokes_the_ai_provider(tmp_path, monke
     assert report.ok is (outcome == "clean")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_env_var_branch_in_excluded_sut_is_not_caught(tmp_path):
     """R8 finding #22: the ORIGINAL residual-risk test used a pre-approved branch on an unchanged
     HEAD, which is trivially "ok" for reasons unrelated to the claimed risk. This freezes a manifest
@@ -967,7 +953,7 @@ def test_verify_contract_integrity_env_var_branch_in_excluded_sut_is_not_caught(
     assert "app/calc.py" not in frozen.manifest["contract_paths"]
 
     _commit(
-        repo,
+        repo.path,
         {
             "app/calc.py": (
                 "import os\n\n\n"
@@ -1057,7 +1043,7 @@ def _scenario_protected_path_diff(tmp_path):
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
     _freeze(run, repo)
-    _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     return run, repo, None
 
 
@@ -1075,7 +1061,7 @@ def _scenario_dep_hash(tmp_path):
     )
     repo.candidate_sha = _add_symlink_commit(repo.path, "tests/data_link", "../lib/shared_data.txt")
     _freeze(run, repo)
-    _commit(repo, {"lib/shared_data.txt": "v2\n"})
+    _commit(repo.path, {"lib/shared_data.txt": "v2\n"})
     return run, repo, None
 
 
@@ -1100,7 +1086,7 @@ def _scenario_recollection(tmp_path):
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
     _freeze(run, repo)
-    _commit(repo, {"tests/test_extra.py": "def test_extra():\n    assert True\n"})
+    _commit(repo.path, {"tests/test_extra.py": "def test_extra():\n    assert True\n"})
     return run, repo, None
 
 
@@ -1117,7 +1103,7 @@ def _scenario_invocation(tmp_path):
         },
     )
     _freeze(run, repo)
-    _commit(repo, {"pytest.ini": "[pytest]\naddopts = -x\n"})
+    _commit(repo.path, {"pytest.ini": "[pytest]\naddopts = -x\n"})
     return run, repo, None
 
 
@@ -1155,7 +1141,7 @@ def _scenario_ast_backstop(tmp_path):
     )
     _freeze(run, repo)
     _commit(
-        repo,
+        repo.path,
         {"tests/test_new.py": ("import pytest\n\n\ndef test_flaky():\n    assert 1 == 2\n")},
     )
     return run, repo, None
@@ -1172,7 +1158,6 @@ _GATE_SCENARIOS = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_refuses_apply_revision_before_any_mutation_on_integrity_violation(tmp_path):
     """REDESIGNED (finding 6): given a run with a frozen manifest and a candidate_worktree PERSISTED
     on the run's OWN state (never on the apply_revision call) whose HEAD violates a predicate,
@@ -1193,7 +1178,7 @@ def test_engine_refuses_apply_revision_before_any_mutation_on_integrity_violatio
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
     _freeze(run, repo)
-    _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_candidate_worktree(run, repo.path)
 
     with pytest.raises(Exception, match=r"(?i)protected_path_diff"):
@@ -1202,7 +1187,6 @@ def test_engine_refuses_apply_revision_before_any_mutation_on_integrity_violatio
     assert not any(e.get("transition") == "revision" for e in events)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_gate_error_names_the_violated_predicate_precisely(tmp_path):
     """REDESIGNED (finding 6): the raised integrity error names the SPECIFIC violated predicate, not
     a generic failure — a caller resolving the refusal must be able to tell WHICH invariant broke,
@@ -1220,7 +1204,7 @@ def test_engine_gate_error_names_the_violated_predicate_precisely(tmp_path):
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
     _freeze(run, repo)
-    _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_candidate_worktree(run, repo.path)
 
     with pytest.raises(Exception) as excinfo:
@@ -1228,7 +1212,6 @@ def test_engine_gate_error_names_the_violated_predicate_precisely(tmp_path):
     assert "protected_path_diff" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_proceeds_to_mutation_when_candidate_is_clean(tmp_path):
     """REDESIGNED (finding 6): a clean candidate (verify ok), with its worktree PERSISTED on the
     run's own state, is NOT blocked by the gate: apply_revision — original signature, no integrity
@@ -1271,7 +1254,6 @@ def test_engine_proceeds_to_mutation_when_candidate_is_clean(tmp_path):
     assert revisions and revisions[-1]["completed"] == ["op-1"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_gate_check_itself_never_invokes_the_ai_provider(tmp_path, monkeypatch):
     """REDESIGNED (finding 6): the gate's integrity check, run from inside apply_revision using the
     run's own persisted candidate_worktree, is exactly as deterministic as a direct
@@ -1297,14 +1279,13 @@ def test_engine_gate_check_itself_never_invokes_the_ai_provider(tmp_path, monkey
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
     _freeze(run, repo)
-    _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_candidate_worktree(run, repo.path)
 
     with pytest.raises(Exception, match=r"(?i)protected_path_diff"):
         engine.apply_revision(run, _plan(), _ExplodingGateway(), approver=_approve_all)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_gate_check_never_invokes_the_ai_provider_on_clean_path(tmp_path, monkeypatch):
     """Finding 5: the earlier no-AI engine coverage was refusal-only. The gate is exactly as
     deterministic on the CLEAN (proceeding) path as it is on the refusal path — no provider
@@ -1353,7 +1334,6 @@ def test_engine_gate_check_never_invokes_the_ai_provider_on_clean_path(tmp_path,
     assert revisions and revisions[-1]["completed"] == ["op-1"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_apply_revision_proceeds_unchanged_with_no_frozen_manifest(tmp_path):
     """Finding 6 (backward compatibility, superseding the deleted mandatory-kwarg test): a run with
     NO frozen contract manifest at all — the pre-S13 shape, e.g. a plain buildable run that never
@@ -1386,7 +1366,6 @@ def test_engine_apply_revision_proceeds_unchanged_with_no_frozen_manifest(tmp_pa
 
 
 @pytest.mark.parametrize("predicate", sorted(_GATE_SCENARIOS))
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_gate_blocks_every_predicate(tmp_path, monkeypatch, predicate):
     """R5 finding #24, REDESIGNED per finding 6: the gate must block on EVERY predicate, sourcing
     its integrity context entirely from the run's OWN PERSISTED state — never from a caller-supplied

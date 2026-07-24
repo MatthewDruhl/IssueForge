@@ -17,11 +17,15 @@ paused/parked/failed its run is not overwritten to completed).
 from __future__ import annotations
 
 import json
+import os
+import sys
 import uuid
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from io import StringIO
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from issueforge import github, store
@@ -474,6 +478,58 @@ def _op_fingerprint(op: dict) -> str:
     return json.dumps(op, sort_keys=True)
 
 
+def _gate_provisioner() -> Callable[..., Any]:
+    """The host-side provisioner the integrity gate provisions its collection under: the host
+    interpreter with plugin autoload disabled and a minimal allowlist env — never the candidate's
+    ``os.environ``. Deterministic and self-contained, matching the pipeline's non-hermetic checks."""
+
+    def _provision(worktree: object, frozen_deps: object = None) -> object:
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", ""),
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        }
+        return SimpleNamespace(
+            interpreter=sys.executable,
+            env=env,
+            artifact_dir=Path(worktree).parent / f"if-gate-env-{Path(worktree).name}",
+            network=False,
+        )
+
+    return _provision
+
+
+def _integrity_gate(run_id: str, record: dict) -> None:
+    """The mandatory S13 integrity check (#19). Reads the run's OWN persisted state: the frozen
+    manifest artifact and the recorded ``candidate_worktree``. When a frozen manifest exists, it
+    verifies the candidate through :func:`contract.verify_contract_integrity` (adapter resolved via
+    the ``registry.resolve(framework="pytest", reporter="pytest")`` seam) and raises
+    :class:`state.IllegalTransition` naming every violated predicate on a violation. A run with no
+    frozen manifest (pre-S13) — or one whose worktree is not yet recorded — is untouched."""
+    if not (store.run_dir(run_id) / "contract-manifest.json").exists():
+        return
+    candidate = record.get("candidate_worktree")
+    if not candidate:
+        return
+    from issueforge import contract
+    from issueforge.adapters.base import registry
+
+    adapter = registry.resolve(framework="pytest", reporter="pytest")
+    base_sha = (record.get("red_proof") or {}).get("base_sha")
+    report = contract.verify_contract_integrity(
+        run_id,
+        candidate_worktree=candidate,
+        base_sha=base_sha,
+        adapter=adapter,
+        provisioner=_gate_provisioner(),
+    )
+    if not report.ok:
+        predicates = sorted({v.predicate for v in report.violations})
+        raise IllegalTransition(
+            f"apply_revision refused: contract integrity violated ({', '.join(predicates)})"
+        )
+
+
 def apply_revision(
     run_id: str, plan: list, gateway: Any, *, approver: Callable[[Any], bool]
 ) -> dict:
@@ -502,6 +558,13 @@ def apply_revision(
         raise ValueError(
             f"apply_revision requires a buildable, approved run; {run_id!r} is not eligible"
         )
+
+    # S13 (#19) mandatory contract-integrity gate — runs on EVERY first-mutation path, deriving its
+    # context ENTIRELY from PERSISTED RUN STATE (the frozen manifest + the run's recorded
+    # candidate_worktree), never from a caller kwarg (apply_revision has none). It refuses BEFORE any
+    # gateway mutation or human approval when the candidate violates a predicate, naming it; it runs
+    # ONLY when a frozen manifest exists, so a pre-S13 run proceeds exactly as before.
+    _integrity_gate(run_id, record)
 
     # Resume integrity (Option A): a recorded op-ID binds to the EXACT op that completed. A changed op
     # under a recorded id is refused; a matching one is treated as already done (seeded into the set).

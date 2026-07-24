@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import shlex
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -1037,7 +1038,95 @@ class PytestAdapter:
         )
 
     def validate_invocation(self, command: object) -> object:
-        raise NotImplementedError("validate_invocation lands in S13")
+        """Reject a dangerous pytest invocation OUTRIGHT (#19, S13).
+
+        ``command`` is an invocation object carrying ``.command`` (the argv) and an optional
+        ``.test_config`` (a frozen ``{"source", "content"}`` config, e.g. ``pytest.ini``'s
+        ``addopts``). A clean invocation returns ``None``; a dangerous mode raises
+        :class:`InvocationError` (a ``ValueError``) whose message NAMES the offending flag/plugin
+        token. Dangerous modes: retries/rerun (``--reruns``), sharding/xdist (``-n`` / ``--dist``),
+        bail (``-x`` / ``--maxfail``), force-exit (``--force-exit``), pass-with-no-tests
+        (``--suppress-no-test-exit-code``), and a candidate reporter/postprocessor plugin
+        (``-p <plugin>`` other than a ``no:`` disable form, or ``--report``). Each mode is caught in
+        both split (``-n 4``) and combined (``-n4`` / ``--maxfail=1``) spellings, from argv AND from
+        a frozen config source's ``addopts`` (named ``addopts:<token>``). Fully deterministic — it
+        never touches the AI/provider seam.
+        """
+        argv = getattr(command, "command", command)
+        needle = _first_dangerous_token(list(argv or ()))
+        if needle is not None:
+            raise InvocationError(needle)
+        test_config = getattr(command, "test_config", None)
+        if isinstance(test_config, dict):
+            addopts = _config_addopts_tokens(str(test_config.get("content") or ""))
+            config_needle = _first_dangerous_token(addopts)
+            if config_needle is not None:
+                raise InvocationError(f"addopts:{config_needle}")
+        return None
+
+
+class InvocationError(ValueError):
+    """A dangerous invocation flag/config token was rejected. ``token`` is the exact offending
+    string (an argv flag like ``-x``, a plugin name like ``myreporter``, or an ``addopts:<flag>``
+    config token); it is also the message, so a ``str(err)`` substring check finds it."""
+
+    def __init__(self, token: str) -> None:
+        self.token = token
+        super().__init__(token)
+
+
+# Flags whose mere presence (exact, or with an attached ``=value``) is a dangerous mode; the token
+# reported is the canonical flag itself. ``-n`` (xdist) is handled separately to catch the attached
+# ``-n4`` spelling.
+_DANGEROUS_VALUE_FLAGS = ("--reruns", "--dist", "--maxfail", "--report")
+_DANGEROUS_BARE_FLAGS = ("-x", "--force-exit", "--suppress-no-test-exit-code")
+
+
+def _first_dangerous_token(tokens: object) -> str | None:
+    """The FIRST dangerous flag/plugin token in ``tokens`` (an argv list), or None if clean.
+
+    A ``-p <plugin>`` selecting anything other than a ``no:`` disable form returns the plugin name
+    (a candidate reporter/postprocessor). Value-bearing flags are matched exactly or with an attached
+    ``=value``; ``-n`` also matches the attached ``-n4`` spelling."""
+    toks = [str(t) for t in (tokens or ())]
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if tok == "-p":
+            plugin = toks[i + 1] if i + 1 < len(toks) else ""
+            if plugin and not plugin.startswith("no:"):
+                return plugin
+            i += 2
+            continue
+        if tok.startswith("-p") and len(tok) > 2:  # attached -p<plugin>
+            plugin = tok[2:]
+            if plugin and not plugin.startswith("no:"):
+                return plugin
+            i += 1
+            continue
+        for flag in _DANGEROUS_VALUE_FLAGS:
+            if tok == flag or tok.startswith(flag + "="):
+                return flag
+        if tok in _DANGEROUS_BARE_FLAGS:
+            return tok
+        if tok.startswith("-n") and not tok.startswith("--"):  # -n, -n4, -n=4
+            return "-n"
+        i += 1
+    return None
+
+
+def _config_addopts_tokens(content: str) -> list[str]:
+    """The tokenized ``addopts`` value from a frozen config source's text (``[pytest]`` ini form)."""
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("addopts"):
+            _key, _sep, value = stripped.partition("=")
+            if _sep:
+                try:
+                    return shlex.split(value.strip())
+                except ValueError:
+                    return value.split()
+    return []
 
 
 registry.register(PytestAdapter())

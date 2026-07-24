@@ -213,7 +213,6 @@ def _approve_all(_payload) -> bool:
 # ========================================================================================== tests
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_validate_invocation_accepts_clean_manifest_command(tmp_path):
     """A plain, sanctioned command from the manifest is accepted: no raise (R4 clean case — no
     internal-field/return-value inspection, only the absence of a raise is observable/pinned).
@@ -228,7 +227,6 @@ def test_validate_invocation_accepts_clean_manifest_command(tmp_path):
     adapter.validate_invocation(_invocation(repo, ["pytest", "tests/"]))
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_supplies_frozen_manifest_command_not_head(tmp_path):
     """(Finding #11) The FROZEN manifest command drives ``validate_invocation`` through ``verify``,
     never a live re-read of candidate HEAD's ``.issueforge.toml`` — proven observably via a spy on
@@ -288,7 +286,6 @@ def test_verify_contract_integrity_supplies_frozen_manifest_command_not_head(tmp
     assert ("pytest", "-x", "tests/") not in supplied_commands
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_detects_wrapper_drift_as_invocation_violation(tmp_path):
     """(Finding #10) A wrapper script referenced by the FROZEN command that drifts at HEAD (after
     the freeze) is caught by re-running ``validate_invocation`` through ``verify`` — never proven
@@ -356,7 +353,6 @@ def test_verify_contract_integrity_detects_wrapper_drift_as_invocation_violation
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_detects_custom_config_drift_as_invocation_violation(tmp_path):
     """(Finding #2, confirmation round) A custom config file REFERENCED by the frozen command via
     ``-c`` that is OTHERWISE UNPROTECTED (not a member of ``contract_paths`` on its own — it holds
@@ -428,7 +424,6 @@ def test_verify_contract_integrity_detects_custom_config_drift_as_invocation_vio
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_validate_invocation_rejects_candidate_postprocessor_via_reporter_hook(tmp_path):
     """(Finding #12) A candidate-specified postprocessor is represented as a candidate-specified
     reporter/plugin/report hook — NOT the invented ``--postprocess`` flag — and rejected.
@@ -448,7 +443,6 @@ def test_validate_invocation_rejects_candidate_postprocessor_via_reporter_hook(t
     assert "postprocess_plugin" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     "flag_tokens,needle",
     [
@@ -474,7 +468,6 @@ def test_validate_invocation_rejects_sharding_xdist(tmp_path, flag_tokens, needl
     assert needle in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     "flag_tokens,needle",
     [(["-x"], "-x"), (["--maxfail=1"], "--maxfail"), (["--maxfail", "1"], "--maxfail")],
@@ -495,7 +488,6 @@ def test_validate_invocation_rejects_bail(tmp_path, flag_tokens, needle):
     assert needle in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_validate_invocation_rejects_force_exit(tmp_path):
     """The force-exit mode is prohibited-or-modelled: ``--force-exit`` raises, naming the flag."""
     repo, _base_sha = _repo(
@@ -508,7 +500,6 @@ def test_validate_invocation_rejects_force_exit(tmp_path):
     assert "--force-exit" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_validate_invocation_rejects_pass_with_no_tests(tmp_path):
     """The pass-with-no-tests mode is prohibited-or-modelled: ``--suppress-no-test-exit-code``
     raises, naming the flag.
@@ -523,7 +514,6 @@ def test_validate_invocation_rejects_pass_with_no_tests(tmp_path):
     assert "--suppress-no-test-exit-code" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     "flag_tokens,needle",
     [
@@ -548,7 +538,6 @@ def test_validate_invocation_rejects_custom_reporter(tmp_path, flag_tokens, need
     assert needle in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize("flag_tokens", [["--reruns=3"], ["--reruns", "3"]])
 def test_validate_invocation_rejects_rerun_plugin_but_allows_disable_form(tmp_path, flag_tokens):
     """A rerun/retry plugin flag is prohibited-or-modelled (both combined and split spellings);
@@ -571,7 +560,6 @@ def test_validate_invocation_rejects_rerun_plugin_but_allows_disable_form(tmp_pa
     adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", "-p", "no:randomly"]))
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_prohibited_mode_via_verify_contract_integrity_surfaces_as_invocation_violation(tmp_path):
     """A prohibited pytest mode that made it into a FROZEN manifest (freeze_contract itself does
     not gate on validate_invocation — it composes the command straight from the committed toml)
@@ -624,7 +612,6 @@ def test_prohibited_mode_via_verify_contract_integrity_surfaces_as_invocation_vi
     assert any(v.predicate == "invocation" and v.detail == "-x" for v in report.violations)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     "addopts_value,needle",
     [
@@ -669,7 +656,6 @@ def test_validate_invocation_rejects_dangerous_modes_from_frozen_config_addopts(
     assert f"addopts:{needle}" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_validate_invocation_never_invokes_the_ai_provider(tmp_path, monkeypatch):
     """(Finding #5, confirmation round / R7) ``validate_invocation`` is fully deterministic — it
     never delegates to the AI/provider seam, on EITHER the clean-accept path or the
