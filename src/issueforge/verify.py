@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tomllib
 import uuid
 from dataclasses import dataclass
@@ -626,3 +627,194 @@ def establish_green_baseline(
         evidence=evidence,
         pause_reason=f"baseline not green: {evidence.status}",
     )
+
+
+# ===========================================================================
+# PoC-B (#112): the local-candidate readiness verdict.
+#
+# Given a persisted run record, issue ONE deterministic ``ready`` / ``not_ready`` verdict, persisted
+# as the NESTED field ``record['readiness']`` via ``store.apply`` (no new top-level run status). The
+# verdict is a pure conjunction of five named predicates, each surfacing its exact name and detail on
+# failure so a refusal is never a generic ``False``. This slice issues a verdict and NOTHING else: no
+# provider invocation, push, PR, merge, closeout, or cleanup — every git call is read-only.
+# ===========================================================================
+
+_READINESS_GIT_TIMEOUT = 120.0
+_FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _readiness_git(worktree: Path, *args: str) -> process.CommandResult:
+    """A read-only git read against the candidate worktree, through the subprocess seam."""
+    return process.run(
+        ["git", "-C", str(worktree), *args],
+        cwd=worktree,
+        timeout=_READINESS_GIT_TIMEOUT,
+    )
+
+
+def _candidate_sha_detail(worktree: Path, candidate_sha: object) -> str | None:
+    """Return the locked ``candidate_sha`` refusal detail, or ``None`` when the candidate is a
+    present, non-symbolic, existing COMMIT that MATCHES the clean worktree HEAD.
+
+    Detail values are the locked strings ``missing`` / ``symbolic`` / ``non_commit`` / ``dirty`` /
+    ``stale``. A movable ref name (``main``) is ``symbolic`` — the verdict binds an immutable commit
+    id, never a ref, so shape is checked WITHOUT resolving. A 40-hex id that names a tree, or names no
+    object at all, is ``non_commit`` (the object lookup must not raise on a missing object). A
+    candidate whose id differs from the clean worktree HEAD is ``stale``; a candidate that matches HEAD
+    but whose worktree carries any tracked change OR untracked source file is ``dirty`` (probed with
+    ``git status --porcelain``, which — unlike ``git diff --quiet HEAD`` — sees untracked files).
+    """
+    if candidate_sha is None:
+        return "missing"
+    sha = str(candidate_sha)
+    if not _FULL_SHA.match(sha):
+        return "symbolic"
+    kind = _readiness_git(worktree, "cat-file", "-t", sha)
+    if kind.returncode != 0 or kind.stdout.strip() != "commit":
+        return "non_commit"
+    head = _readiness_git(worktree, "rev-parse", "HEAD")
+    if head.returncode != 0 or head.stdout.strip() != sha:
+        return "stale"
+    status = _readiness_git(worktree, "status", "--porcelain")
+    if status.stdout.strip():
+        return "dirty"
+    return None
+
+
+def _scope_offenders(worktree: Path, contract_commit: str, candidate_sha: str, scope: list) -> list:
+    """Implementation-range changed paths that fall OUTSIDE the approved ``write_scope``.
+
+    The range is ``contract_commit..candidate_sha`` (the changes made AFTER the contract froze), NEVER
+    ``base_sha..candidate_sha`` — so the frozen acceptance-test commit does not count against scope.
+    The scope set is the persisted approval, NEVER derived from the diff.
+    """
+    approved = set(scope or ())
+    diff = _readiness_git(worktree, "diff", "--name-only", f"{contract_commit}..{candidate_sha}")
+    changed = [line for line in diff.stdout.splitlines() if line.strip()]
+    return [path for path in changed if path not in approved]
+
+
+def issue_readiness(
+    run_id: str,
+    *,
+    adapter: object,
+    provisioner: object = None,
+    store: object = None,
+    run_baseline: object = None,
+    verify_integrity: object = None,
+) -> dict:
+    """Issue and PERSIST one deterministic ``ready`` / ``not_ready`` readiness verdict for a run.
+
+    The verdict is a pure conjunction of five named predicates evaluated in order — ``candidate_sha``,
+    ``acceptance``, ``baseline``, ``contract_integrity``, ``scope`` — and is persisted as the nested
+    field ``record['readiness']`` through ``store.apply`` (exactly once). The FIRST failing predicate
+    short-circuits to a ``{"readiness":"not_ready","predicate":<name>,"detail":<specifics>}`` verdict;
+    only a candidate satisfying every predicate yields the verbatim ``ready`` verdict binding the exact
+    ``candidate_sha``. ``run_baseline`` / ``verify_integrity`` are injectable seams; when
+    ``verify_integrity`` is not injected the contract-integrity predicate delegates to the PUBLIC
+    ``contract.verify_contract_integrity`` seam resolved at call time (never a fabricated OK report).
+    """
+    from issueforge import contract as _contract
+    from issueforge.store import RunStore
+
+    st = store if store is not None else RunStore()
+    runner = run_baseline if run_baseline is not None else _DEFAULT_RUN_BASELINE
+    integrity = (
+        verify_integrity if verify_integrity is not None else _contract.verify_contract_integrity
+    )
+
+    record = st.read(run_id)
+    worktree = Path(record["candidate_worktree"])
+    candidate_sha = record.get("candidate_sha")
+    contract_commit = record["contract_commit"]
+    base_sha = record["base_sha"]
+    write_scope = record.get("write_scope") or []
+    acceptance_command = list(record["acceptance_command"])
+    baseline_command = list(record["baseline_command"])
+
+    verdict = _compute_readiness(
+        run_id,
+        record=record,
+        worktree=worktree,
+        candidate_sha=candidate_sha,
+        contract_commit=contract_commit,
+        base_sha=base_sha,
+        write_scope=write_scope,
+        acceptance_command=acceptance_command,
+        baseline_command=baseline_command,
+        adapter=adapter,
+        provisioner=provisioner,
+        runner=runner,
+        integrity=integrity,
+    )
+
+    st.apply(run_id, lambda _rec: {"readiness": verdict})
+    return verdict
+
+
+def _not_ready(predicate: str, detail: object) -> dict:
+    return {"readiness": "not_ready", "predicate": predicate, "detail": detail}
+
+
+def _compute_readiness(
+    run_id: str,
+    *,
+    record: dict,
+    worktree: Path,
+    candidate_sha: object,
+    contract_commit: str,
+    base_sha: str,
+    write_scope: list,
+    acceptance_command: list,
+    baseline_command: list,
+    adapter: object,
+    provisioner: object,
+    runner: object,
+    integrity: object,
+) -> dict:
+    """The pure conjunction: evaluate each predicate in order, short-circuiting on the first refusal."""
+    # 1. candidate_sha — a present, non-symbolic, existing COMMIT matching the clean worktree HEAD.
+    sha_detail = _candidate_sha_detail(worktree, candidate_sha)
+    if sha_detail is not None:
+        return _not_ready("candidate_sha", sha_detail)
+    candidate_sha = str(candidate_sha)
+
+    # 2. acceptance — the EXACT acceptance command runs GREEN against the candidate.
+    acceptance = runner(worktree, acceptance_command, adapter=adapter, provisioner=provisioner)
+    if getattr(acceptance, "status", None) is not BaselineStatus.GREEN:
+        return _not_ready(
+            "acceptance", str(getattr(getattr(acceptance, "status", None), "value", acceptance))
+        )
+
+    # 3. baseline — the EXACT full baseline command runs GREEN against the candidate, SEPARATELY.
+    baseline = runner(worktree, baseline_command, adapter=adapter, provisioner=provisioner)
+    if getattr(baseline, "status", None) is not BaselineStatus.GREEN:
+        return _not_ready(
+            "baseline", str(getattr(getattr(baseline, "status", None), "value", baseline))
+        )
+
+    # 4. contract_integrity — delegated to the existing integrity seam (never reimplemented).
+    report = integrity(
+        run_id,
+        candidate_worktree=worktree,
+        base_sha=base_sha,
+        adapter=adapter,
+        provisioner=provisioner,
+    )
+    if not getattr(report, "ok", False):
+        detail = "; ".join(f"{v.predicate}: {v.detail}" for v in getattr(report, "violations", ()))
+        return _not_ready("contract_integrity", detail)
+
+    # 5. scope — every impl-range changed path is inside the PERSISTED approved write_scope.
+    offenders = _scope_offenders(worktree, contract_commit, candidate_sha, write_scope)
+    if offenders:
+        return _not_ready("scope", "; ".join(offenders))
+
+    return {
+        "readiness": "ready",
+        "ready_sha": candidate_sha,
+        "acceptance": "green",
+        "baseline": "green",
+        "scope": "clean",
+        "contract_integrity": "clean",
+    }

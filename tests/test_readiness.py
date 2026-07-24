@@ -45,8 +45,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 _GIT_ID = ["-c", "user.name=IF Tests", "-c", "user.email=tests@issueforge.invalid"]
 
 RUN_ID = "run-112"
@@ -218,7 +216,6 @@ def _read_readiness(run_id: str) -> dict:
 # ============================================================= candidate_sha validity predicate
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_missing_candidate_sha_is_not_ready(tmp_path):
     """A record with no ``candidate_sha`` is refused before anything runs.
 
@@ -243,7 +240,6 @@ def test_missing_candidate_sha_is_not_ready(tmp_path):
     assert _read_readiness(RUN_ID) == verdict
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_symbolic_candidate_sha_is_not_ready(tmp_path):
     """A branch NAME (symbolic ref) that resolves to the candidate commit is still refused — the
     verdict must bind an immutable commit id, not a movable ref.
@@ -270,7 +266,6 @@ def test_symbolic_candidate_sha_is_not_ready(tmp_path):
     assert _read_readiness(RUN_ID) == verdict
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_non_commit_candidate_sha_is_not_ready(tmp_path):
     """A 40-hex object id that names a TREE (not a commit) is refused.
 
@@ -297,7 +292,6 @@ def test_non_commit_candidate_sha_is_not_ready(tmp_path):
     assert _read_readiness(RUN_ID) == verdict
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_dirty_candidate_worktree_is_not_ready(tmp_path):
     """A valid candidate commit whose worktree carries an uncommitted tracked change is refused —
     a dirty tree is not the exact committed state the verdict certifies.
@@ -327,7 +321,6 @@ def test_dirty_candidate_worktree_is_not_ready(tmp_path):
 # ============================================================= acceptance / baseline predicates
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_acceptance_command_must_be_green(tmp_path):
     """When the EXACT acceptance command is not GREEN against the candidate, the verdict is
     ``not_ready`` naming the acceptance predicate.
@@ -358,7 +351,6 @@ def test_acceptance_command_must_be_green(tmp_path):
     assert _read_readiness(RUN_ID) == verdict
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_baseline_command_must_be_green(tmp_path):
     """When the EXACT full baseline command is not GREEN against the candidate, the verdict is
     ``not_ready`` naming the baseline predicate.
@@ -384,7 +376,6 @@ def test_baseline_command_must_be_green(tmp_path):
     assert _read_readiness(RUN_ID) == verdict
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_acceptance_and_baseline_run_separately_with_exact_commands(tmp_path):
     """Acceptance and baseline are two SEPARATE runs, each launched with the record's exact command
     against the candidate worktree — not one run, and not a re-derived command.
@@ -414,7 +405,6 @@ def test_acceptance_and_baseline_run_separately_with_exact_commands(tmp_path):
 # ============================================================= contract-integrity predicate
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_contract_integrity_uses_the_existing_seam(tmp_path):
     """The contract-integrity predicate is delegated to the injected integrity seam — readiness
     never reimplements integrity.
@@ -449,7 +439,6 @@ def test_contract_integrity_uses_the_existing_seam(tmp_path):
     assert call.provisioner is provisioner
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_contract_integrity_failure_names_the_predicate(tmp_path):
     """When the integrity seam reports a violation, the verdict is ``not_ready`` naming the
     contract_integrity predicate and surfacing the underlying violation — never a generic false.
@@ -484,7 +473,6 @@ def test_contract_integrity_failure_names_the_predicate(tmp_path):
 # ============================================================= scope predicate
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_out_of_scope_change_is_not_ready_and_scope_comes_from_approval(tmp_path):
     """A candidate that changes a path outside the approved ``write_scope`` is refused — and the
     scope set comes from the persisted approval, NEVER from the diff itself.
@@ -514,7 +502,6 @@ def test_out_of_scope_change_is_not_ready_and_scope_comes_from_approval(tmp_path
     assert _read_readiness(RUN_ID) == verdict
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_scope_range_is_contract_commit_not_base(tmp_path):
     """The implementation range is ``contract_commit..candidate_sha``: the frozen acceptance-test
     change made between ``base_sha`` and ``contract_commit`` must NOT count against scope.
@@ -545,7 +532,6 @@ def test_scope_range_is_contract_commit_not_base(tmp_path):
 # ============================================================= the ready verdict + invariants
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_all_predicates_pass_persists_the_verbatim_ready_verdict(tmp_path):
     """Only a candidate satisfying every predicate is ``ready``, and the persisted verdict is the
     exact JSON the issue specifies.
@@ -579,7 +565,6 @@ def test_all_predicates_pass_persists_the_verbatim_ready_verdict(tmp_path):
     assert _read_readiness(RUN_ID) == expected
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_ready_verdict_binds_the_exact_candidate_sha(tmp_path):
     """Changing the candidate SHA invalidates the verdict: ``ready_sha`` binds the EXACT commit the
     verdict certified, so a verdict for one candidate can never be reused for another.
@@ -621,7 +606,6 @@ def test_ready_verdict_binds_the_exact_candidate_sha(tmp_path):
     assert verdict_b["ready_sha"] != verdict_a["ready_sha"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_readiness_performs_no_provider_push_pr_merge_or_cleanup(tmp_path, monkeypatch):
     """This slice issues a verdict and nothing else: no provider invocation, no push/PR/merge, no
     cleanup. It leaves the candidate repo untouched.
@@ -661,7 +645,6 @@ def test_readiness_performs_no_provider_push_pr_merge_or_cleanup(tmp_path, monke
 # ===================================================== candidate_sha: divergence + unknown object
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_candidate_sha_stale_vs_clean_head_is_not_ready(tmp_path):
     """A ``candidate_sha`` naming a commit OTHER than the clean worktree HEAD is refused — the
     verdict certifies the state the worktree actually holds, so a stale field can never bind.
@@ -695,7 +678,6 @@ def test_candidate_sha_stale_vs_clean_head_is_not_ready(tmp_path):
     assert _read_readiness(RUN_ID) == verdict
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_unknown_full_length_sha_is_not_ready(tmp_path):
     """A syntactically valid 40-hex object id that does NOT resolve to any object is refused as a
     non-commit — distinct from the existing TREE-object case, and it must not crash the lookup.
@@ -725,7 +707,6 @@ def test_unknown_full_length_sha_is_not_ready(tmp_path):
     assert _read_readiness(RUN_ID) == verdict
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_untracked_source_file_is_dirty_and_not_ready(tmp_path):
     """An UNTRACKED source file in the candidate worktree makes it dirty and is refused — the tree is
     not the exact committed state the verdict certifies.
@@ -758,7 +739,6 @@ def test_untracked_source_file_is_dirty_and_not_ready(tmp_path):
 # ===================================================== scope: full range + persisted provenance
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_scope_spans_the_full_contract_range_not_just_the_last_commit(tmp_path):
     """The scope diff covers the ENTIRE ``contract_commit..candidate_sha`` range, not just the tip
     commit — an out-of-scope change in an EARLIER post-contract commit is still caught.
@@ -798,7 +778,6 @@ def test_scope_spans_the_full_contract_range_not_just_the_last_commit(tmp_path):
     assert _read_readiness(RUN_ID) == verdict
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_scope_verdict_flips_with_the_persisted_scope_for_one_changed_path(tmp_path):
     """The scope set comes from the PERSISTED approval, proven by running the SAME changed path
     against two different persisted scopes and getting OPPOSITE verdicts.
@@ -851,7 +830,6 @@ def test_scope_verdict_flips_with_the_persisted_scope_for_one_changed_path(tmp_p
 # ===================================================== contract-integrity default (no injection)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_default_integrity_seam_is_the_public_contract_function(tmp_path, monkeypatch):
     """With NO ``verify_integrity`` injected, readiness delegates to the PUBLIC
     ``contract.verify_contract_integrity`` seam, resolved at call time — never a fabricated OK report.
@@ -900,7 +878,6 @@ def test_default_integrity_seam_is_the_public_contract_function(tmp_path, monkey
 # ===================================================== re-run freshness (no cached verdict)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_changing_candidate_reruns_every_check_not_a_cached_verdict(tmp_path):
     """After a first ``ready`` result, changing ``candidate_sha`` RE-RUNS acceptance, baseline, and
     integrity against the new candidate — the verdict is recomputed, never a cached flag with a
@@ -957,7 +934,6 @@ def test_changing_candidate_reruns_every_check_not_a_cached_verdict(tmp_path):
 # ===================================================== persistence: injected store + no mutation
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_verdict_is_persisted_through_the_injected_store_apply(tmp_path):
     """The verdict is persisted through the INJECTED ``store`` via exactly one ``store.apply`` — the
     impl must not bypass the injected store, make its own ``RunStore``, or write the manifest directly.
@@ -1003,7 +979,6 @@ def test_verdict_is_persisted_through_the_injected_store_apply(tmp_path):
     assert _read_readiness(RUN_ID) == verdict
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_ready_persist_adds_only_the_readiness_field_and_no_status(tmp_path):
     """Persisting the verdict adds ONLY ``record['readiness']`` — no new top-level ``status``, no
     sibling field is mutated. Guards the locked no-new-status design.
@@ -1046,7 +1021,6 @@ def test_ready_persist_adds_only_the_readiness_field_and_no_status(tmp_path):
 # ===================================================== deeper no-side-effects guard
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#112)")
 def test_readiness_has_no_side_effects_beyond_the_verdict(tmp_path, monkeypatch):
     """Readiness issues a verdict and mutates NOTHING else: no push to a real remote, no non-read-only
     git, no file/state mutation, no human-override — even against layered probes the weaker guards miss.
