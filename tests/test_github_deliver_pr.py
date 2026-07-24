@@ -253,7 +253,6 @@ def _flag_value(argv, flag):
 # =================================================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_refuses_a_record_that_is_not_ready_and_never_pushes():
     """A record whose readiness is not "ready" is refused and nothing is pushed, opened, or stored.
 
@@ -271,7 +270,6 @@ def test_refuses_a_record_that_is_not_ready_and_never_pushes():
     _assert_store_untouched(store, snapshot)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_refuses_when_ready_sha_differs_from_candidate_sha_and_never_pushes():
     """If the readiness signature (ready_sha) does not match the candidate SHA, delivery refuses.
 
@@ -289,7 +287,6 @@ def test_refuses_when_ready_sha_differs_from_candidate_sha_and_never_pushes():
     _assert_store_untouched(store, snapshot)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_refuses_when_record_base_is_not_the_registered_default_branch_and_never_pushes():
     """If the record's declared default branch disagrees with the gateway's registered default branch, delivery refuses.
 
@@ -308,7 +305,6 @@ def test_refuses_when_record_base_is_not_the_registered_default_branch_and_never
     _assert_store_untouched(store, snapshot)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_push_happens_only_after_readiness_checks_and_before_pr_open():
     """On a ready record the gateway is driven default_branch -> push -> origin_sha -> open_pr, in that order, and the push carries the candidate branch and repo.
 
@@ -344,7 +340,6 @@ def test_push_happens_only_after_readiness_checks_and_before_pr_open():
 # =================================================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_origin_sha_mismatch_after_push_halts_before_pr():
     """If the SHA at origin/<branch> after push is not exactly the candidate SHA, delivery halts before opening a PR.
 
@@ -369,7 +364,6 @@ def test_origin_sha_mismatch_after_push_halts_before_pr():
     _assert_store_untouched(store, snapshot)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_failed_origin_read_after_push_halts_before_pr():
     """If reading origin/<branch> fails, delivery halts before opening a PR rather than proceeding on a bad read.
 
@@ -390,7 +384,6 @@ def test_failed_origin_read_after_push_halts_before_pr():
     _assert_store_untouched(store, snapshot)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_real_gateway_origin_sha_fetches_then_reads_origin_branch():
     """The real gateway's origin_sha shells `git fetch` then reads `origin/<branch>` and returns that SHA, offline, parsed from the read's stdout.
 
@@ -429,7 +422,6 @@ def test_real_gateway_origin_sha_fetches_then_reads_origin_branch():
         assert kwargs.get("shell") is not True
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_real_gateway_origin_sha_raises_on_failed_read():
     """The real gateway's origin_sha RAISES when the read of origin/<branch> exits non-zero, never returning a bad/empty sha.
 
@@ -457,7 +449,6 @@ def test_real_gateway_origin_sha_raises_on_failed_read():
 # =================================================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_pr_opened_against_default_branch_and_links_repo_qualified_issue():
     """The PR targets the registered default branch, is pushed from the candidate branch, and links the exact repository-qualified run issue.
 
@@ -480,7 +471,6 @@ def test_pr_opened_against_default_branch_and_links_repo_qualified_issue():
     assert "Owner/Repo#113" in open_kwargs["body"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_pr_body_assembled_deterministically_from_persisted_evidence():
     """The PR body is built deterministically from THIS record's persisted evidence: a different record yields a body carrying only its own values, and equal input yields a byte-identical body.
 
@@ -564,7 +554,6 @@ def test_pr_body_assembled_deterministically_from_persisted_evidence():
 # =================================================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_pr_number_and_url_persisted_with_waiting_for_merge_status():
     """The REAL PR number and URL the gateway returned are persisted as record["pr"] with status "waiting-for-merge", via exactly one create=False apply that changes nothing else.
 
@@ -589,7 +578,6 @@ def test_pr_number_and_url_persisted_with_waiting_for_merge_status():
     _assert_only_pr_added(store, snapshot)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_rerun_after_successful_open_does_not_push_or_open_a_duplicate():
     """Delivering twice — a real first delivery, then a re-run over the resulting persisted record — pushes, verifies, opens, and persists exactly once total; the re-run is a no-op.
 
@@ -622,7 +610,6 @@ def test_rerun_after_successful_open_does_not_push_or_open_a_duplicate():
 # =================================================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_delivery_never_invokes_and_gateway_never_exposes_a_merge_or_approve_operation():
     """Delivery only pushes, verifies, and opens a PR — never a merge/approve — and NO public callable on the real gateway has a merge/approve-flavoured name.
 
@@ -657,7 +644,6 @@ def test_delivery_never_invokes_and_gateway_never_exposes_a_merge_or_approve_ope
         assert "approve" not in folded, f"gateway exposes an approve-flavoured method: {name!r}"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_real_gateway_shells_gh_pr_create_and_git_push_offline_with_no_merge_tokens():
     """The real gateway opens a PR by shelling `gh pr create` and pushes by shelling `git push`, as argv arrays (no shell), with the exact base/head/repo/title/body flag-values; it parses the PR number+url from the command's output; and NO write argv carries a merge/approve/admin/auto verb.
 
@@ -724,7 +710,6 @@ def test_real_gateway_shells_gh_pr_create_and_git_push_offline_with_no_merge_tok
                 assert verb not in folded, f"forbidden verb {verb!r} in argv token {token!r}"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_real_gateway_push_nonzero_exit_raises():
     """The real gateway's push RAISES when `git push` exits non-zero, never silently succeeding.
 
@@ -743,7 +728,6 @@ def test_real_gateway_push_nonzero_exit_raises():
     _expect_raises_real(lambda: gw.push(repo=("Owner", "Repo"), branch="issueforge/run-113-poc-c"))
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_real_gateway_open_pr_nonzero_exit_raises():
     """The real gateway's open_pr RAISES when `gh pr create` exits non-zero, never returning a fake success.
 
@@ -770,7 +754,6 @@ def test_real_gateway_open_pr_nonzero_exit_raises():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_failed_push_is_reported_as_failure_never_recorded_as_success():
     """A failed push is surfaced as a failure and is never recorded as a delivered PR.
 
@@ -788,7 +771,6 @@ def test_failed_push_is_reported_as_failure_never_recorded_as_success():
     _assert_store_untouched(store, snapshot)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_failed_pr_creation_is_reported_as_failure_never_recorded_as_success():
     """A failed PR creation is surfaced as a failure and is never recorded as a delivered PR.
 
@@ -804,7 +786,6 @@ def test_failed_pr_creation_is_reported_as_failure_never_recorded_as_success():
     _assert_store_untouched(store, snapshot)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#113)")
 def test_delivery_through_real_gateway_failed_push_leaves_store_unchanged():
     """Wiring the PRODUCTION gateway (not the fake) into delivery, a non-zero `git push` surfaces as a failure and leaves the seeded store unchanged — the failure path is real, not a fake-gateway artifact.
 

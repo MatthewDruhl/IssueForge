@@ -120,6 +120,15 @@ def _validate_op(op: dict) -> None:
             raise ValueError(
                 f"link_child child must be a repo-qualified issue ref, got {op.get('child')!r}"
             )
+    elif kind == "open_pr":
+        if not _is_repo_ref(op.get("repo")):
+            raise ValueError(f"open_pr op needs a repo ref, got {op.get('repo')!r}")
+        if not _is_issue_ref(op.get("issue")):
+            raise ValueError(
+                f"open_pr op needs a repo-qualified issue ref, got {op.get('issue')!r}"
+            )
+        for key in ("base", "head", "title", "body"):
+            _require_str(op, key, "open_pr")
     else:
         raise ValueError(f"unknown mutation op {kind!r}")
 
@@ -135,6 +144,15 @@ def _dispatch(op: dict, gateway: Any) -> None:
         gateway.add_comment(issue=op["issue"], body=op["body"])
     elif kind == "link_child":
         gateway.link_child(parent=op["parent"], child=op["child"])
+    elif kind == "open_pr":
+        gateway.open_pr(
+            repo=op["repo"],
+            base=op["base"],
+            head=op["head"],
+            issue=op["issue"],
+            title=op["title"],
+            body=op["body"],
+        )
 
 
 def apply(plan: list[dict], gateway: Any, *, ledger: set) -> None:
@@ -159,6 +177,107 @@ def apply(plan: list[dict], gateway: Any, *, ledger: set) -> None:
         ledger.add(op["id"])
 
 
+# =================================================================================================
+# PoC-C (#113) — deliver ONE persisted "ready" record as exactly one open PR. NEVER merges.
+#
+# ``deliver_pr`` reads everything from the record, runs the readiness gate (ready? ready_sha ==
+# candidate_sha? record's default branch == the gateway's REGISTERED default branch?), pushes the
+# candidate branch, verifies origin/<branch> is EXACTLY the candidate sha, opens a PR against the
+# registered default branch, and persists the returned PR facts as the nested ``record["pr"]``
+# with ``status = "waiting-for-merge"`` via one ``store.apply(..., create=False)``. A refusal or any
+# failed step happens BEFORE the next side effect and is NEVER recorded as success. A record that
+# already carries a delivered PR is a no-op (no push / open / apply).
+# =================================================================================================
+
+_PR_WAITING = "waiting-for-merge"
+
+
+def _issue_ref(issue: tuple) -> str:
+    """Repo-qualified issue reference ``owner/repo#number`` (e.g. ``Owner/Repo#113``)."""
+    return f"{issue[0]}/{issue[1]}#{issue[2]}"
+
+
+def _pr_body(record: dict) -> str:
+    """Assemble the PR body deterministically from THIS record's persisted evidence.
+
+    A pure function of the record's fields, so equal records yield a byte-identical body and no value
+    from another record can leak in. Includes the repo-qualified issue reference, the contract commit,
+    the candidate sha, and the four evidence summaries (acceptance / baseline / scope / integrity).
+    """
+    return (
+        "## Automated delivery\n\n"
+        f"Issue: {_issue_ref(record['issue'])}\n"
+        f"Contract commit: {record['contract_commit']}\n"
+        f"Candidate SHA: {record['candidate_sha']}\n\n"
+        "## Evidence\n\n"
+        f"- {record['acceptance']}\n"
+        f"- {record['baseline']}\n"
+        f"- {record['scope']}\n"
+        f"- {record['contract_integrity']}\n"
+    )
+
+
+def deliver_pr(record: dict, *, gateway: Any, store: Any) -> dict:
+    """Deliver ONE persisted ready ``record`` as exactly one open PR; never merges.
+
+    Ordering (each step gated on the prior): readiness checks -> push candidate branch -> read
+    origin/<branch> and require exact sha equality -> open PR against the registered default branch
+    -> persist ``record["pr"] = {number, url, status: "waiting-for-merge"}`` via one create=False
+    apply. Any refusal or failed step raises before the next side effect and persists nothing. A
+    record that already carries a delivered PR is a no-op.
+    """
+    existing = record.get("pr")
+    if isinstance(existing, dict) and existing.get("status") == _PR_WAITING:
+        return existing
+
+    repo = record["repo"]
+    branch = record["candidate_branch"]
+    candidate_sha = record["candidate_sha"]
+
+    # --- readiness gate (from the record + the AUTHORITATIVE registered default branch) ----------
+    if record.get("readiness") != "ready":
+        raise ValueError(
+            f"refusing delivery: readiness is {record.get('readiness')!r}, not 'ready'"
+        )
+    if record.get("ready_sha") != candidate_sha:
+        raise ValueError(
+            "refusing delivery: ready_sha does not match candidate_sha "
+            f"({record.get('ready_sha')!r} != {candidate_sha!r})"
+        )
+    registered = gateway.default_branch(repo=repo)
+    if record.get("default_branch") != registered:
+        raise ValueError(
+            "refusing delivery: record base "
+            f"{record.get('default_branch')!r} is not the registered default branch {registered!r}"
+        )
+
+    # --- push, then verify origin/<branch> is EXACTLY the candidate sha before opening a PR -------
+    gateway.push(repo=repo, branch=branch)
+    origin = gateway.origin_sha(repo=repo, branch=branch)
+    if origin != candidate_sha:
+        raise ValueError(
+            f"refusing delivery: origin/{branch} is {origin!r}, not the candidate sha "
+            f"{candidate_sha!r}"
+        )
+
+    # --- open exactly one PR against the registered default branch, linking the run issue ---------
+    body = _pr_body(record)
+    title = f"IssueForge delivery: {_issue_ref(record['issue'])}"
+    pr = gateway.open_pr(
+        repo=repo,
+        base=registered,
+        head=branch,
+        issue=record["issue"],
+        title=title,
+        body=body,
+    )
+
+    # --- persist the REAL returned facts as the nested pr field (only after everything succeeded) -
+    pr_facts = {"number": pr["number"], "url": pr["url"], "status": _PR_WAITING}
+    store.apply(record["run_id"], lambda current: {"pr": pr_facts}, create=False)
+    return pr_facts
+
+
 class GhWriteGateway:
     """The real GitHub write gateway: each method shells one ``gh`` write command as an argv array.
 
@@ -174,13 +293,17 @@ class GhWriteGateway:
     def _slug(ref: tuple) -> str:
         return f"{ref[0]}/{ref[1]}"
 
-    def _gh(self, args: list[str]) -> str:
-        result = self._run(["gh", *args], capture_output=True, text=True)
+    def _exec(self, argv: list[str]) -> str:
+        """Shell one argv array through the seam; a non-zero exit RAISES (never a silent write)."""
+        result = self._run(argv, capture_output=True, text=True)
         if result.returncode != 0:
             raise RuntimeError(
-                f"gh {' '.join(args)} failed (exit {result.returncode}): {result.stderr}"
+                f"{' '.join(argv)} failed (exit {result.returncode}): {result.stderr}"
             )
         return result.stdout
+
+    def _gh(self, args: list[str]) -> str:
+        return self._exec(["gh", *args])
 
     def update_body(self, *, issue, body):
         self._gh(["issue", "edit", str(issue[2]), "--repo", self._slug(issue), "--body", body])
@@ -207,3 +330,59 @@ class GhWriteGateway:
                 f"Sub-issue: {self._slug(child)}#{child[2]}",
             ]
         )
+
+    # --- PoC-C (#113) delivery surface: default-branch read, push, origin verify, open PR ---------
+    # NO merge/approve/admin method exists here; delivery can push and open a PR, never merge it.
+
+    def default_branch(self, *, repo) -> str:
+        """The registered default branch of ``repo``, read via ``gh repo view`` (stripped stdout)."""
+        out = self._gh(
+            [
+                "repo",
+                "view",
+                self._slug(repo),
+                "--json",
+                "defaultBranchRef",
+                "--jq",
+                ".defaultBranchRef.name",
+            ]
+        )
+        return out.strip()
+
+    def push(self, *, repo, branch) -> None:
+        """Push the candidate ``branch`` to origin via ``git push``; a non-zero exit RAISES."""
+        self._exec(["git", "push", "origin", branch])
+
+    def origin_sha(self, *, repo, branch) -> str:
+        """Fetch origin, then read ``origin/<branch>``'s sha via ``git rev-parse``; a bad read RAISES.
+
+        The fetch MUST precede the read so a stale local ref is never verified.
+        """
+        self._exec(["git", "fetch", "origin", branch])
+        out = self._exec(["git", "rev-parse", f"origin/{branch}"])
+        return out.strip()
+
+    def open_pr(self, *, repo, base, head, issue, title, body) -> dict:
+        """Open one PR via ``gh pr create``; parse the number+url from stdout. A non-zero exit RAISES.
+
+        Never approves or merges: the argv is exactly ``gh pr create`` with base/head/repo/title/body.
+        """
+        out = self._gh(
+            [
+                "pr",
+                "create",
+                "--repo",
+                self._slug(repo),
+                "--base",
+                base,
+                "--head",
+                head,
+                "--title",
+                title,
+                "--body",
+                body,
+            ]
+        )
+        url = out.strip()
+        number = int(url.rstrip("/").rsplit("/", 1)[-1])
+        return {"number": number, "url": url}
