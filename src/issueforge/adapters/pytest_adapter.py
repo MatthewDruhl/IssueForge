@@ -1333,8 +1333,7 @@ def _config_addopts_tokens(content: str, source: str | None = None) -> list[str]
     (a config filename) disambiguates TOML from ini and which TOML table to read."""
     src_name = (source or "").rsplit("/", 1)[-1]
     is_toml = src_name.endswith(".toml") or (
-        source is None
-        and ("[tool.pytest.ini_options]" in content or "[tool.pytest]" in content)
+        source is None and ("[tool.pytest.ini_options]" in content or "[tool.pytest]" in content)
     )
     if is_toml:
         try:

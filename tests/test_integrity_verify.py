@@ -1315,7 +1315,9 @@ def test_dirty_refusal_does_not_exempt_tracked_bytecode_when_source_present(tmp_
     )
     worktree = fz.scen.candidate_worktree
     assert pyc_rel in set(_git(worktree, "ls-files", "--", pyc_rel).stdout.split())
-    assert (worktree / src_rel).exists(), "fixture: the source module must be present (the sourced case)"
+    assert (worktree / src_rel).exists(), (
+        "fixture: the source module must be present (the sourced case)"
+    )
     assert pyc_rel not in fz.manifest["contract_paths"]
 
     (worktree / pyc_rel).write_text("altered tracked bytecode\n")
@@ -1337,9 +1339,7 @@ def test_verify_flags_declared_dependency_version_drift_in_env_defining_file(tmp
     must be frozen+hashed at freeze and byte-compared at HEAD, so a changed declared pin fires
     ``external_pin`` naming the drifted file. Today the env file is not in the manifest's hashed set and
     a version change sails through clean."""
-    fz = _frozen(
-        tmp_path, "env-file-drift", extra={"requirements.txt": "platformdirs==4.10.0\n"}
-    )
+    fz = _frozen(tmp_path, "env-file-drift", extra={"requirements.txt": "platformdirs==4.10.0\n"})
     worktree = fz.scen.candidate_worktree
     (worktree / "requirements.txt").write_text("platformdirs==4.9.0\n")
     _git(worktree, "add", "-A")

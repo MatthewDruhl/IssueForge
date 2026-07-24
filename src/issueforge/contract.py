@@ -1690,9 +1690,8 @@ _ENV_DEFINING_BASENAMES = frozenset(
 def _is_env_defining_file(path: str) -> bool:
     """Whether ``path`` declares dependency versions (a lock/requirements/project-metadata file)."""
     base = path.rsplit("/", 1)[-1]
-    return (
-        base in _ENV_DEFINING_BASENAMES
-        or (base.startswith("requirements") and base.endswith(".txt"))
+    return base in _ENV_DEFINING_BASENAMES or (
+        base.startswith("requirements") and base.endswith(".txt")
     )
 
 

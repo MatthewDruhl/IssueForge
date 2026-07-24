@@ -800,7 +800,9 @@ def test_validate_invocation_rejects_dangerous_opts_in_all_frozen_config_forms(
     "cluster,needle",
     [("-qx", "-x"), ("-xq", "-x"), ("-qd", "-d")],
 )
-def test_validate_invocation_rejects_dangerous_flag_in_short_option_cluster(tmp_path, cluster, needle):
+def test_validate_invocation_rejects_dangerous_flag_in_short_option_cluster(
+    tmp_path, cluster, needle
+):
     """A dangerous short flag CLUSTERED with a benign one (``-qx`` = quiet+exitfirst, ``-qd`` =
     quiet+xdist-distributed) must be rejected naming the dangerous member. Today ``_first_dangerous_token``
     only matches ``-x``/``-d`` as WHOLE tokens, so ``-qx`` sails through — a one-character bypass of the
@@ -808,7 +810,9 @@ def test_validate_invocation_rejects_dangerous_flag_in_short_option_cluster(tmp_
     from issueforge.adapters.pytest_adapter import InvocationError
 
     repo, _base_sha = _repo(
-        tmp_path, f"cluster-{cluster.strip('-')}", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+        tmp_path,
+        f"cluster-{cluster.strip('-')}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
     )
     adapter = _adapter()
     with pytest.raises(InvocationError) as excinfo:
@@ -852,7 +856,9 @@ def test_validate_invocation_rejects_dangerous_flag_smuggled_via_argfile(tmp_pat
     "cflag",
     ["-ccustom.ini", "-c=custom.ini", "--config-file custom.ini", "--config-file=custom.ini"],
 )
-def test_validate_invocation_rejects_dangerous_addopts_via_all_config_flag_spellings(tmp_path, cflag):
+def test_validate_invocation_rejects_dangerous_addopts_via_all_config_flag_spellings(
+    tmp_path, cflag
+):
     """A dangerous ``addopts`` smuggled through a config file the command names via any ``-c`` spelling
     OTHER than the split ``-c FILE`` (attached ``-cFILE``, ``-c=FILE``, or ``--config-file``) must be
     caught the same way. Today only the split ``-c FILE`` form is read from the worktree, so every other
@@ -865,7 +871,9 @@ def test_validate_invocation_rejects_dangerous_addopts_via_all_config_flag_spell
         {"tests/test_x.py": "def test_x():\n    assert True\n"},
     )
     (repo / "custom.ini").write_text("[pytest]\naddopts = -x\n")
-    command = ["pytest", "tests/", *cflag.split(" ")] if " " in cflag else ["pytest", "tests/", cflag]
+    command = (
+        ["pytest", "tests/", *cflag.split(" ")] if " " in cflag else ["pytest", "tests/", cflag]
+    )
     adapter = _adapter()
     with pytest.raises(InvocationError) as excinfo:
         adapter.validate_invocation(_invocation(repo, command))
@@ -887,7 +895,9 @@ def test_validate_invocation_reads_addopts_only_from_the_pytest_config_section(t
     adapter = _adapter()
     with pytest.raises(InvocationError) as excinfo:
         adapter.validate_invocation(
-            _invocation_with_config(repo, ["pytest", "tests/"], config_source="setup.cfg", config_content=content)
+            _invocation_with_config(
+                repo, ["pytest", "tests/"], config_source="setup.cfg", config_content=content
+            )
         )
     assert excinfo.value.token == "addopts:-x"
 
@@ -923,7 +933,9 @@ def test_validate_invocation_rejects_dangerous_addopts_via_clustered_c_flag(tmp_
     from issueforge.adapters.pytest_adapter import InvocationError
 
     repo, _base_sha = _repo(
-        tmp_path, f"clusterc-{cluster.strip('-')}", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+        tmp_path,
+        f"clusterc-{cluster.strip('-')}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
     )
     (repo / "custom.ini").write_text("[pytest]\naddopts = -x\n")
     adapter = _adapter()
@@ -951,23 +963,34 @@ def test_verify_detects_attached_c_config_drift_as_invocation_violation(tmp_path
     )
     run_id = "run-attached-c-drift"
     _mk_run(run_id)
-    _seed_freeze_proof(run_id, base_sha=base_sha, head_sha=base_sha, added_id="tests/test_x.py::test_x")
+    _seed_freeze_proof(
+        run_id, base_sha=base_sha, head_sha=base_sha, added_id="tests/test_x.py::test_x"
+    )
     _seed_done_review(run_id, head_sha=base_sha)
     adapter = _adapter()
     fr = contract.freeze_contract(
-        run_id, candidate_worktree=repo, base_sha=base_sha, adapter=adapter,
-        provisioner=_provisioner(), approver=_approve_all,
+        run_id,
+        candidate_worktree=repo,
+        base_sha=base_sha,
+        adapter=adapter,
+        provisioner=_provisioner(),
+        approver=_approve_all,
     )
     assert fr.approved is True
     assert "configs/contract.ini" not in fr.manifest["contract_paths"]
 
     _commit(repo, {"configs/contract.ini": "[pytest]\naddopts = -x\n"}, "mutate attached-c config")
     report = contract.verify_contract_integrity(
-        run_id, candidate_worktree=repo, base_sha=base_sha, adapter=adapter, provisioner=_provisioner()
+        run_id,
+        candidate_worktree=repo,
+        base_sha=base_sha,
+        adapter=adapter,
+        provisioner=_provisioner(),
     )
     assert report.ok is False
     assert any(
-        v.predicate == "invocation" and v.detail == "configs/contract.ini" for v in report.violations
+        v.predicate == "invocation" and v.detail == "configs/contract.ini"
+        for v in report.violations
     )
 
 
@@ -979,7 +1002,9 @@ def test_verify_detects_attached_c_config_drift_as_invocation_violation(tmp_path
         ("pyproject.toml", '[tool.pytest]\naddopts = ["-x"]\n'),
     ],
 )
-def test_validate_invocation_rejects_dangerous_addopts_in_native_toml_config(tmp_path, source, content):
+def test_validate_invocation_rejects_dangerous_addopts_in_native_toml_config(
+    tmp_path, source, content
+):
     """The provisioned pytest (9.1+) honors ``pytest.toml``/``.pytest.toml`` top-level ``[pytest]`` and a
     native ``pyproject.toml`` ``[tool.pytest]`` table. A dangerous ``addopts`` in any of these must be
     caught, not silently accepted by a parser that only knew ``[tool.pytest.ini_options]`` (round-2
@@ -987,12 +1012,16 @@ def test_validate_invocation_rejects_dangerous_addopts_in_native_toml_config(tmp
     from issueforge.adapters.pytest_adapter import InvocationError
 
     repo, _base_sha = _repo(
-        tmp_path, f"toml-{source.strip('.').replace('.', '-')}", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+        tmp_path,
+        f"toml-{source.strip('.').replace('.', '-')}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
     )
     adapter = _adapter()
     with pytest.raises(InvocationError) as excinfo:
         adapter.validate_invocation(
-            _invocation_with_config(repo, ["pytest", "tests/"], config_source=source, config_content=content)
+            _invocation_with_config(
+                repo, ["pytest", "tests/"], config_source=source, config_content=content
+            )
         )
     assert excinfo.value.token == "addopts:-x"
 
@@ -1014,18 +1043,28 @@ def test_freeze_selects_pytest_toml_and_verify_catches_its_dangerous_addopts(tmp
     )
     run_id = "run-pytest-toml-select"
     _mk_run(run_id)
-    _seed_freeze_proof(run_id, base_sha=base_sha, head_sha=base_sha, added_id="tests/test_x.py::test_x")
+    _seed_freeze_proof(
+        run_id, base_sha=base_sha, head_sha=base_sha, added_id="tests/test_x.py::test_x"
+    )
     _seed_done_review(run_id, head_sha=base_sha)
     adapter = _adapter()
     fr = contract.freeze_contract(
-        run_id, candidate_worktree=repo, base_sha=base_sha, adapter=adapter,
-        provisioner=_provisioner(), approver=_approve_all,
+        run_id,
+        candidate_worktree=repo,
+        base_sha=base_sha,
+        adapter=adapter,
+        provisioner=_provisioner(),
+        approver=_approve_all,
     )
     assert fr.approved is True
     assert fr.manifest["test_config"].get("source") == "pytest.toml"
 
     report = contract.verify_contract_integrity(
-        run_id, candidate_worktree=repo, base_sha=base_sha, adapter=adapter, provisioner=_provisioner()
+        run_id,
+        candidate_worktree=repo,
+        base_sha=base_sha,
+        adapter=adapter,
+        provisioner=_provisioner(),
     )
     assert report.ok is False
     assert any(v.predicate == "invocation" and v.detail == "addopts:-x" for v in report.violations)
@@ -1052,14 +1091,18 @@ def test_freeze_selects_pytest_toml_and_verify_catches_its_dangerous_addopts(tmp
         (["-qk", "slow"], "-qk"),
     ],
 )
-def test_validate_invocation_refuses_any_flag_off_the_sanctioned_allowlist(tmp_path, flag_tokens, needle):
+def test_validate_invocation_refuses_any_flag_off_the_sanctioned_allowlist(
+    tmp_path, flag_tokens, needle
+):
     """A default-deny allowlist: ``-o``/``--override-ini`` (ini injection — a universal denylist bypass),
     ``-k``/``-m`` (test selection), ``--deselect``/``--ignore``/``--lf``/``--stepwise`` (which/how-many
     tests run), and a dangerous flag hidden in a cluster (``-qk``) are all refused, each named."""
     from issueforge.adapters.pytest_adapter import InvocationError
 
     repo, _base = _repo(
-        tmp_path, f"allow-{needle.strip('-')[:8]}", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+        tmp_path,
+        f"allow-{needle.strip('-')[:8]}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
     )
     adapter = _adapter()
     with pytest.raises(InvocationError) as excinfo:
@@ -1077,7 +1120,9 @@ def test_validate_invocation_refuses_override_ini_injecting_addopts(tmp_path):
     )
     adapter = _adapter()
     with pytest.raises(InvocationError):
-        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", "--override-ini=addopts=-x"]))
+        adapter.validate_invocation(
+            _invocation(repo, ["pytest", "tests/", "--override-ini=addopts=-x"])
+        )
 
 
 @pytest.mark.parametrize(
@@ -1095,7 +1140,8 @@ def test_validate_invocation_accepts_safe_baseline_flags(tmp_path, command):
     """The allowlist must not over-refuse a legitimate baseline: quiet/verbose/no-capture, ``--tb``, a
     ``-p no:`` disable, the ``python -m pytest`` prefix, and a benign short cluster all pass."""
     repo, _base = _repo(
-        tmp_path, f"safe-{'-'.join(command).replace('/', '').replace(':', '')[:10]}",
+        tmp_path,
+        f"safe-{'-'.join(command).replace('/', '').replace(':', '')[:10]}",
         {"tests/test_x.py": "def test_x():\n    assert True\n"},
     )
     adapter = _adapter()
