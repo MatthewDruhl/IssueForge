@@ -1284,3 +1284,92 @@ def test_engine_gate_resolves_deps_in_provisioned_authoritative_env_not_host(tmp
             f"IssueForge's owned state root {owned_root} — a host interpreter (sys.executable) is never "
             "under the state root, so the gate provisioned the host rather than the authoritative env"
         )
+
+
+# ============================================================ round-2 remediation (#105, Codex NO-SHIP/6)
+# Finding #4: _is_cache_noise exempts a tracked .pyc whenever its source .py EXISTS, so a forged-header
+# mod.pyc + innocuous mod.py bypasses the dirty-tree guard. Finding #2: the gate's external-pin drift
+# detection is tautological (it installs the frozen versions, then "re-resolves" them), so a candidate
+# that changes a DECLARED dependency version is never caught; env-defining files must be frozen+hashed.
+# Finding #1: the freeze provisioner leaves plugin autoload ON while the gate disables it, so a plugin
+# discovered at freeze reads as a missing pin at verify (asymmetry). Committed xfail(strict=True) until
+# Phase B flips them.
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
+def test_dirty_refusal_does_not_exempt_tracked_bytecode_when_source_present(tmp_path):
+    """Finding #4: a TRACKED ``.pyc`` whose source ``.py`` also exists is still cache-EXEMPTED today
+    (``_is_cache_noise`` returns True the moment ``<mod>.py`` is present), so a forged-bytecode
+    ``mod.pyc`` shipped alongside an innocuous ``mod.py`` slips the dirty-tree guard. A tracked bytecode
+    byte-change is a contract mutation regardless of whether a source module exists, so it must be
+    caught and its path named. (The sourceless case is already covered by
+    ``test_dirty_refusal_does_not_exempt_tracked_bytecode``; this is the sourced sibling.)"""
+    from issueforge import contract
+
+    src_rel = "pkg/mod.py"
+    pyc_rel = "pkg/__pycache__/mod.cpython-311.pyc"
+    fz = _frozen(
+        tmp_path,
+        "tracked-pyc-sourced",
+        extra={src_rel: "VALUE = 1\n", pyc_rel: "original tracked bytecode\n"},
+    )
+    worktree = fz.scen.candidate_worktree
+    assert pyc_rel in set(_git(worktree, "ls-files", "--", pyc_rel).stdout.split())
+    assert (worktree / src_rel).exists(), "fixture: the source module must be present (the sourced case)"
+    assert pyc_rel not in fz.manifest["contract_paths"]
+
+    (worktree / pyc_rel).write_text("altered tracked bytecode\n")
+    dirty = set(_git(worktree, "diff", "HEAD", "--name-only").stdout.split())
+    assert pyc_rel in dirty, "fixture: the tracked .pyc must be uncommitted-dirty at verify time"
+
+    head = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+    refusal = contract._dirty_refusal(worktree, head)
+    assert refusal is not None and pyc_rel in refusal, (
+        "a TRACKED .pyc byte change must be caught even when its source .py exists, never exempted as "
+        f"cache noise (got refusal={refusal!r})"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
+def test_verify_flags_declared_dependency_version_drift_in_env_defining_file(tmp_path):
+    """Finding #2: the external-pin gate installs the FROZEN versions into its venv and then re-resolves
+    them, so the check is tautological — a candidate that changes a DECLARED dependency version is never
+    caught. The env-defining files (requirements.txt / pyproject.toml / uv.lock / setup.cfg / Pipfile*)
+    must be frozen+hashed at freeze and byte-compared at HEAD, so a changed declared pin fires
+    ``external_pin`` naming the drifted file. Today the env file is not in the manifest's hashed set and
+    a version change sails through clean."""
+    fz = _frozen(
+        tmp_path, "env-file-drift", extra={"requirements.txt": "platformdirs==4.10.0\n"}
+    )
+    worktree = fz.scen.candidate_worktree
+    (worktree / "requirements.txt").write_text("platformdirs==4.9.0\n")
+    _git(worktree, "add", "-A")
+    _git(worktree, "commit", "-q", "-m", "bump declared dep")
+
+    report = _verify(fz)
+    assert report.ok is False, (
+        "a changed DECLARED dependency version in a frozen env-defining file must be caught"
+    )
+    assert any(
+        v.predicate == "external_pin" and "requirements.txt" in v.detail for v in report.violations
+    ), (
+        "the env-file drift must fire external_pin naming the drifted env-defining file "
+        f"(got {[(v.predicate, v.detail) for v in report.violations]})"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
+def test_freeze_provisioner_disables_plugin_autoload_symmetric_with_gate(tmp_path):
+    """Finding #1: the integrity gate disables pytest plugin autoload in its authoritative env, but the
+    FREEZE provisioner (``_provision_default``) leaves it ON — so a plugin autoloaded and discovered at
+    freeze reads as a MISSING pin at verify (an asymmetry that both hides drift and false-flags a clean
+    candidate). Freeze and verify must apply the SAME plugin-load policy: ``_provision_default`` must set
+    ``PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`` in the env it hands back, exactly as the gate wrapper does."""
+    from issueforge.adapters.pytest_adapter import _provision_default
+
+    (tmp_path / "wt").mkdir()
+    handle = _provision_default(tmp_path / "wt", None)
+    assert getattr(handle, "env", {}).get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") == "1", (
+        "the freeze provisioner must disable plugin autoload to stay symmetric with the gate; today it "
+        f"does not (env autoload flag = {getattr(handle, 'env', {}).get('PYTEST_DISABLE_PLUGIN_AUTOLOAD')!r})"
+    )

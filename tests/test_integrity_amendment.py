@@ -1620,3 +1620,86 @@ def test_amend_refused_on_noop_empty_diff_unchanged_head(tmp_path):
     # The retained manifest bytes and hash are unchanged.
     assert _manifest_bytes(run) == before == original.artifact_path.read_bytes()
     assert hashlib.sha256(_manifest_bytes(run)).hexdigest() == original.manifest_hash
+
+
+# ============================================================ round-2 remediation (#105, Codex NO-SHIP/6)
+# Finding #3: engine._integrity_gate derives its provisioner's frozen external pins from the ORIGINAL
+# contract-manifest.json (M0), while verify_contract_integrity loads the LATEST approved amended
+# manifest (M1) via _load_frozen_manifest. After an approved amendment that changes an external pin,
+# the gate provisions M0's pins but verify checks against M1's, so a legitimate M1-valid candidate is
+# FALSE-BLOCKED. Committed xfail(strict=True) until Phase B derives the gate's pins from the active
+# (amended) manifest too.
+
+
+def _real_pin(pins: dict[str, str]):
+    """A provisioner building a REAL venv with ``pins`` installed (mirrors
+    test_integrity_verify._real_pin_provisioner), so external identity resolves from the provisioned
+    interpreter — the only channel that makes the frozen vs amended external-pin values differ."""
+
+    def _provision(worktree, frozen_deps=None):
+        merged = dict(pins)
+        if frozen_deps:
+            merged.update(frozen_deps)
+        return _adapter().provision_environment(worktree, merged)
+
+    return _provision
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#105) round-2 remediation")
+def test_engine_gate_provisions_from_the_amended_manifest_not_the_original(tmp_path):
+    """Finding #3: after an approved amendment changes an external pin (M0 platformdirs 4.10.0 ->
+    M1 4.9.0), the engine gate must provision under the ACTIVE amended manifest's pins, exactly as
+    verify loads them. Today the gate reads M0's contract-manifest.json for its provisioner pins while
+    verify loads M1, so the gate installs 4.10.0, verify expects 4.9.0, and a candidate that is clean
+    under the approved amendment is FALSE-BLOCKED with an external_pin violation. The fix makes the gate
+    derive its pins from _load_frozen_manifest (M1); then apply_revision proceeds cleanly to the gateway."""
+    from issueforge import contract, engine
+
+    run = _mk_run()
+    repo = _repo(
+        tmp_path,
+        "gate-amended-pins",
+        candidate_files={
+            "tests/test_new.py": "def test_x():\n    assert 1 == 2\n",
+            "tests/conftest.py": "import platformdirs  # noqa: F401\n",
+        },
+    )
+    _seed_freeze_evidence(run, repo)
+    # M0: freeze with platformdirs pinned 4.10.0.
+    m0 = contract.freeze_contract(
+        run,
+        candidate_worktree=repo.path,
+        base_sha=repo.base_sha,
+        adapter=_adapter(),
+        provisioner=_real_pin({"platformdirs": "4.10.0"}),
+        approver=_approve_all,
+    )
+    assert ("platformdirs", "4.10.0") in {(d, v) for d, v in m0.manifest["external_pins"]}
+
+    # Advance HEAD with a real contract change, then amend to M1 with platformdirs 4.9.0.
+    contract_commit = repo.candidate_sha
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    repo.candidate_sha = new_head
+    _seed_freeze_evidence(run, repo, head=new_head)
+    diff = _real_diff(repo.path, contract_commit, new_head)
+    m1 = contract.amend_contract(
+        run,
+        reason="#19: re-pin platformdirs after resolving an authorized dependency change",
+        diff_text=diff,
+        candidate_worktree=repo.path,
+        base_sha=repo.base_sha,
+        adapter=_adapter(),
+        provisioner=_real_pin({"platformdirs": "4.9.0"}),
+        approver=_approve_all,
+    )
+    assert m1.approved is True
+    assert ("platformdirs", "4.9.0") in {(d, v) for d, v in m1.manifest["external_pins"]}
+    _seed_candidate_worktree(run, repo.path)
+
+    # The candidate is clean under the APPROVED amendment (M1). The engine gate must not false-block it.
+    gw = _SpyGateway()
+    engine.apply_revision(run, _plan(), gw, approver=_approve_all)
+    assert [c for c in gw.calls if c[0] == "update_body"], (
+        "the gate false-blocked an M1-valid candidate because it provisioned the ORIGINAL manifest's "
+        "pins instead of the active amended manifest's"
+    )
