@@ -13,6 +13,7 @@ import importlib.metadata
 import json
 import os
 import shlex
+import tomllib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -1052,16 +1053,33 @@ class PytestAdapter:
         a frozen config source's ``addopts`` (named ``addopts:<token>``). Fully deterministic — it
         never touches the AI/provider seam.
         """
-        argv = getattr(command, "command", command)
-        needle = _first_dangerous_token(list(argv or ()))
+        argv = list(getattr(command, "command", command) or ())
+        needle = _first_dangerous_token(argv)
         if needle is not None:
             raise InvocationError(needle)
         test_config = getattr(command, "test_config", None)
         if isinstance(test_config, dict):
-            addopts = _config_addopts_tokens(str(test_config.get("content") or ""))
+            addopts = _config_addopts_tokens(
+                str(test_config.get("content") or ""), source=test_config.get("source")
+            )
             config_needle = _first_dangerous_token(addopts)
             if config_needle is not None:
                 raise InvocationError(f"addopts:{config_needle}")
+        # A config file the command references via ``-c <cfg>`` is a frozen config source too: read it
+        # from the worktree and check its ``addopts`` (a dangerous mode smuggled through an otherwise
+        # unprotected ``-c custompytest.ini`` file the one-line parser never opened — S13 finding #6).
+        worktree = getattr(command, "worktree", None)
+        if worktree:
+            for i, tok in enumerate(argv):
+                if str(tok) == "-c" and i + 1 < len(argv):
+                    cfg_rel = str(argv[i + 1])
+                    cfg_path = Path(worktree) / cfg_rel
+                    if cfg_path.is_file():
+                        cfg_needle = _first_dangerous_token(
+                            _config_addopts_tokens(cfg_path.read_text(), source=cfg_rel)
+                        )
+                        if cfg_needle is not None:
+                            raise InvocationError(f"addopts:{cfg_needle}")
         return None
 
 
@@ -1077,9 +1095,18 @@ class InvocationError(ValueError):
 
 # Flags whose mere presence (exact, or with an attached ``=value``) is a dangerous mode; the token
 # reported is the canonical flag itself. ``-n`` (xdist) is handled separately to catch the attached
-# ``-n4`` spelling.
-_DANGEROUS_VALUE_FLAGS = ("--reruns", "--dist", "--maxfail", "--report")
-_DANGEROUS_BARE_FLAGS = ("-x", "--force-exit", "--suppress-no-test-exit-code")
+# ``-n4`` spelling. ``--numprocesses``/``--tx`` are the xdist ALIASES of ``-n``/its transport; they
+# are value-bearing so both the split (``--numprocesses 4``) and attached (``--numprocesses=4`` /
+# ``--tx=popen``) spellings raise, each naming the alias itself (#19, S13 finding #5).
+_DANGEROUS_VALUE_FLAGS = ("--reruns", "--dist", "--maxfail", "--report", "--numprocesses", "--tx")
+# ``-d`` (xdist distributed) and ``--exitfirst`` (the bail alias of ``-x``) join the bare-flag set.
+_DANGEROUS_BARE_FLAGS = (
+    "-x",
+    "--force-exit",
+    "--suppress-no-test-exit-code",
+    "-d",
+    "--exitfirst",
+)
 
 
 def _first_dangerous_token(tokens: object) -> str | None:
@@ -1115,17 +1142,51 @@ def _first_dangerous_token(tokens: object) -> str | None:
     return None
 
 
-def _config_addopts_tokens(content: str) -> list[str]:
-    """The tokenized ``addopts`` value from a frozen config source's text (``[pytest]`` ini form)."""
-    for line in content.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("addopts"):
-            _key, _sep, value = stripped.partition("=")
-            if _sep:
-                try:
-                    return shlex.split(value.strip())
-                except ValueError:
-                    return value.split()
+def _split_addopts(text: str) -> list[str]:
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
+
+
+def _config_addopts_tokens(content: str, source: str | None = None) -> list[str]:
+    """The tokenized ``addopts`` from a frozen config source's text, across EVERY pytest config
+    shape a dangerous mode can hide in (#19, S13 finding #6): a single-line ``[pytest]`` ini
+    ``addopts``, a MULTILINE ini ``addopts`` continuation (indented follow-on lines), and a
+    ``pyproject.toml`` ``[tool.pytest.ini_options] addopts`` string OR array. ``source`` (a config
+    filename) disambiguates TOML from ini; absent it, a ``[tool.pytest.ini_options]`` marker in the
+    content selects TOML."""
+    is_toml = (source or "").endswith(".toml") or (
+        source is None and "[tool.pytest.ini_options]" in content
+    )
+    if is_toml:
+        try:
+            data = tomllib.loads(content)
+        except tomllib.TOMLDecodeError:
+            return []
+        addopts = data.get("tool", {}).get("pytest", {}).get("ini_options", {}).get("addopts")
+        if isinstance(addopts, str):
+            return _split_addopts(addopts)
+        if isinstance(addopts, list):
+            return [str(tok) for tok in addopts]
+        return []
+    # ini: find the ``addopts`` key, take its inline value plus any indented continuation lines.
+    lines = content.splitlines()
+    for idx, raw in enumerate(lines):
+        key, sep, value = raw.strip().partition("=")
+        if not (sep and key.strip() == "addopts"):
+            continue
+        parts = [value.strip()]
+        j = idx + 1
+        while j < len(lines):
+            follow = lines[j]
+            if follow.strip() == "" or follow[:1] not in (" ", "\t"):
+                break
+            if follow.strip().startswith("["):
+                break
+            parts.append(follow.strip())
+            j += 1
+        return _split_addopts(" ".join(p for p in parts if p))
     return []
 
 

@@ -1016,7 +1016,6 @@ def test_permanent_verdict_persists_exact_violation_and_commit_binding(tmp_path)
 # =============================================================== dirty-tree (finding #1)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_flags_uncommitted_assertion_weakening_in_frozen_test(tmp_path):
     """Finding #1: ``protected_path_diff`` diffs committed(contract_commit) vs committed(HEAD), so an
     UNCOMMITTED edit to a frozen test file is invisible to it, and ``recollection`` only set-compares
@@ -1061,7 +1060,6 @@ def test_verify_flags_uncommitted_assertion_weakening_in_frozen_test(tmp_path):
 # =============================================================== boundary addition (finding #2)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_flags_new_higher_precedence_config_added_after_freeze(tmp_path):
     """Finding #2: there is no full-closure recompute at HEAD. A brand-new committed tests/conftest.py
     carrying an autouse fixture that alters runtime outcomes does NOT change the collected-id set and
@@ -1105,7 +1103,6 @@ def test_verify_flags_new_higher_precedence_config_added_after_freeze(tmp_path):
 # =============================================================== tracked bytecode (finding #12)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_dirty_refusal_does_not_exempt_tracked_bytecode(tmp_path):
     """Finding #12: ``_is_cache_noise`` exempts ``.pyc``/``__pycache__`` members UNCONDITIONALLY, even
     when TRACKED (committed via ``git add -A``). A sourceless bytecode artifact that is TRACKED is not
@@ -1195,7 +1192,6 @@ def test_dirty_refusal_does_not_exempt_tracked_bytecode(tmp_path):
 # =============================================================== gate provisioner (finding #8)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_gate_resolves_deps_in_provisioned_authoritative_env_not_host(tmp_path, monkeypatch):
     """Finding #8: the engine's integrity gate provisions its collection under ``_gate_provisioner``
     (engine.py:481), which returns ``interpreter=sys.executable`` — the HOST. External pins must be

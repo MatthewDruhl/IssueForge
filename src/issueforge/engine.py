@@ -17,15 +17,11 @@ paused/parked/failed its run is not overwritten to completed).
 from __future__ import annotations
 
 import json
-import os
-import sys
 import uuid
 from collections.abc import Callable
 from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from io import StringIO
-from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 from issueforge import github, store
@@ -185,7 +181,20 @@ def _execute_stage(
         _drain(s, next_id)
         raise
     _persist_captured(s, run_id, out, err, secrets)
+    _persist_candidate_worktree(s, run_id, result)
     return result
+
+
+def _persist_candidate_worktree(s: store.RunStore, run_id: str, result: Any) -> None:
+    """Persist the isolated worktree a baseline run-stage established onto the run record — the REAL
+    production seam the S13 integrity gate (#19) reads. When a stage returns a
+    ``verify.BaselineOutcome`` carrying a worktree, that worktree IS the run's candidate; recording
+    it here (from inside the run-stage lifecycle, never threaded through a caller-supplied context)
+    is what makes the gate active in production. Any other stage result is left untouched."""
+    from issueforge import verify
+
+    if isinstance(result, verify.BaselineOutcome) and result.worktree is not None:
+        s.apply(run_id, lambda _r: {"candidate_worktree": str(result.worktree)})
 
 
 def _finalize(
@@ -478,23 +487,28 @@ def _op_fingerprint(op: dict) -> str:
     return json.dumps(op, sort_keys=True)
 
 
-def _gate_provisioner() -> Callable[..., Any]:
-    """The host-side provisioner the integrity gate provisions its collection under: the host
-    interpreter with plugin autoload disabled and a minimal allowlist env — never the candidate's
-    ``os.environ``. Deterministic and self-contained, matching the pipeline's non-hermetic checks."""
+def _gate_provisioner(frozen_pins: dict | None = None) -> Callable[..., Any]:
+    """The provisioner the integrity gate resolves its collection under: the TARGET AUTHORITATIVE
+    environment (a real, separate venv under IssueForge's owned ``state_root()``), NOT the host
+    interpreter — a host that happens to match a frozen pin would mask a real authoritative drift
+    (#19, S13 finding #8). Delegates to ``PytestAdapter._provision_default`` with the frozen external
+    pins installed so the contract's imports resolve in the authoritative env and the external-pin
+    re-resolution runs under a state-root interpreter, never ``sys.executable``."""
+    from issueforge.adapters.pytest_adapter import _provision_default
+
+    pins = dict(frozen_pins or {})
 
     def _provision(worktree: object, frozen_deps: object = None) -> object:
-        env = {
-            "PATH": os.environ.get("PATH", ""),
-            "HOME": os.environ.get("HOME", ""),
-            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
-        }
-        return SimpleNamespace(
-            interpreter=sys.executable,
-            env=env,
-            artifact_dir=Path(worktree).parent / f"if-gate-env-{Path(worktree).name}",
-            network=False,
-        )
+        merged = dict(pins)
+        if isinstance(frozen_deps, dict):
+            merged.update(frozen_deps)
+        handle = _provision_default(worktree, merged or None)
+        # Disable pytest plugin autoload in the authoritative env so the gate's discovery/collection
+        # is deterministic and MATCHES the freeze's own (which runs with autoload disabled): otherwise
+        # an autoloaded plugin (e.g. pytest-reportlog installed in the venv) would be discovered as a
+        # phantom external pin the frozen manifest never saw, spuriously failing a clean candidate.
+        handle.env = {**(getattr(handle, "env", None) or {}), "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+        return handle
 
     return _provision
 
@@ -505,23 +519,34 @@ def _integrity_gate(run_id: str, record: dict) -> None:
     verifies the candidate through :func:`contract.verify_contract_integrity` (adapter resolved via
     the ``registry.resolve(framework="pytest", reporter="pytest")`` seam) and raises
     :class:`state.IllegalTransition` naming every violated predicate on a violation. A run with no
-    frozen manifest (pre-S13) — or one whose worktree is not yet recorded — is untouched."""
-    if not (store.run_dir(run_id) / "contract-manifest.json").exists():
+    frozen manifest (pre-S13) is untouched; a run WITH a frozen manifest but no recorded
+    ``candidate_worktree`` is FAIL-CLOSED — missing gate context refuses, never falls through to a
+    mutation (#19, S13 finding #7)."""
+    manifest_path = store.run_dir(run_id) / "contract-manifest.json"
+    if not manifest_path.exists():
         return
     candidate = record.get("candidate_worktree")
     if not candidate:
-        return
+        raise IllegalTransition(
+            f"apply_revision refused: run {run_id!r} has a frozen contract manifest but no persisted "
+            "candidate_worktree; the integrity gate cannot verify and fails closed"
+        )
     from issueforge import contract
     from issueforge.adapters.base import registry
 
     adapter = registry.resolve(framework="pytest", reporter="pytest")
     base_sha = (record.get("red_proof") or {}).get("base_sha")
+    frozen_pins = {
+        str(pin[0]): str(pin[1])
+        for pin in (json.loads(manifest_path.read_bytes()).get("external_pins") or [])
+        if len(pin) >= 2
+    }
     report = contract.verify_contract_integrity(
         run_id,
         candidate_worktree=candidate,
         base_sha=base_sha,
         adapter=adapter,
-        provisioner=_gate_provisioner(),
+        provisioner=_gate_provisioner(frozen_pins),
     )
     if not report.ok:
         predicates = sorted({v.predicate for v in report.violations})

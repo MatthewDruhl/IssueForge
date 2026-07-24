@@ -1477,20 +1477,39 @@ def _test_node_ids(path: str, source: str) -> set[str]:
     return ids
 
 
-def _is_cache_noise(path: str) -> bool:
-    """A byte-compiled cache artifact (``__pycache__`` member or ``.pyc``/``.pyo``) — never a
-    contract file, so a collection re-run regenerating it is not a contract mutation."""
-    return "__pycache__" in path.split("/") or path.endswith((".pyc", ".pyo"))
+def _is_cache_noise(path: str, worktree: Path | None = None) -> bool:
+    """A REGENERATABLE byte-compiled cache artifact — a ``__pycache__`` member or ``.pyc``/``.pyo``
+    whose SOURCE module exists, so a collection re-run regenerating it is not a contract mutation.
+
+    A SOURCELESS tracked ``.pyc`` (a committed ``__pycache__/helper.pyc`` with no ``helper.py`` to
+    compile it from) is NOT cache noise: it can execute altered logic during collection while never
+    being regenerated, so it must be caught, never blanket-exempted (#19, S13 finding #12). Without a
+    ``worktree`` to resolve the source against, the exemption is conservative (treats any cache-shaped
+    path as noise), preserving the untracked-noise reality ``git diff HEAD`` already enforces."""
+    parts = path.split("/")
+    if "__pycache__" not in parts and not path.endswith((".pyc", ".pyo")):
+        return False
+    if worktree is None:
+        return True
+    if "__pycache__" in parts:
+        idx = parts.index("__pycache__")
+        src_dir = "/".join(parts[:idx])
+    else:
+        src_dir = "/".join(parts[:-1])
+    # A pyc is named ``<modname>.cpython-<ver>.pyc`` (or a bare ``<modname>.pyc``); the module name is
+    # everything before the first dot. Its source is ``<src_dir>/<modname>.py``.
+    modname = parts[-1].split(".")[0]
+    return (Path(worktree) / src_dir / f"{modname}.py").exists()
 
 
-def _dirty_refusal(worktree: Path, commit: str) -> str | None:
-    """Refuse (a message) when any TRACKED file differs from ``commit`` in the worktree.
+def _dirty_tracked_paths(worktree: Path, commit: str) -> list[str]:
+    """Every TRACKED path that differs from ``commit`` in the worktree (``git diff HEAD``).
 
-    A deleted/modified test module names every node-id it LOST (its committed test functions minus the
-    worktree's), reading a deleted module as an empty module; any other changed protected file names
-    its path. ``None`` when the worktree matches the committed contract bytes exactly (untracked
-    ``__pycache__``/cache noise is ignored by ``git diff HEAD``).
-    """
+    ``git diff HEAD`` lists ONLY tracked changes, so an UNTRACKED ``__pycache__``/``.pyc`` cache
+    artifact a collection re-run regenerates never appears here — the legitimate cache exemption is
+    the untracked-ness itself. A TRACKED ``.pyc`` (committed via ``git add -A``) IS listed and is NOT
+    exempt: a sourceless bytecode artifact can execute altered logic during collection, so a tracked
+    byte change to one is a real contract mutation, never cache noise (#19, S13 finding #12)."""
     rc, out = _git_text(worktree, "diff", "HEAD", "--name-status", "-z")
     if rc != 0:
         raise ValueError(f"freeze refused: cannot diff worktree against {commit} (git rc={rc})")
@@ -1506,10 +1525,23 @@ def _dirty_refusal(worktree: Path, commit: str) -> str | None:
             if index + 1 < len(fields):
                 changed.append(fields[index + 1])
             index += 2
-    # Cache noise is never a contract file: a ``__pycache__``/``.pyc`` byte-compiled artifact that a
-    # collection re-run (freeze or a later re-freeze) regenerates is ignored even when it was TRACKED
-    # (a caller that committed it via ``git add -A``), matching the docstring's untracked-noise rule.
-    changed = [p for p in changed if not _is_cache_noise(p)]
+    return changed
+
+
+def _dirty_refusal(worktree: Path, commit: str) -> str | None:
+    """Refuse (a message) when any TRACKED file differs from ``commit`` in the worktree.
+
+    A deleted/modified test module names every node-id it LOST (its committed test functions minus the
+    worktree's), reading a deleted module as an empty module; any other changed protected file names
+    its path. ``None`` when the worktree matches the committed contract bytes exactly. A TRACKED
+    ``.pyc`` byte change is caught (never exempted); only an UNTRACKED cache artifact — invisible to
+    ``git diff HEAD`` — stays out of the refusal.
+    """
+    # A REGENERATABLE cache artifact (a ``.pyc`` whose source module exists) that a collection re-run
+    # rewrites is not a contract mutation; a SOURCELESS tracked ``.pyc`` is caught (finding #12).
+    changed = [
+        p for p in _dirty_tracked_paths(worktree, commit) if not _is_cache_noise(p, worktree)
+    ]
     if not changed:
         return None
     pieces: list[str] = []
@@ -1958,8 +1990,24 @@ class WrongAmendmentRouteError(Exception):
 
 
 def _load_frozen_manifest(run_id: str) -> dict:
-    """The HARNESS-RETAINED frozen manifest for ``run_id`` (never a candidate-committed file)."""
-    return json.loads((run_dir(run_id) / _MANIFEST_ARTIFACT).read_bytes())
+    """The HARNESS-RETAINED frozen manifest for ``run_id`` (never a candidate-committed file).
+
+    The ACTIVE manifest is the latest APPROVED amendment when one exists — :func:`amend_contract`
+    retains each amended manifest under a content-addressed ``contract-manifest-<hash>.json`` and
+    records a permanent ``amend`` event, so an authorized amendment genuinely takes effect (verify
+    reloads the new authoritative manifest) while the original ``contract-manifest.json`` stays
+    retained for audit (#19, S13 finding #9). Falls back to the first freeze's manifest when no
+    approved amendment has landed."""
+    run_path = run_dir(run_id)
+    latest_hash: str | None = None
+    for event in RunStore().replay_events(run_id):
+        if event.get("transition") == "amend" and event.get("approved") is True:
+            latest_hash = event.get("manifest_hash")
+    if latest_hash:
+        amended = run_path / f"contract-manifest-{latest_hash[:16]}.json"
+        if amended.exists():
+            return json.loads(amended.read_bytes())
+    return json.loads((run_path / _MANIFEST_ARTIFACT).read_bytes())
 
 
 def _norm_dist(name: object) -> str:
@@ -1990,7 +2038,15 @@ def _ast_backstop_offenders(old_blob: bytes, new_blob: bytes) -> list[str]:
     try:
         verdict, name, _reason = integrity._analyze(old_src, new_src)
         if verdict == "weakened" and name:
-            offenders.add(name)
+            # A class-level decorator weakening surfaces the bare ``ClassName``; qualify it per
+            # affected method (``Class::method``), the R1 canonical ast_backstop offender detail —
+            # every method shares the class decorator's environment, so every method is an offender.
+            methods = [
+                qual
+                for qual in integrity._collect_tests(ast.parse(old_src))
+                if qual.startswith(f"{name}{integrity._QUALSEP}")
+            ]
+            offenders.update(methods or [name])
         for qual in integrity._collect_tests(ast.parse(old_src)):
             if integrity.is_pending(old_src, qual) and not integrity.is_pending(new_src, qual):
                 offenders.add(qual)
@@ -2073,6 +2129,45 @@ def _external_pin_violations(
             violations.append(("external_pin", f"{dist} added"))
 
 
+def _head_boundary_members(
+    worktree: Path, head: str, adapter: object, collection: object
+) -> set | None:
+    """The committed HEAD's contract-boundary member set, recomputed with the SAME rule
+    :func:`_compose_contract_manifest` freezes with (``_is_boundary_member``): a fixture-route/
+    collected/test-body closure member, a committed symlink, the selected pytest config,
+    ``.issueforge.toml``, or a ``.py`` in a directory holding a collected test. ``None`` when the
+    closure cannot be discovered (a DiscoveryError — external-pin handling covers that case). Used to
+    catch a NEW higher-precedence boundary member (e.g. a ``tests/conftest.py`` added after freeze)
+    that alters runtime outcomes without changing the collected-id set (#19, S13 finding #2)."""
+    from issueforge.adapters.pytest_adapter import DiscoveryError
+
+    try:
+        closure = adapter.discover_contract_dependencies(collection)
+    except DiscoveryError:
+        return None
+    committed, modes = _committed_tree(worktree, head)
+    closure_norm = (
+        {_normalize(p) for p in closure.fixture_closure}
+        | {_normalize(p) for p in closure.test_files}
+        | {_normalize(p) for p in closure.test_body_imports}
+    )
+    test_dirs = {os.path.dirname(_normalize(p)) for p in closure.test_files}
+    config_name, _ = _select_pytest_config(worktree, head)
+    config_norm = _normalize(config_name) if config_name else None
+    members: set[str] = set()
+    for path in committed:
+        norm = _normalize(path)
+        if (
+            norm in closure_norm
+            or modes.get(path) == "120000"
+            or (config_norm is not None and norm == config_norm)
+            or norm == ".issueforge.toml"
+            or (path.endswith(".py") and os.path.dirname(norm) in test_dirs)
+        ):
+            members.add(path)
+    return members
+
+
 def verify_contract_integrity(
     run_id: str,
     *,
@@ -2101,6 +2196,15 @@ def verify_contract_integrity(
     contract_paths = list(manifest.get("contract_paths") or [])
     symlinks = manifest.get("symlinks") or {}
     dep_hashes = manifest.get("dep_hashes") or {}
+
+    # dirty worktree — an UNCOMMITTED tracked change slips the committed(contract_commit)-vs-
+    # committed(HEAD) diff and the node-id recollection (an ``assert True`` swap leaves ids
+    # unchanged), so a working-tree weakening of a frozen test, or a tracked ``.pyc`` byte change, is
+    # caught here directly against the live tree (#19, S13 findings #1/#12). Untracked cache noise is
+    # invisible to ``git diff HEAD`` and never fires.
+    for path in _dirty_tracked_paths(worktree, head):
+        if not _is_cache_noise(path, worktree):
+            violations.append(("dirty_worktree", path))
 
     # ancestry — an independent git oracle, never spoofable by a similar-looking candidate.
     anc_rc, _anc = _git_text(worktree, "merge-base", "--is-ancestor", contract_commit, "HEAD")
@@ -2183,6 +2287,19 @@ def verify_contract_integrity(
         violations.append(("recollection", f"-{removed}"))
     _external_pin_violations(adapter, collection, manifest.get("external_pins") or [], violations)
 
+    # boundary recompute — a NEW in-closure boundary member at HEAD (e.g. a higher-precedence
+    # tests/conftest.py added after freeze) that alters runtime outcomes without changing the
+    # collected-id set slips protected_path_diff/dep_hash/recollection; the frozen closure hash-set
+    # gained a path, so it maps to the dep_hash family (#19, S13 finding #2 / D-T2).
+    head_members = _head_boundary_members(worktree, head, adapter, collection)
+    if head_members is not None:
+        frozen_boundary = {_normalize(p) for p in contract_paths}
+        excluded_norm = {_normalize(p) for p in (manifest.get("excluded_sut") or [])}
+        for path in sorted(head_members):
+            norm = _normalize(path)
+            if norm not in frozen_boundary and norm not in excluded_norm:
+                violations.append(("dep_hash", path))
+
     # De-dup while preserving order, build the frozen report.
     seen: set[tuple[str, str]] = set()
     unique: list[IntegrityViolation] = []
@@ -2255,6 +2372,17 @@ def amend_contract(
     if diff_text != real_diff:
         raise ValueError(
             "amend refused: diff_text does not match the real contract_commit..HEAD diff"
+        )
+
+    # (2a) No-op guard: an amendment must authorize a REAL change. With HEAD unadvanced the diff is
+    # empty and re-composing would persist the original bytes under a new content-addressed name as a
+    # spurious "amendment"; refuse a no-op (empty diff / HEAD == contract_commit) and write nothing
+    # (#19, S13 finding #11).
+    head = _resolve_head(worktree)
+    if head == contract_commit or not real_diff.strip():
+        raise ValueError(
+            "amend refused: no-op amendment — HEAD has not advanced past the frozen contract_commit "
+            "(the contract_commit..HEAD diff is empty)"
         )
 
     # (3) Wrong-route guard: amend cannot carry an observability/scope transition. The run's CURRENT

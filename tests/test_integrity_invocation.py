@@ -685,7 +685,6 @@ def test_validate_invocation_never_invokes_the_ai_provider(tmp_path, monkeypatch
     assert "-x" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     "flag_tokens,needle",
     [
@@ -721,7 +720,6 @@ def test_validate_invocation_rejects_all_dangerous_aliases(tmp_path, flag_tokens
     adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", "-p", "no:randomly"]))
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     "case_id,repo_files,command,test_config",
     [

@@ -772,7 +772,6 @@ class TestBeta:
 # --- AST-BACKSTOP OFFENDER DETAIL (#13) ----------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_ast_backstop_class_decorator_weakening_names_qualified_methods():
     """A class-level guard decorator (@mock_aws) stripped from a class holding
     two methods (test_a, test_b) is a weakening (the class decorator list shapes

@@ -1405,7 +1405,6 @@ def test_engine_gate_blocks_every_predicate(tmp_path, monkeypatch, predicate):
 # existing suite (see s13 Phase A contract, findings #7/#9/#11). Each FAILS the branch impl today.
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_gate_runs_from_worktree_persisted_by_real_build_lifecycle(tmp_path):
     """Finding #7: the engine gate is inert in production because NOTHING production-side persists a
     run's ``candidate_worktree`` — only the ``_seed_candidate_worktree`` TEST helper does, so every
@@ -1498,7 +1497,6 @@ def test_engine_gate_runs_from_worktree_persisted_by_real_build_lifecycle(tmp_pa
     assert not any(e.get("transition") == "revision" for e in store.RunStore().replay_events(run2))
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_after_successful_amendment_loads_the_new_manifest(tmp_path):
     """Finding #9: amend writes a content-addressed ``contract-manifest-<hash>.json``, but verify's
     ``_load_frozen_manifest`` always reads the fixed ``contract-manifest.json`` — so an AUTHORIZED
@@ -1571,7 +1569,6 @@ def test_verify_after_successful_amendment_loads_the_new_manifest(tmp_path):
     assert original.artifact_path.read_bytes() == original_bytes
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_refused_on_noop_empty_diff_unchanged_head(tmp_path):
     """Finding #11: amend_contract has no guard that the diff is non-empty / HEAD advanced / the new
     manifest hash differs. With HEAD unchanged from contract_commit the real diff is empty, so an
