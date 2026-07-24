@@ -31,7 +31,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from issueforge import config as _config
-from issueforge import engine, process, providers
+from issueforge import engine, integrity, process, providers
 from issueforge import verify as _verify
 from issueforge import workspace as _workspace_mod
 from issueforge.adapters.base import BaselineStatus, Outcome
@@ -1386,12 +1386,22 @@ class FreezeResult:
 _MANIFEST_ARTIFACT = "contract-manifest.json"
 # pytest config forms in precedence order (highest first), each with the section marking a real
 # pytest configuration in that file.
+# The pytest config files, in the SAME precedence order pytest itself resolves them
+# (``_pytest.config.findpaths.locate_config``), with the table/section marker(s) each must contain to
+# be a config source. Round-2 gate finding #5: the earlier list omitted ``pytest.toml`` / ``.pytest.toml`` /
+# ``.pytest.ini`` and the native ``[tool.pytest]`` pyproject table, all supported by the provisioned
+# pytest — so a ``pytest.toml`` with ``addopts = ["-x"]`` applied in production but was never frozen.
 _PYTEST_CONFIG_FORMS = (
-    ("pytest.ini", "[pytest]"),
-    ("pyproject.toml", "[tool.pytest.ini_options]"),
-    ("tox.ini", "[pytest]"),
-    ("setup.cfg", "[tool:pytest]"),
+    ("pytest.toml", ("[pytest]",)),
+    (".pytest.toml", ("[pytest]",)),
+    ("pytest.ini", ("[pytest]",)),
+    (".pytest.ini", ("[pytest]",)),
+    ("pyproject.toml", ("[tool.pytest]", "[tool.pytest.ini_options]")),
+    ("tox.ini", ("[pytest]",)),
+    ("setup.cfg", ("[tool:pytest]",)),
 )
+# Files pytest treats as the config source whenever they EXIST, even with no ``[pytest]`` table.
+_PYTEST_ALWAYS_SOURCE = frozenset({"pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini"})
 
 
 def _git_bytes(repo: Path, *args: str) -> tuple[int, bytes]:
@@ -1477,14 +1487,39 @@ def _test_node_ids(path: str, source: str) -> set[str]:
     return ids
 
 
-def _dirty_refusal(worktree: Path, commit: str) -> str | None:
-    """Refuse (a message) when any TRACKED file differs from ``commit`` in the worktree.
+def _is_cache_noise(path: str, worktree: Path | None = None) -> bool:
+    """A REGENERATABLE byte-compiled cache artifact — a ``__pycache__`` member or ``.pyc``/``.pyo``
+    whose SOURCE module exists, so a collection re-run regenerating it is not a contract mutation.
 
-    A deleted/modified test module names every node-id it LOST (its committed test functions minus the
-    worktree's), reading a deleted module as an empty module; any other changed protected file names
-    its path. ``None`` when the worktree matches the committed contract bytes exactly (untracked
-    ``__pycache__``/cache noise is ignored by ``git diff HEAD``).
-    """
+    A SOURCELESS tracked ``.pyc`` (a committed ``__pycache__/helper.pyc`` with no ``helper.py`` to
+    compile it from) is NOT cache noise: it can execute altered logic during collection while never
+    being regenerated, so it must be caught, never blanket-exempted (#19, S13 finding #12). Without a
+    ``worktree`` to resolve the source against, the exemption is conservative (treats any cache-shaped
+    path as noise), preserving the untracked-noise reality ``git diff HEAD`` already enforces."""
+    parts = path.split("/")
+    if "__pycache__" not in parts and not path.endswith((".pyc", ".pyo")):
+        return False
+    if worktree is None:
+        return True
+    if "__pycache__" in parts:
+        idx = parts.index("__pycache__")
+        src_dir = "/".join(parts[:idx])
+    else:
+        src_dir = "/".join(parts[:-1])
+    # A pyc is named ``<modname>.cpython-<ver>.pyc`` (or a bare ``<modname>.pyc``); the module name is
+    # everything before the first dot. Its source is ``<src_dir>/<modname>.py``.
+    modname = parts[-1].split(".")[0]
+    return (Path(worktree) / src_dir / f"{modname}.py").exists()
+
+
+def _dirty_tracked_paths(worktree: Path, commit: str) -> list[str]:
+    """Every TRACKED path that differs from ``commit`` in the worktree (``git diff HEAD``).
+
+    ``git diff HEAD`` lists ONLY tracked changes, so an UNTRACKED ``__pycache__``/``.pyc`` cache
+    artifact a collection re-run regenerates never appears here — the legitimate cache exemption is
+    the untracked-ness itself. A TRACKED ``.pyc`` (committed via ``git add -A``) IS listed and is NOT
+    exempt: a sourceless bytecode artifact can execute altered logic during collection, so a tracked
+    byte change to one is a real contract mutation, never cache noise (#19, S13 finding #12)."""
     rc, out = _git_text(worktree, "diff", "HEAD", "--name-status", "-z")
     if rc != 0:
         raise ValueError(f"freeze refused: cannot diff worktree against {commit} (git rc={rc})")
@@ -1500,6 +1535,23 @@ def _dirty_refusal(worktree: Path, commit: str) -> str | None:
             if index + 1 < len(fields):
                 changed.append(fields[index + 1])
             index += 2
+    return changed
+
+
+def _dirty_refusal(worktree: Path, commit: str) -> str | None:
+    """Refuse (a message) when any TRACKED file differs from ``commit`` in the worktree.
+
+    A deleted/modified test module names every node-id it LOST (its committed test functions minus the
+    worktree's), reading a deleted module as an empty module; any other changed protected file names
+    its path. ``None`` when the worktree matches the committed contract bytes exactly. A TRACKED
+    ``.pyc`` byte change is caught (never exempted); only an UNTRACKED cache artifact — invisible to
+    ``git diff HEAD`` — stays out of the refusal.
+    """
+    # A REGENERATABLE cache artifact (a ``.pyc`` whose source module exists) that a collection re-run
+    # rewrites is not a contract mutation; a SOURCELESS tracked ``.pyc`` is caught (finding #12).
+    changed = [
+        p for p in _dirty_tracked_paths(worktree, commit) if not _is_cache_noise(p, worktree)
+    ]
     if not changed:
         return None
     pieces: list[str] = []
@@ -1507,8 +1559,12 @@ def _dirty_refusal(worktree: Path, commit: str) -> str | None:
         blob_rc, blob = _git_bytes(worktree, "show", f"{commit}:{path}")
         committed = _test_node_ids(path, blob.decode("utf-8", "replace")) if blob_rc == 0 else set()
         worktree_file = worktree / path
+        # Decode bytes with replacement (never strict): a binary tracked file must not crash the
+        # refusal read — it simply declares no test node-ids.
         current = (
-            _test_node_ids(path, worktree_file.read_text()) if worktree_file.is_file() else set()
+            _test_node_ids(path, worktree_file.read_bytes().decode("utf-8", "replace"))
+            if worktree_file.is_file()
+            else set()
         )
         missing = sorted(committed - current)
         pieces.append(f"{path} (missing node-ids: {', '.join(missing)})" if missing else path)
@@ -1552,9 +1608,16 @@ def _resolve_committed_symlink(
 
 def _select_pytest_config(repo: Path, commit: str) -> tuple[str | None, str]:
     """The winning pytest config file (repo-relative path, committed text) by pytest precedence."""
-    for name, marker in _PYTEST_CONFIG_FORMS:
+    for name, markers in _PYTEST_CONFIG_FORMS:
         rc, text = _git_text(repo, "show", f"{commit}:{name}")
-        if rc == 0 and marker in text:
+        if rc != 0:
+            continue
+        # ``pytest.ini`` / ``.pytest.ini`` / ``pytest.toml`` / ``.pytest.toml`` are ALWAYS the config
+        # source when they exist, even without a ``[pytest]`` table — pytest stops at them and ignores
+        # every lower-precedence file (``findpaths.load_config_dict_from_file``). Selecting a later file
+        # in that case would freeze the WRONG config. The other files are a source only when their pytest
+        # section is present.
+        if name in _PYTEST_ALWAYS_SOURCE or any(marker in text for marker in markers):
             return name, text
     return None, ""
 
@@ -1607,21 +1670,48 @@ def _expand_added_paths(added_paths: tuple[str, ...], committed: set[str]) -> li
     return expanded
 
 
-def freeze_contract(
+# Files that DECLARE a project's dependency versions. A change to any of these is a declared-dependency
+# drift the frozen-pin re-resolution cannot see, so they are frozen+hashed and byte-compared at verify
+# (#105 finding #2). Matched by exact basename, plus any ``requirements*.txt``.
+_ENV_DEFINING_BASENAMES = frozenset(
+    {
+        "pyproject.toml",
+        "setup.cfg",
+        "setup.py",
+        "uv.lock",
+        "Pipfile",
+        "Pipfile.lock",
+        "poetry.lock",
+        "constraints.txt",
+    }
+)
+
+
+def _is_env_defining_file(path: str) -> bool:
+    """Whether ``path`` declares dependency versions (a lock/requirements/project-metadata file)."""
+    base = path.rsplit("/", 1)[-1]
+    return base in _ENV_DEFINING_BASENAMES or (
+        base.startswith("requirements") and base.endswith(".txt")
+    )
+
+
+def _compose_contract_manifest(
+    st: object,
     run_id: str,
-    *,
     candidate_worktree: object,
     base_sha: str,
     adapter: object,
     provisioner: object,
-    approver: object,
-    user_added_paths: object = (),
-    secrets: frozenset = frozenset(),
-    store: object = None,
-) -> FreezeResult:
-    """Compose and (on approval) persist the permanent canonical contract manifest (see section doc)."""
-    secrets = frozenset(secrets)
-    st = store if store is not None else RunStore(secrets=secrets)
+    user_added_paths: object,
+    secrets: frozenset,
+) -> tuple[dict, bytes, str]:
+    """Compose the canonical contract manifest at the candidate's committed HEAD (freeze steps 1-11).
+
+    Shared verbatim by :func:`freeze_contract` (the first freeze) and :func:`amend_contract` (a
+    later re-freeze at a new HEAD). Returns ``(redacted_manifest, canonical_bytes, manifest_hash)``;
+    persistence + the approver gate stay with the caller. Every field is derived from the REAL
+    committed contract bytes + a real collection over the provisioner — never a hand-built dict.
+    """
     worktree = Path(candidate_worktree)
     user_added = tuple(user_added_paths)
 
@@ -1811,12 +1901,25 @@ def freeze_contract(
 
     external_pins = [list(pin) for pin in closure.external]
 
+    # (11a) Env-defining files (files that DECLARE dependencies): hash each committed one so a candidate
+    # that changes a declared dependency version is caught at verify. The frozen-pin re-resolution alone
+    # is tautological — the gate installs the frozen versions and then re-resolves them — so declared
+    # drift is otherwise invisible (#105 finding #2). The selected pytest config is EXCLUDED: its drift
+    # is already caught as an ``invocation`` violation, so nothing is double-reported and nothing missed.
+    env_hashes: dict[str, str] = {}
+    for path in sorted(committed):
+        if config_name is not None and path == config_name:
+            continue
+        if _is_env_defining_file(path):
+            env_hashes[path] = _sha256_hex(_committed_blob(worktree, contract_commit, path))
+
     manifest = {
         "contract_commit": contract_commit,
         "contract_paths": list(contract_paths),
         "dep_hashes": dep_hashes,
         "symlinks": symlinks,
         "external_pins": external_pins,
+        "env_hashes": env_hashes,
         "excluded_sut": sorted(excluded_sut),
         "test_config": test_config,
         "command": command,
@@ -1828,9 +1931,35 @@ def freeze_contract(
     # Redact every secret from the manifest BEFORE canonicalizing, so the approver sees exactly the
     # persisted bytes and no secret can reach the permanent artifact.
     manifest = _redact_strings(manifest, secrets)
-    canonical = json.dumps(
-        manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
+    canonical = _canonical_manifest_bytes(manifest)
+    return manifest, canonical, _sha256_hex(canonical)
+
+
+def _canonical_manifest_bytes(manifest: dict) -> bytes:
+    """The ONE canonical serialization of a manifest dict (stable key order, compact separators)."""
+    return json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def freeze_contract(
+    run_id: str,
+    *,
+    candidate_worktree: object,
+    base_sha: str,
+    adapter: object,
+    provisioner: object,
+    approver: object,
+    user_added_paths: object = (),
+    secrets: frozenset = frozenset(),
+    store: object = None,
+) -> FreezeResult:
+    """Compose and (on approval) persist the permanent canonical contract manifest (see section doc)."""
+    secrets = frozenset(secrets)
+    st = store if store is not None else RunStore(secrets=secrets)
+    manifest, canonical, manifest_hash = _compose_contract_manifest(
+        st, run_id, candidate_worktree, base_sha, adapter, provisioner, user_added_paths, secrets
+    )
 
     # (12) The approver is consulted BEFORE any write, on the EXACT canonical bytes. Only True persists.
     if approver(canonical) is not True:
@@ -1878,6 +2007,508 @@ def freeze_contract(
         if not manifest_preexisted:
             WriteSeam().remove_file(artifact_path)
         raise
+    return FreezeResult(
+        approved=True,
+        manifest=manifest,
+        manifest_hash=manifest_hash,
+        artifact_path=artifact_path,
+    )
+
+
+# ===========================================================================
+# S13 (#19): contract-integrity verify, the amendment path, and the engine gate.
+# ===========================================================================
+
+
+@dataclass(frozen=True)
+class IntegrityViolation:
+    """One fired integrity predicate and its exact detail (see the predicate-name catalogue)."""
+
+    predicate: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class IntegrityReport:
+    """The verdict of :func:`verify_contract_integrity`: ``ok`` is True iff ``violations`` is empty.
+    ``violations`` collects EVERY predicate that fired in one pass, never only the first."""
+
+    ok: bool
+    violations: tuple
+
+
+class WrongAmendmentRouteError(Exception):
+    """Raised when an S9 observability/scope transition is (mis)routed through
+    :func:`amend_contract`: the acceptance-manifest amendment path cannot update an observability
+    verdict, so a run whose current ``shape`` write-scope has diverged from the frozen manifest's
+    ``write_scope`` is refused with this STABLE typed error (never a message-substring signal)."""
+
+
+def _load_frozen_manifest(run_id: str) -> dict:
+    """The HARNESS-RETAINED frozen manifest for ``run_id`` (never a candidate-committed file).
+
+    The ACTIVE manifest is the latest APPROVED amendment when one exists — :func:`amend_contract`
+    retains each amended manifest under a content-addressed ``contract-manifest-<hash>.json`` and
+    records a permanent ``amend`` event, so an authorized amendment genuinely takes effect (verify
+    reloads the new authoritative manifest) while the original ``contract-manifest.json`` stays
+    retained for audit (#19, S13 finding #9). Falls back to the first freeze's manifest when no
+    approved amendment has landed."""
+    run_path = run_dir(run_id)
+    latest_hash: str | None = None
+    for event in RunStore().replay_events(run_id):
+        if event.get("transition") == "amend" and event.get("approved") is True:
+            latest_hash = event.get("manifest_hash")
+    if latest_hash:
+        amended = run_path / f"contract-manifest-{latest_hash[:16]}.json"
+        if amended.exists():
+            return json.loads(amended.read_bytes())
+    return json.loads((run_path / _MANIFEST_ARTIFACT).read_bytes())
+
+
+def _norm_dist(name: object) -> str:
+    """PEP 503 canonical distribution key: lowercase, runs of ``-_.`` collapse to a single ``-``."""
+    return re.sub(r"[-_.]+", "-", str(name).lower())
+
+
+def _committed_object_type(repo: Path, commit: str, path: str) -> str | None:
+    """The git object type of ``commit:path`` (``blob``/``tree``), or None if it does not exist."""
+    rc, out = _git_text(repo, "cat-file", "-t", f"{commit}:{path}")
+    return out.strip() if rc == 0 else None
+
+
+def _ast_backstop_offenders(old_blob: bytes, new_blob: bytes) -> list[str]:
+    """Offending test names the AST backstop flags for a changed contract test file (defense-in-depth).
+
+    Runs ``integrity._analyze`` over the committed old/new source; a "weakened" verdict names its
+    offender. IssueForge DISCARDS MARVIN's sanctioned pending-marker-flip carve-out (the issue's
+    NON-GOALS): removing a pending ``xfail(strict=True)`` marker from a FROZEN contract test is
+    itself a weakening here, so a test pending in OLD but not in NEW is named too. A parse failure or
+    a non-.py/deleted file yields nothing (protected_path_diff/dep_hash already cover those)."""
+    try:
+        old_src = old_blob.decode("utf-8")
+        new_src = new_blob.decode("utf-8")
+    except UnicodeDecodeError:
+        return []
+    offenders: set[str] = set()
+    try:
+        verdict, name, _reason = integrity._analyze(old_src, new_src)
+        if verdict == "weakened" and name:
+            # A class-level decorator weakening surfaces the bare ``ClassName``; qualify it per
+            # affected method (``Class::method``), the R1 canonical ast_backstop offender detail —
+            # every method shares the class decorator's environment, so every method is an offender.
+            methods = [
+                qual
+                for qual in integrity._collect_tests(ast.parse(old_src))
+                if qual.startswith(f"{name}{integrity._QUALSEP}")
+            ]
+            offenders.update(methods or [name])
+        for qual in integrity._collect_tests(ast.parse(old_src)):
+            if integrity.is_pending(old_src, qual) and not integrity.is_pending(new_src, qual):
+                offenders.add(qual)
+    except SyntaxError:
+        return []
+    return sorted(offenders)
+
+
+def _authoritative_versions(interpreter: object, env: object, names: list[str]) -> dict[str, str]:
+    """Re-resolve each distribution's version in the PROVISIONED interpreter, with a NEUTRAL cwd so a
+    candidate-side ``<dist>-<ver>.dist-info`` decoy committed in the worktree (which would poison a
+    ``cwd``-on-``sys.path`` lookup) is ignored — the authoritative env's own installed version wins."""
+    if not interpreter or not names:
+        return {}
+    code = (
+        "import importlib.metadata as m, sys\n"
+        "for n in sys.argv[1:]:\n"
+        "    try:\n"
+        "        print(n + chr(9) + m.version(n))\n"
+        "    except Exception:\n"
+        "        print(n + chr(9))\n"
+    )
+    neutral_cwd = Path(interpreter).parent
+    result = process.run(
+        [str(interpreter), "-c", code, *names],
+        cwd=neutral_cwd,
+        env=env,
+        timeout=_COLLECT_TIMEOUT,
+    )
+    out: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "\t" in line:
+            name, _sep, version = line.partition("\t")
+            if version.strip():
+                out[name] = version.strip()
+    return out
+
+
+def _external_pin_violations(
+    adapter: object, collection: object, frozen_pins: object, violations: list
+) -> None:
+    """Re-resolve external pins in the authoritative (provisioned) env and diff against the frozen
+    ``external_pins`` — a delta, a missing dist, or a newly-required dist each fire ``external_pin``.
+    A frozen pin that is no longer resolvable surfaces the ``DiscoveryError`` as a ``<dist> missing``.
+
+    Discovery names WHICH distributions the contract imports; their versions are then re-resolved
+    authoritatively (see :func:`_authoritative_versions`) so a candidate-committed dist-info decoy
+    declaring the frozen version cannot mask a real drift."""
+    from issueforge.adapters.pytest_adapter import DiscoveryError
+
+    frozen_map: dict[str, tuple[str, str]] = {}
+    for pin in frozen_pins or []:
+        dist, version = str(pin[0]), str(pin[1])
+        frozen_map[_norm_dist(dist)] = (dist, version)
+
+    try:
+        closure = adapter.discover_contract_dependencies(collection)
+    except DiscoveryError as exc:
+        key = _norm_dist(exc.name)
+        dist = frozen_map[key][0] if key in frozen_map else exc.name
+        violations.append(("external_pin", f"{dist} missing"))
+        return
+
+    names = [str(dist) for dist, _version in closure.external]
+    authoritative = _authoritative_versions(
+        getattr(collection, "interpreter", None), getattr(collection, "env", None), names
+    )
+    resolved_map: dict[str, tuple[str, str]] = {}
+    for dist, version in closure.external:
+        resolved = authoritative.get(str(dist), str(version))
+        resolved_map[_norm_dist(dist)] = (str(dist), resolved)
+
+    for key, (dist, version) in frozen_map.items():
+        if key not in resolved_map:
+            violations.append(("external_pin", f"{dist} missing"))
+        elif resolved_map[key][1] != version:
+            violations.append(("external_pin", f"{dist} {version}->{resolved_map[key][1]}"))
+    for key, (dist, _version) in resolved_map.items():
+        if key not in frozen_map:
+            violations.append(("external_pin", f"{dist} added"))
+
+
+def _head_boundary_members(
+    worktree: Path, head: str, adapter: object, collection: object
+) -> set | None:
+    """The committed HEAD's contract-boundary member set, recomputed with the SAME rule
+    :func:`_compose_contract_manifest` freezes with (``_is_boundary_member``): a fixture-route/
+    collected/test-body closure member, a committed symlink, the selected pytest config,
+    ``.issueforge.toml``, or a ``.py`` in a directory holding a collected test. ``None`` when the
+    closure cannot be discovered (a DiscoveryError — external-pin handling covers that case). Used to
+    catch a NEW higher-precedence boundary member (e.g. a ``tests/conftest.py`` added after freeze)
+    that alters runtime outcomes without changing the collected-id set (#19, S13 finding #2)."""
+    from issueforge.adapters.pytest_adapter import DiscoveryError
+
+    try:
+        closure = adapter.discover_contract_dependencies(collection)
+    except DiscoveryError:
+        return None
+    committed, modes = _committed_tree(worktree, head)
+    closure_norm = (
+        {_normalize(p) for p in closure.fixture_closure}
+        | {_normalize(p) for p in closure.test_files}
+        | {_normalize(p) for p in closure.test_body_imports}
+    )
+    test_dirs = {os.path.dirname(_normalize(p)) for p in closure.test_files}
+    config_name, _ = _select_pytest_config(worktree, head)
+    config_norm = _normalize(config_name) if config_name else None
+    members: set[str] = set()
+    for path in committed:
+        norm = _normalize(path)
+        if (
+            norm in closure_norm
+            or modes.get(path) == "120000"
+            or (config_norm is not None and norm == config_norm)
+            or norm == ".issueforge.toml"
+            or (path.endswith(".py") and os.path.dirname(norm) in test_dirs)
+        ):
+            members.add(path)
+    return members
+
+
+def verify_contract_integrity(
+    run_id: str,
+    *,
+    candidate_worktree: object,
+    base_sha: str,
+    adapter: object,
+    provisioner: object,
+    store: object = None,
+    secrets: frozenset = frozenset(),
+) -> IntegrityReport:
+    """The absolute contract-integrity gate (#19, S13): diff the REAL committed contract_commit..HEAD
+    range, the per-file committed-blob hashes, the re-resolved external pins, the re-collected unit-id
+    set, git ancestry, and the frozen invocation — against the HARNESS-RETAINED frozen manifest, never
+    a candidate self-report. Runs ALL checks and collects EVERY fired predicate. Deterministic — it
+    never consults the AI/provider. Persists a PERMANENT verdict event binding the exact predicates,
+    details, ``ok``, and the checked head sha, on both the clean and violating paths.
+    """
+    secrets = frozenset(secrets)
+    st = store if store is not None else RunStore(secrets=secrets)
+    worktree = Path(candidate_worktree)
+    manifest = _load_frozen_manifest(run_id)
+    contract_commit = manifest["contract_commit"]
+    head = _resolve_head(worktree)
+    violations: list[tuple[str, str]] = []
+
+    contract_paths = list(manifest.get("contract_paths") or [])
+    symlinks = manifest.get("symlinks") or {}
+    dep_hashes = manifest.get("dep_hashes") or {}
+
+    # dirty worktree — an UNCOMMITTED tracked change slips the committed(contract_commit)-vs-
+    # committed(HEAD) diff and the node-id recollection (an ``assert True`` swap leaves ids
+    # unchanged), so a working-tree weakening of a frozen test, or a tracked ``.pyc`` byte change, is
+    # caught here directly against the live tree (#19, S13 findings #1/#12). Untracked cache noise is
+    # invisible to ``git diff HEAD`` and never fires.
+    for path in _dirty_tracked_paths(worktree, head):
+        if not _is_cache_noise(path, worktree):
+            violations.append(("dirty_worktree", path))
+
+    # ancestry — an independent git oracle, never spoofable by a similar-looking candidate.
+    anc_rc, _anc = _git_text(worktree, "merge-base", "--is-ancestor", contract_commit, "HEAD")
+    if anc_rc != 0:
+        violations.append(("ancestry", contract_commit))
+
+    # protected_path_diff + ast_backstop (per changed contract test file).
+    for path in contract_paths:
+        _old_rc, old_blob = _git_bytes(worktree, "show", f"{contract_commit}:{path}")
+        new_rc, new_blob = _git_bytes(worktree, "show", f"{head}:{path}")
+        changed = new_rc != 0 or old_blob != new_blob
+        if changed:
+            violations.append(("protected_path_diff", path))
+            if new_rc == 0 and path.endswith(".py") and path not in symlinks:
+                for name in _ast_backstop_offenders(old_blob, new_blob):
+                    violations.append(("ast_backstop", name))
+
+    # dep_hash — an INDEPENDENT content recompute (a symlink hashes its resolved target's blob).
+    for path in contract_paths:
+        target = symlinks.get(path, path)
+        rc, blob = _git_bytes(worktree, "show", f"{head}:{target}")
+        recomputed = _sha256_hex(blob) if rc == 0 else None
+        if recomputed != dep_hashes.get(path):
+            violations.append(("dep_hash", path))
+
+    # env_hash — a DECLARED-dependency drift in a frozen env-defining file (requirements / lock /
+    # project metadata). The external-pin re-resolution is tautological (the gate installs the frozen
+    # versions then re-resolves them), so this committed-blob byte-compare is the real declared-drift
+    # detector: a changed or removed env-defining file fires external_pin naming the file (#105 #2).
+    for path, frozen_hash in (manifest.get("env_hashes") or {}).items():
+        rc, blob = _git_bytes(worktree, "show", f"{head}:{path}")
+        recomputed = _sha256_hex(blob) if rc == 0 else None
+        if recomputed != frozen_hash:
+            violations.append(("external_pin", path))
+
+    # invocation — the FROZEN command/config drives validate_invocation (never candidate HEAD).
+    command_field = manifest.get("command") or []
+    baseline = list(command_field[0]) if command_field else []
+    frozen_test_config = manifest.get("test_config") or {}
+    # (A) re-validate the frozen command + frozen config through the adapter.
+    inv = SimpleNamespace(
+        worktree=worktree,
+        interpreter=sys.executable,
+        command=list(baseline),
+        env=None,
+        test_config=frozen_test_config or None,
+    )
+    try:
+        adapter.validate_invocation(inv)
+    except Exception as exc:  # noqa: BLE001 — only an invocation rejection carries a ``token``
+        token = getattr(exc, "token", None)
+        if token is None:
+            raise
+        violations.append(("invocation", token))
+    # (B) a wrapper/config file REFERENCED by the frozen command that drifted at HEAD. Bare-token
+    # references (a split ``-c custom.ini`` leaves ``custom.ini`` as its own token) plus EVERY ``-c``/
+    # ``--config-file`` spelling the flag-parser resolves (attached ``-ccustom.ini``, ``-c=cfg``,
+    # ``--config-file=cfg``, clustered ``-qccustom.ini``) — otherwise an attached-spelling config could
+    # drift at HEAD unchecked (round-2 gate finding #4).
+    from issueforge.adapters.pytest_adapter import _referenced_config_files
+
+    referenced = [t for t in (str(x) for x in baseline) if not t.startswith("-")]
+    referenced += _referenced_config_files(baseline)
+    for tok in dict.fromkeys(referenced):  # dedup, preserve order
+        if _committed_object_type(worktree, contract_commit, tok) != "blob":
+            continue
+        _brc, old_ref = _git_bytes(worktree, "show", f"{contract_commit}:{tok}")
+        new_ref_rc, new_ref = _git_bytes(worktree, "show", f"{head}:{tok}")
+        if new_ref_rc != 0 or old_ref != new_ref:
+            violations.append(("invocation", tok))
+    # (C) the FROZEN pytest config source (e.g. pytest.ini's addopts) drifting at HEAD.
+    config_source = (
+        frozen_test_config.get("source") if isinstance(frozen_test_config, dict) else None
+    )
+    if config_source:
+        frozen_content = frozen_test_config.get("content", "")
+        crc, head_content = _git_text(worktree, "show", f"{head}:{config_source}")
+        if crc != 0 or head_content != frozen_content:
+            violations.append(("invocation", config_source))
+
+    # recollection + external_pin — one real provision + collection over the authoritative env.
+    handle = adapter.provision_environment(worktree, None, provisioner=provisioner)
+    collect_inv = SimpleNamespace(
+        worktree=worktree,
+        interpreter=handle.interpreter,
+        command=list(baseline),
+        env=getattr(handle, "env", None),
+    )
+    collection = adapter.canonical_collect(collect_inv)
+    recollected = set(getattr(collection, "ids", ()) or ())
+    frozen_ids = set(manifest.get("collected_ids") or [])
+    for added in sorted(recollected - frozen_ids):
+        violations.append(("recollection", f"+{added}"))
+    for removed in sorted(frozen_ids - recollected):
+        violations.append(("recollection", f"-{removed}"))
+    _external_pin_violations(adapter, collection, manifest.get("external_pins") or [], violations)
+
+    # boundary recompute — a NEW in-closure boundary member at HEAD (e.g. a higher-precedence
+    # tests/conftest.py added after freeze) that alters runtime outcomes without changing the
+    # collected-id set slips protected_path_diff/dep_hash/recollection; the frozen closure hash-set
+    # gained a path, so it maps to the dep_hash family (#19, S13 finding #2 / D-T2).
+    head_members = _head_boundary_members(worktree, head, adapter, collection)
+    if head_members is not None:
+        frozen_boundary = {_normalize(p) for p in contract_paths}
+        excluded_norm = {_normalize(p) for p in (manifest.get("excluded_sut") or [])}
+        for path in sorted(head_members):
+            norm = _normalize(path)
+            if norm not in frozen_boundary and norm not in excluded_norm:
+                violations.append(("dep_hash", path))
+
+    # De-dup while preserving order, build the frozen report.
+    seen: set[tuple[str, str]] = set()
+    unique: list[IntegrityViolation] = []
+    for predicate, detail in violations:
+        key = (predicate, detail)
+        if key not in seen:
+            seen.add(key)
+            unique.append(IntegrityViolation(predicate=predicate, detail=detail))
+    ok = len(unique) == 0
+    report = IntegrityReport(ok=ok, violations=tuple(unique))
+
+    # PERMANENT verdict: a structurally-shaped, append-only event binding ok + head + (predicate,detail).
+    st.append_event(
+        run_id,
+        {
+            "transition": "integrity_verdict",
+            "ok": ok,
+            "head_sha": head,
+            "violations": [
+                {"predicate": v.predicate, "detail": v.detail} for v in report.violations
+            ],
+        },
+    )
+    return report
+
+
+def _issue_linked(reason: object) -> bool:
+    """An amendment reason is issue-linked iff it is a string carrying a ``#<digits>`` reference."""
+    return isinstance(reason, str) and re.search(r"#\d+", reason) is not None
+
+
+def amend_contract(
+    run_id: str,
+    *,
+    reason: str,
+    diff_text: str,
+    candidate_worktree: object,
+    base_sha: str,
+    adapter: object,
+    provisioner: object,
+    approver: object,
+    store: object = None,
+    secrets: frozenset = frozenset(),
+) -> FreezeResult:
+    """The auditable amendment path (#19, S13): re-freeze the acceptance manifest at a new HEAD behind
+    ALL of an issue-linked reason, the EXACT real contract_commit..HEAD diff, and renewed human
+    approval on the exact canonical bytes. Amends ONLY the acceptance manifest (files/closure/
+    collection/config/command) — it preserves the observability verdict, red evidence, and write
+    scope, and REFUSES (``WrongAmendmentRouteError``) an S9 observability/scope transition mis-routed
+    here. Writes a genuinely NEW retained artifact (the prior manifest is never clobbered) and a
+    permanent ``amend`` audit event binding reason + diff + approval + new-manifest identity. Fully
+    deterministic — never consults the AI/provider.
+    """
+    secrets = frozenset(secrets)
+    st = store if store is not None else RunStore(secrets=secrets)
+    worktree = Path(candidate_worktree)
+
+    # (1) Issue-linked reason — a plausible-sounding excuse ("cleanup") is not sufficient.
+    if not _issue_linked(reason):
+        raise ValueError(
+            f"amend refused: reason must reference an issue (e.g. '#19: ...'), got {reason!r}"
+        )
+
+    orig_manifest = _load_frozen_manifest(run_id)
+    contract_commit = orig_manifest["contract_commit"]
+
+    # (2) diff_text must match the ACTUAL contract_commit..HEAD diff (whole-body equality is not a
+    # bypass: a real decorator-only change still produces a non-empty diff).
+    _drc, real_diff = _git_text(worktree, "diff", contract_commit, "HEAD")
+    if diff_text != real_diff:
+        raise ValueError(
+            "amend refused: diff_text does not match the real contract_commit..HEAD diff"
+        )
+
+    # (2a) No-op guard: an amendment must authorize a REAL change. With HEAD unadvanced the diff is
+    # empty and re-composing would persist the original bytes under a new content-addressed name as a
+    # spurious "amendment"; refuse a no-op (empty diff / HEAD == contract_commit) and write nothing
+    # (#19, S13 finding #11).
+    head = _resolve_head(worktree)
+    if head == contract_commit or not real_diff.strip():
+        raise ValueError(
+            "amend refused: no-op amendment — HEAD has not advanced past the frozen contract_commit "
+            "(the contract_commit..HEAD diff is empty)"
+        )
+
+    # (3) Wrong-route guard: amend cannot carry an observability/scope transition. The run's CURRENT
+    # approved shape write-scope must still equal the frozen manifest's write_scope.
+    record = st.read(run_id)
+    shape = record.get("shape") or {}
+    current_ws = sorted(
+        {_normalize(p) for p in _write_scope_operands(shape.get("write_scope") or [])}
+    )
+    frozen_ws = sorted(orig_manifest.get("write_scope") or [])
+    if current_ws != frozen_ws:
+        raise WrongAmendmentRouteError(
+            "amend_contract cannot route an S9 observability/scope transition; the run's current "
+            "write_scope has diverged from the frozen contract manifest — use the S9 route"
+        )
+
+    # (4) Re-compose the acceptance manifest at the new HEAD, then preserve the non-acceptance blocks
+    # from the ORIGINAL manifest (amend never updates the observability verdict / red evidence / scope).
+    manifest, _canon, _hash = _compose_contract_manifest(
+        st, run_id, worktree, base_sha, adapter, provisioner, (), secrets
+    )
+    manifest["contract_review"] = orig_manifest.get("contract_review")
+    manifest["red_evidence"] = orig_manifest.get("red_evidence")
+    manifest["write_scope"] = list(orig_manifest.get("write_scope") or [])
+    manifest = _redact_strings(manifest, secrets)
+    canonical = _canonical_manifest_bytes(manifest)
+    manifest_hash = _sha256_hex(canonical)
+
+    # (5) Renewed approval on the EXACT canonical bytes later persisted. False persists nothing.
+    if approver(canonical) is not True:
+        return FreezeResult(approved=False, manifest=None, manifest_hash=None, artifact_path=None)
+
+    # (6) A genuinely NEW retained artifact (content-addressed name → single-assignment); the prior
+    # manifest at ``contract-manifest.json`` is never clobbered.
+    artifact_name = f"contract-manifest-{manifest_hash[:16]}.json"
+    existing = run_dir(run_id) / artifact_name
+    if existing.exists() and existing.read_bytes() != canonical:
+        raise ValueError("amend refused: a differing amended manifest is already retained")
+    if existing.exists():
+        artifact_path = existing
+    else:
+        artifact_path = st.write_artifact(
+            run_id, artifact_name, canonical.decode("utf-8"), secrets=secrets
+        )
+
+    # (7) The permanent amendment audit event binding all four amendment facts.
+    st.append_event(
+        run_id,
+        {
+            "transition": "amend",
+            "reason": reason,
+            "diff_text": diff_text,
+            "approved": True,
+            "manifest_hash": manifest_hash,
+        },
+    )
     return FreezeResult(
         approved=True,
         manifest=manifest,

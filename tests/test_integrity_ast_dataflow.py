@@ -858,7 +858,6 @@ def _live_clean_pair() -> tuple[str, str]:
 # ============================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_fixture_return_weakening_caught():
     """A @pytest.fixture returning the expected value has its return changed
     409 -> 200; the assertion is byte-identical. Must classify "weakened"."""
@@ -869,7 +868,6 @@ def test_fixture_return_weakening_caught():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_param_default_weakening_caught():
     """The expected value enters through a function parameter DEFAULT whose
     expression is byte-identical but whose helper's return flips 409 -> 200.
@@ -879,7 +877,6 @@ def test_param_default_weakening_caught():
     assert integrity.classify_acceptance_change(OLD_PARAM_DEFAULT, NEW_PARAM_DEFAULT) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_computed_expression_weakening_caught():
     """EXPECTED = base + delta is byte-identical, but delta changes 9 -> 0, so
     EXPECTED's value silently drops. Must classify "weakened"."""
@@ -888,7 +885,6 @@ def test_computed_expression_weakening_caught():
     assert integrity.classify_acceptance_change(OLD_COMPUTED_EXPR, NEW_COMPUTED_EXPR) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_helper_return_weakening_caught():
     """The assertion calls a helper for its expected value; the call is
     byte-identical but the helper now returns 200 instead of 409. Must
@@ -898,7 +894,6 @@ def test_helper_return_weakening_caught():
     assert integrity.classify_acceptance_change(OLD_HELPER_RETURN, NEW_HELPER_RETURN) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_class_method_deeper_dataflow_weakening_caught():
     """CLASS-METHOD coverage: the deeper-dataflow resolver must apply to
     test_* methods of a top-level class, not only module-level functions. The
@@ -909,7 +904,6 @@ def test_class_method_deeper_dataflow_weakening_caught():
     assert integrity.classify_acceptance_change(OLD_CLASS_HELPER, NEW_CLASS_HELPER) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_class_method_fixture_return_weakening_caught():
     """CLASS-METHOD non-helper coverage: the resolver must run the SAME
     shared per-test path for class methods across ALL vectors, not only
@@ -928,7 +922,6 @@ def test_class_method_fixture_return_weakening_caught():
 # ============================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_unrelated_fixture_change_allowed():
     """The target depends on fixture `expected` (kept 409); a DIFFERENT,
     unused fixture `other` flips 409 -> 200 while the target's only change is
@@ -941,7 +934,6 @@ def test_unrelated_fixture_change_allowed():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_unrelated_helper_change_allowed():
     """The target asserts on `_expected_status()` (kept 409); a DIFFERENT,
     uncalled helper `_unused_status` flips 409 -> 200. Must classify
@@ -954,7 +946,6 @@ def test_unrelated_helper_change_allowed():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_unrelated_computed_change_allowed():
     """The target reads EXPECTED (kept); an unreferenced OTHER computed value
     flips via other_delta 9 -> 0. Must classify "allowed"."""
@@ -966,7 +957,6 @@ def test_unrelated_computed_change_allowed():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_parametrize_marker_only_removal_allowed():
     """A legitimate marker-only activation on a @pytest.mark.parametrize-
     driven test must NOT be treated as unresolvable-dataflow weakening. Must
@@ -979,7 +969,6 @@ def test_parametrize_marker_only_removal_allowed():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_real_parametrized_acceptance_file_stays_allowed_on_benign_change():
     """A comment-only diff on a REAL parametrized acceptance file from the
     live tree (tests/test_github.py) must classify "allowed" — the resolver
@@ -995,7 +984,6 @@ def test_real_parametrized_acceptance_file_stays_allowed_on_benign_change():
 # ============================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_alias_chain_root_redefined_to_skip_blocked():
     """Alias-of-alias evasion: P1 = xfail(strict=True); P2 = P1; @P2, with P1
     redefined to a permanent skip while P2 = P1 and @P2 stay byte-identical.
@@ -1006,7 +994,6 @@ def test_alias_chain_root_redefined_to_skip_blocked():
     assert integrity.classify_acceptance_change(OLD_CHAIN_ALIAS, NEW_CHAIN_ROOT_SKIP) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_imported_alias_import_swap_blocked():
     """`from markers import PENDING_217` becomes
     `from markers import SKIP as PENDING_217` while `@PENDING_217` stays
@@ -1019,7 +1006,6 @@ def test_imported_alias_import_swap_blocked():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_imported_alias_replaced_by_local_skip_blocked():
     """The import line is replaced by a local
     `PENDING_217 = pytest.mark.skip(...)` binding while `@PENDING_217` stays
@@ -1032,7 +1018,6 @@ def test_imported_alias_replaced_by_local_skip_blocked():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_imported_alias_import_deleted_blocked():
     """The `from markers import PENDING_217` line is DELETED outright while
     `@PENDING_217` stays textually identical. A diff-only-ImportFrom-
@@ -1050,7 +1035,6 @@ def test_imported_alias_import_deleted_blocked():
 # ============================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_single_level_alias_flip_still_allowed():
     """The sanctioned Step-4 flip of a single-level in-file alias (live
     shape: `pending = pytest.mark.xfail(strict=True, reason=PENDING)` then
@@ -1064,7 +1048,6 @@ def test_single_level_alias_flip_still_allowed():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_unchanged_import_with_sibling_activation_still_allowed():
     """An imported-alias-marked test whose decorator AND import line are
     untouched, alongside a sibling test's sanctioned literal-marker
@@ -1083,7 +1066,6 @@ def test_unchanged_import_with_sibling_activation_still_allowed():
 # ============================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     ("src", "test_name"),
     [(OLD_CHAIN_ALIAS, TARGET), (OLD_IMPORTED_ALIAS, TARGET)],
@@ -1105,7 +1087,6 @@ def test_entry_alias_indirection_not_pending_control(src, test_name):
 # ============================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     "name",
     [f"TestMatching::{TARGET}", f"TestMatching.{TARGET}", TARGET],
@@ -1121,7 +1102,6 @@ def test_entry_class_level_pending_inherited_all_name_forms(name):
     assert integrity.is_pending(OLD_CLASS_LEVEL_PENDING, name) is True
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_entry_class_marker_among_env_decorators_passes():
     """Real-world shape (DandD trigger file): the class-level pending marker
     sits below @mock_aws and @patch in the class decorator list. Entry mode
@@ -1134,7 +1114,6 @@ def test_entry_class_marker_among_env_decorators_passes():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_entry_class_marker_via_alias_passes():
     """Class-level pending applied via a single-level in-file alias
     (`pending = pytest.mark.xfail(strict=True, reason=PENDING)` then
@@ -1145,7 +1124,6 @@ def test_entry_class_marker_via_alias_passes():
     assert integrity.is_pending(OLD_CLASS_ALIAS_PENDING, TARGET) is True
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_entry_bare_name_fail_closed_names_only_unmarked_class():
     """Fail-closed discriminator: TestAlpha's copy of the method is pending
     ONLY via its class-level marker; TestBeta's same-named copy is active
@@ -1157,7 +1135,6 @@ def test_entry_bare_name_fail_closed_names_only_unmarked_class():
     assert integrity.is_pending(OLD_TWO_CLASSES_ALPHA_PENDING, TARGET) is False
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     "base_src",
     [CLASS_SKIP_MARKED, CLASS_XFAIL_NONSTRICT, CLASS_IMPORTED_ALIAS_MARKED],
@@ -1178,7 +1155,6 @@ def test_entry_non_pending_class_marker_not_inherited_control(base_src):
 # ============================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     ("old_src", "new_src"),
     [
@@ -1199,7 +1175,6 @@ def test_comprehension_target_does_not_shadow_fixture(old_src, new_src):
     assert integrity.classify_acceptance_change(old_src, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     ("old_src", "new_src"),
     [
@@ -1220,7 +1195,6 @@ def test_helper_local_name_not_followed_to_module_def(old_src, new_src):
     assert integrity.classify_acceptance_change(old_src, new_src) == "allowed"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_non_shadowed_fixture_change_still_caught():
     """SCOPE-only guarantee (fail-open side): a genuinely-injected fixture
     whose return flips 409 -> 200 (no comprehension shadowing it) is still a
@@ -1231,7 +1205,6 @@ def test_non_shadowed_fixture_change_still_caught():
     assert integrity.classify_acceptance_change(OLD_PLAIN_FIXTURE, NEW_PLAIN_FIXTURE) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_helper_genuine_module_ref_still_followed():
     """SCOPE-only guarantee (fail-closed side): a helper that GENUINELY reads
     a module value (`return THRESHOLD`, no local rebinding) must still have
@@ -1245,7 +1218,6 @@ def test_helper_genuine_module_ref_still_followed():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_comprehension_internal_names_not_dragged_into_roots():
     """SCOPE-only guarantee (fail-open overreach): the assertion depends only
     on the unchanged module constant EXPECTED; an UNRELATED module-level
@@ -1264,7 +1236,6 @@ def test_comprehension_internal_names_not_dragged_into_roots():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_global_declared_helper_ref_still_followed():
     """R9 (MARVIN #666 cross-review Finding 1): a helper declares
     `global THRESHOLD` and reassigns it (`THRESHOLD += 0`) before returning it.
@@ -1279,7 +1250,6 @@ def test_global_declared_helper_ref_still_followed():
     assert integrity.classify_acceptance_change(OLD_GLOBAL_HELPER, NEW_GLOBAL_HELPER) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_forward_ref_comprehension_if_module_name_followed():
     """R9 (MARVIN #666 cross-review Finding 2): comprehension scope is
     SEQUENTIAL. In `[x for x in [1] if y for y in [2]]` the `if y` clause runs
@@ -1297,7 +1267,6 @@ def test_forward_ref_comprehension_if_module_name_followed():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_real_parametrized_acceptance_file_stays_clean_666():
     """Live-clean boundary (real tree, #666 scope fix): a comment-only diff
     on the same real parametrized acceptance file

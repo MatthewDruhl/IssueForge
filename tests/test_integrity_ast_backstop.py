@@ -49,7 +49,6 @@ def test_second_match_returns_409():
 # --- ALLOWED -----------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_marker_only_removal_allowed():
     """Removing only the pending xfail marker (assertions byte-identical) is the
     sanctioned Step-4 activation edit -> allowed."""
@@ -65,7 +64,6 @@ def test_second_match_returns_409():
     assert integrity.classify_acceptance_change(OLD_PENDING, new_src) == "allowed"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_comment_or_whitespace_change_allowed():
     """A comment-only change with assertions identical -> allowed (AST-aware, not textual)."""
     from issueforge import integrity
@@ -82,7 +80,6 @@ def test_second_match_returns_409():
     assert integrity.classify_acceptance_change(OLD_PENDING, new_src) == "allowed"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_xfail_reason_only_edit_allowed():
     """Editing only the xfail reason text (assertions/markers otherwise identical) -> allowed."""
     from issueforge import integrity
@@ -101,7 +98,6 @@ def test_second_match_returns_409():
 # --- WEAKEN: assertion tampering ----------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_value_change_blocked():
     """Expected value changed (409 -> 200) -> weakened."""
     from issueforge import integrity
@@ -116,7 +112,6 @@ def test_second_match_returns_409():
     assert integrity.classify_acceptance_change(OLD_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_operator_loosened_blocked():
     """Comparison operator loosened (== 409 -> >= 400) -> weakened."""
     from issueforge import integrity
@@ -131,7 +126,6 @@ def test_second_match_returns_409():
     assert integrity.classify_acceptance_change(OLD_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_truthy_shortcircuit_blocked():
     """Assertion short-circuited to always-true (`or True`) -> weakened."""
     from issueforge import integrity
@@ -146,7 +140,6 @@ def test_second_match_returns_409():
     assert integrity.classify_acceptance_change(OLD_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_assert_noop_blocked():
     """Real check dropped for a no-op (`assert True`) -> weakened."""
     from issueforge import integrity
@@ -164,7 +157,6 @@ def test_second_match_returns_409():
 # --- WEAKEN: deletion / rename -------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_whole_test_deletion_blocked():
     """Deleting the committed acceptance test outright -> weakened."""
     from issueforge import integrity
@@ -178,7 +170,6 @@ def test_unrelated_helper():
     assert integrity.classify_acceptance_change(OLD_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_rename_with_same_body_blocked():
     """Renaming the committed test (same body) so the named test vanishes -> weakened."""
     from issueforge import integrity
@@ -196,7 +187,6 @@ def test_second_match_renamed():
 # --- WEAKEN: marker downgrade --------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_marker_downgrade_xfail_to_skip_blocked():
     """FALSE-ALLOW #1: xfail(strict=True) downgraded to a permanent skip (not
     removed) -> weakened. This is the exact attack the guard exists to catch."""
@@ -213,7 +203,6 @@ def test_second_match_returns_409():
     assert integrity.classify_acceptance_change(OLD_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_marker_strict_true_to_strict_false_blocked():
     """xfail strict=True weakened to strict=False (an XPASS no longer fails) -> weakened."""
     from issueforge import integrity
@@ -232,7 +221,6 @@ def test_second_match_returns_409():
 # --- WEAKEN: directly-referenced module constant -------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_referenced_module_constant_change_blocked():
     """A module-level constant the assertion directly references changed
     (EXPECTED_STATUS 409 -> 200) while the assert line is textually identical -> weakened."""
@@ -263,7 +251,6 @@ def test_second_match_returns_409():
 # --- WEAKEN: the 4 NAMED false-allows (Codex-found holes) ---------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_false_allow_1_aliased_import_skip_downgrade_blocked():
     """NAMED FALSE-ALLOW #1: pending xfail downgraded to skip via an aliased
     import (`from pytest import mark` + `@mark.skip`) so a literal-chain-only
@@ -281,7 +268,6 @@ def test_second_match_returns_409():
     assert integrity.classify_acceptance_change(OLD_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_false_allow_2_empty_parametrize_blocked():
     """NAMED FALSE-ALLOW #2: pending marker swapped for
     `@pytest.mark.parametrize("case", [])` (empty params collects to nothing);
@@ -299,7 +285,6 @@ def test_second_match_returns_409(case):
     assert integrity.classify_acceptance_change(OLD_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_false_allow_3_decorator_reorder_blocked():
     """NAMED FALSE-ALLOW #3: two non-pending decorators kept but REORDERED while
     the pending xfail is removed -> weakened (decorator application order is
@@ -328,7 +313,6 @@ def test_second_match_returns_409(case):
     assert integrity.classify_acceptance_change(old_src, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_false_allow_3_decorator_reorder_same_order_marker_removal_allowed():
     """Activation control pairing with the reorder-blocked test above: SAME two
     decorators, SAME order, ONLY the pending xfail removed -> allowed."""
@@ -356,7 +340,6 @@ def test_second_match_returns_409(case):
     assert integrity.classify_acceptance_change(old_src, new_src) == "allowed"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_direct_alias_redefinition_blocked():
     """A pending marker bound to a module alias (`P1 = pytest.mark.xfail(...)`)
     kept as `@P1` on the test, but the alias itself REDEFINED to a permanent
@@ -387,7 +370,6 @@ def test_second_match_returns_409():
     assert integrity.classify_acceptance_change(old_src, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_malformed_input_raises_syntax_error():
     """Unparseable source: mirrors MARVIN's pure core EXACTLY — the pure
     ``classify_acceptance_change``/``is_pending`` functions call ``ast.parse``
@@ -403,7 +385,6 @@ def test_malformed_input_raises_syntax_error():
         integrity.is_pending("def broken(:\n", TARGET)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_false_allow_4_remarking_active_test_as_pending_blocked():
     """NAMED FALSE-ALLOW #4: an ACTIVE (unmarked) committed test re-marked
     pending by ADDING xfail(strict=True) — the inverse of the sanctioned
@@ -483,7 +464,6 @@ class TestGameIdempotency:
 """
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_class_method_assertion_weakened_blocked():
     """An expected value changed inside a class method (400 -> 200), disguised
     as a normal activation diff -> weakened."""
@@ -493,7 +473,6 @@ def test_class_method_assertion_weakened_blocked():
     assert integrity.classify_acceptance_change(_CLASS_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_class_method_deleted_blocked():
     """The committed class method deleted outright (sibling method survives so
     the class still parses) -> weakened."""
@@ -523,7 +502,6 @@ class TestGameIdempotency:
     assert integrity.classify_acceptance_change(_CLASS_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_class_method_marker_downgrade_blocked():
     """The method's pending xfail(strict=True) downgraded to a permanent skip
     (not removed) -> weakened."""
@@ -542,7 +520,6 @@ def test_class_method_marker_downgrade_blocked():
     assert integrity.classify_acceptance_change(_CLASS_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_class_decorator_removed_blocked():
     """A CLASS-LEVEL decorator (@mock_aws) stripped while every method body and
     every method decorator stays byte-identical -> weakened. The class
@@ -554,7 +531,6 @@ def test_class_decorator_removed_blocked():
     assert integrity.classify_acceptance_change(_CLASS_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_duplicate_method_name_across_classes_not_shadowed_blocked():
     """TestAPI and TestCLI both define the same method name; only TestAPI's copy
     is weakened while TestCLI's stays intact. Methods are keyed per class
@@ -585,7 +561,6 @@ class TestCLI:
     assert integrity.classify_acceptance_change(old_src, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_class_marker_only_flip_allowed():
     """Removing ONLY the method's pending marker, body byte-identical, sibling
     method untouched -> allowed (the sanctioned class-method activation)."""
@@ -594,7 +569,6 @@ def test_class_marker_only_flip_allowed():
     assert integrity.classify_acceptance_change(_CLASS_PENDING, _CLASS_MARKER_FLIPPED) == "allowed"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_module_level_weaken_not_masked_by_sibling_class_test_blocked():
     """A file with BOTH a module-level test and a class: the module-level test
     is untouched (so a module-only scan would see nothing to flag) while a
@@ -621,7 +595,6 @@ class TestGameIdempotency:
     assert integrity.classify_acceptance_change(old_src, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_class_method_assert_noop_blocked():
     """The empirical #610 attack: a class method's real checks neutered to a
     no-op (`assert True`), marker also removed so the file looks like a
@@ -643,7 +616,6 @@ def test_class_method_assert_noop_blocked():
     assert integrity.classify_acceptance_change(_CLASS_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_class_method_strict_true_to_strict_false_blocked():
     """A class method's xfail strict=True weakened to strict=False (an XPASS
     no longer fails) -> weakened. Same downgrade vector the module-level
@@ -663,7 +635,6 @@ def test_class_method_strict_true_to_strict_false_blocked():
     assert integrity.classify_acceptance_change(_CLASS_PENDING, new_src) == "weakened"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_class_decorator_addition_blocked():
     """A decorator ADDED to the class (methods untouched) — e.g. a smuggled
     class-level skip — is a weakening; the class decorator list shapes the
@@ -695,7 +666,6 @@ _CLASS_LEVEL_MARKER_REMOVED = _CLASS_LEVEL_PENDING.replace(
 )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_class_level_pending_marker_removal_allowed():
     """The pending convention applied on the CLASS (xfail(strict=True) on the
     class marks every method pending): removing ONLY the class-level marker,
@@ -709,7 +679,6 @@ def test_class_level_pending_marker_removal_allowed():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_is_pending_qualified_wrong_class_lookup_not_found():
     """A qualified `Class::method` lookup naming a class the method does NOT
     belong to -> False (not found), even though the method exists under its
@@ -725,7 +694,6 @@ def test_is_pending_qualified_wrong_class_lookup_not_found():
 # --- ENTRY MODE (is_pending) ---------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_is_pending_present_and_pending_true():
     """A named test present in src and carrying xfail(strict=True) -> True."""
     from issueforge import integrity
@@ -733,7 +701,6 @@ def test_is_pending_present_and_pending_true():
     assert integrity.is_pending(OLD_PENDING, TARGET) is True
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_is_pending_absent_false():
     """A named test not present in src -> False (not raised)."""
     from issueforge import integrity
@@ -741,7 +708,6 @@ def test_is_pending_absent_false():
     assert integrity.is_pending(OLD_PENDING, "test_does_not_exist") is False
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_is_pending_present_but_not_pending_false():
     """A named test present but unmarked (no xfail) -> False."""
     from issueforge import integrity
@@ -756,7 +722,6 @@ def test_second_match_returns_409():
     assert integrity.is_pending(src, TARGET) is False
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_is_pending_class_level_marker_inherited_across_name_forms():
     """A method whose CLASS carries xfail(strict=True) is pending even though
     the method itself is unmarked -- for the bare name, `Class::method`, and
@@ -779,7 +744,6 @@ class TestMatching:
     assert integrity.is_pending(src, f"TestMatching.{method}") is True
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_is_pending_ambiguous_bare_name_fails_closed():
     """A bare method name matching methods in several classes is pending only
     if EVERY match is pending (fail-closed on ambiguity); here TestAlpha's copy
@@ -803,3 +767,45 @@ class TestBeta:
         assert beta() == 409
 """
     assert integrity.is_pending(src, method) is False
+
+
+# --- AST-BACKSTOP OFFENDER DETAIL (#13) ----------------------------------------
+
+
+def test_ast_backstop_class_decorator_weakening_names_qualified_methods():
+    """A class-level guard decorator (@mock_aws) stripped from a class holding
+    two methods (test_a, test_b) is a weakening (the class decorator list shapes
+    the environment every method's assertions run in). The canonical R1 detail
+    for an ast_backstop offender is the QUALIFIED ``Class::method`` per affected
+    method — NOT a bare ``ClassName``. Today ``integrity._analyze`` returns the
+    bare class name for a class-decorator weakening, so the surfaced offender
+    detail is ``TestMatching`` instead of ``TestMatching::test_a`` /
+    ``TestMatching::test_b``; this LOCKs one offender per affected method,
+    each qualified."""
+    from issueforge import contract, integrity
+
+    old_src = """import pytest
+from moto import mock_aws
+
+
+@mock_aws
+class TestMatching:
+
+    def test_a(self):
+        resp = match_expense(expense_id=1, txn_id=2)
+        assert resp.status_code == 409
+
+    def test_b(self):
+        resp = match_expense(expense_id=3, txn_id=4)
+        assert resp.status_code == 409
+"""
+    # Weaken: strip the class-level guard decorator; every method body and the
+    # method decorator list stay byte-identical.
+    new_src = old_src.replace("@mock_aws\n", "")
+    assert "@mock_aws" not in new_src  # fixture self-check
+
+    assert integrity.classify_acceptance_change(old_src, new_src) == "weakened"
+
+    offenders = contract._ast_backstop_offenders(old_src.encode("utf-8"), new_src.encode("utf-8"))
+    # One QUALIFIED offender per affected method — never the bare class name.
+    assert set(offenders) == {"TestMatching::test_a", "TestMatching::test_b"}

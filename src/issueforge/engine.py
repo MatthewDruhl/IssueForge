@@ -181,7 +181,20 @@ def _execute_stage(
         _drain(s, next_id)
         raise
     _persist_captured(s, run_id, out, err, secrets)
+    _persist_candidate_worktree(s, run_id, result)
     return result
+
+
+def _persist_candidate_worktree(s: store.RunStore, run_id: str, result: Any) -> None:
+    """Persist the isolated worktree a baseline run-stage established onto the run record — the REAL
+    production seam the S13 integrity gate (#19) reads. When a stage returns a
+    ``verify.BaselineOutcome`` carrying a worktree, that worktree IS the run's candidate; recording
+    it here (from inside the run-stage lifecycle, never threaded through a caller-supplied context)
+    is what makes the gate active in production. Any other stage result is left untouched."""
+    from issueforge import verify
+
+    if isinstance(result, verify.BaselineOutcome) and result.worktree is not None:
+        s.apply(run_id, lambda _r: {"candidate_worktree": str(result.worktree)})
 
 
 def _finalize(
@@ -474,6 +487,81 @@ def _op_fingerprint(op: dict) -> str:
     return json.dumps(op, sort_keys=True)
 
 
+def _gate_provisioner(frozen_pins: dict | None = None) -> Callable[..., Any]:
+    """The provisioner the integrity gate resolves its collection under: the TARGET AUTHORITATIVE
+    environment (a real, separate venv under IssueForge's owned ``state_root()``), NOT the host
+    interpreter — a host that happens to match a frozen pin would mask a real authoritative drift
+    (#19, S13 finding #8). Delegates to ``PytestAdapter._provision_default`` with the frozen external
+    pins installed so the contract's imports resolve in the authoritative env and the external-pin
+    re-resolution runs under a state-root interpreter, never ``sys.executable``."""
+    from issueforge.adapters.pytest_adapter import _provision_default
+
+    pins = dict(frozen_pins or {})
+
+    def _provision(worktree: object, frozen_deps: object = None) -> object:
+        merged = dict(pins)
+        if isinstance(frozen_deps, dict):
+            merged.update(frozen_deps)
+        handle = _provision_default(worktree, merged or None)
+        # The gate must provision under the SAME plugin-autoload policy as freeze (#105 finding #1). The
+        # earlier wrapper DISABLED autoload here on the (mistaken) premise that freeze also disables it;
+        # freeze in fact runs with autoload ON via ``_provision_default`` and intentionally pins entry-
+        # point plugins as external deps (see test_freeze_pins_externally_autoloaded_plugin_...). With
+        # autoload OFF here, a plugin freeze discovered+pinned read as a MISSING pin at verify, spuriously
+        # failing a clean candidate. Provisioning identically to freeze keeps the two symmetric.
+        return handle
+
+    return _provision
+
+
+def _integrity_gate(run_id: str, record: dict) -> None:
+    """The mandatory S13 integrity check (#19). Reads the run's OWN persisted state: the frozen
+    manifest artifact and the recorded ``candidate_worktree``. When a frozen manifest exists, it
+    verifies the candidate through :func:`contract.verify_contract_integrity` (adapter resolved via
+    the ``registry.resolve(framework="pytest", reporter="pytest")`` seam) and raises
+    :class:`state.IllegalTransition` naming every violated predicate on a violation. A run with no
+    frozen manifest (pre-S13) is untouched; a run WITH a frozen manifest but no recorded
+    ``candidate_worktree`` is FAIL-CLOSED — missing gate context refuses, never falls through to a
+    mutation (#19, S13 finding #7)."""
+    manifest_path = store.run_dir(run_id) / "contract-manifest.json"
+    if not manifest_path.exists():
+        return
+    candidate = record.get("candidate_worktree")
+    if not candidate:
+        raise IllegalTransition(
+            f"apply_revision refused: run {run_id!r} has a frozen contract manifest but no persisted "
+            "candidate_worktree; the integrity gate cannot verify and fails closed"
+        )
+    from issueforge import contract
+    from issueforge.adapters.base import registry
+
+    adapter = registry.resolve(framework="pytest", reporter="pytest")
+    base_sha = (record.get("red_proof") or {}).get("base_sha")
+    # Derive the provisioner's frozen external pins from the ACTIVE manifest — the latest APPROVED
+    # amendment when one exists — via the SAME loader ``verify_contract_integrity`` uses
+    # (``contract._load_frozen_manifest``), NOT the original ``contract-manifest.json`` on disk (#105
+    # finding #3). Provisioning M0's pins while verify checks against an amended M1 false-blocks a
+    # legitimately amended candidate; both sides must read the same active manifest.
+    active_manifest = contract._load_frozen_manifest(run_id)
+    frozen_pins = {
+        str(pin[0]): str(pin[1])
+        for pin in (active_manifest.get("external_pins") or [])
+        if len(pin) >= 2
+    }
+    report = contract.verify_contract_integrity(
+        run_id,
+        candidate_worktree=candidate,
+        base_sha=base_sha,
+        adapter=adapter,
+        provisioner=_gate_provisioner(frozen_pins),
+    )
+    if not report.ok:
+        predicates = sorted({v.predicate for v in report.violations})
+        raise IllegalTransition(
+            f"apply_revision refused: contract integrity violated ({', '.join(predicates)})"
+        )
+
+
 def apply_revision(
     run_id: str, plan: list, gateway: Any, *, approver: Callable[[Any], bool]
 ) -> dict:
@@ -502,6 +590,13 @@ def apply_revision(
         raise ValueError(
             f"apply_revision requires a buildable, approved run; {run_id!r} is not eligible"
         )
+
+    # S13 (#19) mandatory contract-integrity gate — runs on EVERY first-mutation path, deriving its
+    # context ENTIRELY from PERSISTED RUN STATE (the frozen manifest + the run's recorded
+    # candidate_worktree), never from a caller kwarg (apply_revision has none). It refuses BEFORE any
+    # gateway mutation or human approval when the candidate violates a predicate, naming it; it runs
+    # ONLY when a frozen manifest exists, so a pre-S13 run proceeds exactly as before.
+    _integrity_gate(run_id, record)
 
     # Resume integrity (Option A): a recorded op-ID binds to the EXACT op that completed. A changed op
     # under a recorded id is refused; a matching one is treated as already done (seeded into the set).

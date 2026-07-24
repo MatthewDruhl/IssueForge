@@ -60,23 +60,28 @@ def test_verification_adapter_protocol_declares_six_signatures():
 
 
 def test_pytest_adapter_defers_only_the_s12_s13_operations(tmp_path):
-    """probe is implemented; ONLY validate_invocation (S13) remains deferred — S12 lands discover.
+    """All six adapter operations are now implemented — nothing remains deferred.
 
     Sibling amendment (#18): the original test asserted BOTH discover_contract_dependencies AND
-    validate_invocation raise NotImplementedError. S12 implements discover, so the discover-deferral
-    assertion is removed: this test now asserts ONLY validate_invocation still raises
-    NotImplementedError, and that discover is no longer a NotImplementedError stub (it returns a
-    ContractClosure for a real collection). PENDING (#18): discover still raises today, so this fails
-    until S12 lands, then flips.
+    validate_invocation raise NotImplementedError. S12 implemented discover; S13 (#19) implements
+    validate_invocation, so it no longer raises NotImplementedError: it ACCEPTS a clean command
+    (returns without raising) and REJECTS a dangerous one with ``ValueError`` naming the offending
+    flag. Both discover (a ContractClosure for a real collection) and validate_invocation are proven
+    non-stubs here.
     """
+    from types import SimpleNamespace
+
     from issueforge.adapters.pytest_adapter import ContractClosure, PytestAdapter
 
     adapter = PytestAdapter()
     assert adapter.probe(_FakeToolchain()) is not None
 
-    # S13 is still deferred: validate_invocation must still raise NotImplementedError.
-    with pytest.raises(NotImplementedError):
-        adapter.validate_invocation(None)
+    # S13 is implemented: validate_invocation is no longer a NotImplementedError stub. A clean
+    # command returns without raising; a dangerous one (bail ``-x``) raises ValueError naming it.
+    adapter.validate_invocation(SimpleNamespace(command=["pytest", "tests/"]))
+    with pytest.raises(ValueError) as excinfo:
+        adapter.validate_invocation(SimpleNamespace(command=["pytest", "tests/", "-x"]))
+    assert "-x" in str(excinfo.value)
 
     # S12 is implemented: discover is no longer a NotImplementedError stub — a real collection
     # yields a ContractClosure rather than raising.

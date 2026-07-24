@@ -209,7 +209,7 @@ def _seed_freeze_evidence(run_id: str, repo: SimpleNamespace, *, head: str | Non
     )
 
 
-def _freeze(run_id: str, repo: SimpleNamespace, *, approver=None):
+def _freeze(run_id: str, repo: SimpleNamespace, *, approver=None, provisioner=None):
     from issueforge import contract
 
     _seed_freeze_evidence(run_id, repo)
@@ -218,7 +218,7 @@ def _freeze(run_id: str, repo: SimpleNamespace, *, approver=None):
         candidate_worktree=repo.path,
         base_sha=repo.base_sha,
         adapter=_adapter(),
-        provisioner=_provisioner(),
+        provisioner=provisioner or _provisioner(),
         approver=_approve_all if approver is None else approver,
     )
 
@@ -232,7 +232,6 @@ def _manifest_bytes(run_id: str) -> bytes:
 # =============================================================== Group A — amend_contract (§4)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_happy_path_writes_new_manifest_and_preserves_review_block(tmp_path):
     """A valid amendment (issue-linked reason + the exact real diff + renewed approval) writes a
     genuinely NEW manifest with a different hash and an updated contract_commit, while leaving the
@@ -254,7 +253,7 @@ def test_amend_happy_path_writes_new_manifest_and_preserves_review_block(tmp_pat
     assert original.approved is True
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     repo.candidate_sha = new_head
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
@@ -277,7 +276,6 @@ def test_amend_happy_path_writes_new_manifest_and_preserves_review_block(tmp_pat
 
 
 @pytest.mark.parametrize("reason", [None, "", "cleanup"])
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_refused_when_reason_missing(tmp_path, reason):
     """An amendment with no issue-linked reason is refused, even when the diff is the exact real
     diff and the approver would have approved — no new manifest is ever persisted. This covers
@@ -299,7 +297,7 @@ def test_amend_refused_when_reason_missing(tmp_path, reason):
     before = _manifest_bytes(run)
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
 
@@ -317,7 +315,6 @@ def test_amend_refused_when_reason_missing(tmp_path, reason):
     assert _manifest_bytes(run) == before == original.artifact_path.read_bytes()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_refused_when_diff_text_does_not_match_real_diff(tmp_path):
     """A candidate ``diff_text`` that does not match the ACTUAL contract_commit..HEAD diff is
     refused — a caller cannot authorize one change while a different change is really staged.
@@ -336,7 +333,7 @@ def test_amend_refused_when_diff_text_does_not_match_real_diff(tmp_path):
     original = _freeze(run, repo)
     before = _manifest_bytes(run)
 
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     fabricated_diff = (
         "--- a/tests/test_new.py\n+++ b/tests/test_new.py\n"
@@ -358,7 +355,6 @@ def test_amend_refused_when_diff_text_does_not_match_real_diff(tmp_path):
     assert _manifest_bytes(run) == before == original.artifact_path.read_bytes()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_refused_when_approver_returns_false(tmp_path):
     """Rejecting the renewed approval writes nothing: FreezeResult.approved is False and the
     manifest fields are all None, and the original manifest artifact is untouched on disk.
@@ -378,7 +374,7 @@ def test_amend_refused_when_approver_returns_false(tmp_path):
     before = _manifest_bytes(run)
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
 
@@ -400,7 +396,6 @@ def test_amend_refused_when_approver_returns_false(tmp_path):
     assert _manifest_bytes(run) == before == original.artifact_path.read_bytes()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_body_byte_identical_does_not_bypass_exact_diff_check(tmp_path):
     """R6 finding #16: the ORIGINAL test proved nothing (its diff was empty, so it failed only on
     the missing reason). This constructs a REAL boundary change — a decorator line — while the
@@ -426,7 +421,7 @@ def test_amend_body_byte_identical_does_not_bypass_exact_diff_check(tmp_path):
     before = _manifest_bytes(run)
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": new_src})
+    new_head = _commit(repo.path, {"tests/test_new.py": new_src})
     _seed_freeze_evidence(run, repo, head=new_head)
     real_diff = _real_diff(repo.path, old_head, new_head)
     assert real_diff  # a REAL, non-empty diff despite the byte-identical function body
@@ -458,7 +453,6 @@ def test_amend_body_byte_identical_does_not_bypass_exact_diff_check(tmp_path):
     assert result.manifest["contract_commit"] == new_head
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_approver_receives_the_exact_bytes_subsequently_persisted(tmp_path):
     """R6 finding #17: the renewed-approval callback is not a rubber stamp — it must receive the
     EXACT canonical bytes amend_contract goes on to persist (happy path), and the exact real
@@ -481,7 +475,7 @@ def test_amend_approver_receives_the_exact_bytes_subsequently_persisted(tmp_path
     _freeze(run, repo)
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
 
@@ -516,7 +510,7 @@ def test_amend_approver_receives_the_exact_bytes_subsequently_persisted(tmp_path
     )
     _freeze(run2, repo2)
     old_head2 = repo2.candidate_sha
-    new_head2 = _commit(repo2, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head2 = _commit(repo2.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run2, repo2, head=new_head2)
     diff_text2 = _real_diff(repo2.path, old_head2, new_head2)
     reject_kwargs = dict(
@@ -560,7 +554,6 @@ def test_amend_approver_receives_the_exact_bytes_subsequently_persisted(tmp_path
     assert captured2[0] == oracle.artifact_path.read_bytes()  # whole-payload byte-for-byte
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_new_manifest_is_a_genuinely_new_retained_artifact_prior_preserved(tmp_path):
     """R6 finding #18: "writes a new manifest" must be proven on the RETAINED ARTIFACT, not only
     the returned dataclass — and the prior manifest must remain auditable (never clobbered), exactly
@@ -582,7 +575,7 @@ def test_amend_new_manifest_is_a_genuinely_new_retained_artifact_prior_preserved
     original_bytes = original.artifact_path.read_bytes()
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
 
@@ -608,7 +601,6 @@ def test_amend_new_manifest_is_a_genuinely_new_retained_artifact_prior_preserved
     assert original.artifact_path.read_bytes() == original_bytes
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_records_a_permanent_audit_event_binding_reason_diff_approval_and_manifest(tmp_path):
     """R6 finding #19: a successful amendment appends exactly one PERMANENT "amend" event to the
     run's append-only event log that binds all four amendment facts together — the issue-linked
@@ -630,7 +622,7 @@ def test_amend_records_a_permanent_audit_event_binding_reason_diff_approval_and_
     _freeze(run, repo)
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
     reason = "#19: widen the assertion tolerance per reviewer feedback"
@@ -656,7 +648,6 @@ def test_amend_records_a_permanent_audit_event_binding_reason_diff_approval_and_
     assert event.get("manifest_hash") == result.manifest_hash
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_rejects_when_a_real_s9_observability_amendment_has_since_landed(tmp_path):
     """R6 finding #20: the ORIGINAL test hand-mutated a dict field (never a real transition) and
     asserted on a message substring that a stale head_sha alone could also trigger. This drives an
@@ -761,7 +752,7 @@ def test_amend_rejects_when_a_real_s9_observability_amendment_has_since_landed(t
     assert record["shape"]["observability"]["verdict"] == "existing coverage sufficient"
 
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     diff_text = _real_diff(repo.path, old_head, new_head)
     # Re-bind the S11 review to the CURRENT head so currency alone cannot explain a refusal.
     _seed_freeze_evidence(run, repo, head=new_head)
@@ -781,7 +772,6 @@ def test_amend_rejects_when_a_real_s9_observability_amendment_has_since_landed(t
 
 
 @pytest.mark.parametrize("path", ["success", "refusal"])
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_amend_contract_never_invokes_the_ai_provider(tmp_path, monkeypatch, path):
     """R7 finding #21: amend_contract's every precondition (reason validation, exact-diff
     verification, renewed approval) is fully deterministic — no AI/provider call on either the
@@ -806,7 +796,7 @@ def test_amend_contract_never_invokes_the_ai_provider(tmp_path, monkeypatch, pat
     )
     _freeze(run, repo)
     old_head = repo.candidate_sha
-    new_head = _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_freeze_evidence(run, repo, head=new_head)
     diff_text = _real_diff(repo.path, old_head, new_head)
 
@@ -830,7 +820,6 @@ def test_amend_contract_never_invokes_the_ai_provider(tmp_path, monkeypatch, pat
 # =============================================================== Group B — verify_contract_integrity (§2)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_ok_true_for_clean_candidate(tmp_path):
     """A candidate HEAD that exactly matches the frozen contract passes every check: ok is True and
     violations is empty.
@@ -859,7 +848,6 @@ def test_verify_contract_integrity_ok_true_for_clean_candidate(tmp_path):
     assert report.violations == ()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_flags_protected_path_diff_by_name(tmp_path):
     """Editing a frozen (protected) contract file at HEAD is caught as a named "protected_path_diff"
     violation naming the changed path — never silently absorbed as "ok".
@@ -879,7 +867,7 @@ def test_verify_contract_integrity_flags_protected_path_diff_by_name(tmp_path):
     frozen = _freeze(run, repo)
     assert "tests/test_new.py" in frozen.manifest["contract_paths"]
 
-    _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
 
     report = contract.verify_contract_integrity(
         run,
@@ -894,7 +882,6 @@ def test_verify_contract_integrity_flags_protected_path_diff_by_name(tmp_path):
 
 
 @pytest.mark.parametrize("outcome", ["clean", "violation"])
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_never_invokes_the_ai_provider(tmp_path, monkeypatch, outcome):
     """The static integrity check is fully deterministic: it never calls out to the AI/provider seam,
     on either the clean or the violating path — the harness runs this, never the policed session.
@@ -918,7 +905,7 @@ def test_verify_contract_integrity_never_invokes_the_ai_provider(tmp_path, monke
     )
     _freeze(run, repo)
     if outcome == "violation":
-        _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+        _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
 
     report = contract.verify_contract_integrity(
         run,
@@ -930,7 +917,6 @@ def test_verify_contract_integrity_never_invokes_the_ai_provider(tmp_path, monke
     assert report.ok is (outcome == "clean")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_env_var_branch_in_excluded_sut_is_not_caught(tmp_path):
     """R8 finding #22: the ORIGINAL residual-risk test used a pre-approved branch on an unchanged
     HEAD, which is trivially "ok" for reasons unrelated to the claimed risk. This freezes a manifest
@@ -967,7 +953,7 @@ def test_verify_contract_integrity_env_var_branch_in_excluded_sut_is_not_caught(
     assert "app/calc.py" not in frozen.manifest["contract_paths"]
 
     _commit(
-        repo,
+        repo.path,
         {
             "app/calc.py": (
                 "import os\n\n\n"
@@ -1057,7 +1043,7 @@ def _scenario_protected_path_diff(tmp_path):
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
     _freeze(run, repo)
-    _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     return run, repo, None
 
 
@@ -1075,7 +1061,7 @@ def _scenario_dep_hash(tmp_path):
     )
     repo.candidate_sha = _add_symlink_commit(repo.path, "tests/data_link", "../lib/shared_data.txt")
     _freeze(run, repo)
-    _commit(repo, {"lib/shared_data.txt": "v2\n"})
+    _commit(repo.path, {"lib/shared_data.txt": "v2\n"})
     return run, repo, None
 
 
@@ -1100,7 +1086,7 @@ def _scenario_recollection(tmp_path):
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
     _freeze(run, repo)
-    _commit(repo, {"tests/test_extra.py": "def test_extra():\n    assert True\n"})
+    _commit(repo.path, {"tests/test_extra.py": "def test_extra():\n    assert True\n"})
     return run, repo, None
 
 
@@ -1117,7 +1103,7 @@ def _scenario_invocation(tmp_path):
         },
     )
     _freeze(run, repo)
-    _commit(repo, {"pytest.ini": "[pytest]\naddopts = -x\n"})
+    _commit(repo.path, {"pytest.ini": "[pytest]\naddopts = -x\n"})
     return run, repo, None
 
 
@@ -1155,7 +1141,7 @@ def _scenario_ast_backstop(tmp_path):
     )
     _freeze(run, repo)
     _commit(
-        repo,
+        repo.path,
         {"tests/test_new.py": ("import pytest\n\n\ndef test_flaky():\n    assert 1 == 2\n")},
     )
     return run, repo, None
@@ -1172,7 +1158,6 @@ _GATE_SCENARIOS = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_refuses_apply_revision_before_any_mutation_on_integrity_violation(tmp_path):
     """REDESIGNED (finding 6): given a run with a frozen manifest and a candidate_worktree PERSISTED
     on the run's OWN state (never on the apply_revision call) whose HEAD violates a predicate,
@@ -1193,7 +1178,7 @@ def test_engine_refuses_apply_revision_before_any_mutation_on_integrity_violatio
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
     _freeze(run, repo)
-    _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_candidate_worktree(run, repo.path)
 
     with pytest.raises(Exception, match=r"(?i)protected_path_diff"):
@@ -1202,7 +1187,6 @@ def test_engine_refuses_apply_revision_before_any_mutation_on_integrity_violatio
     assert not any(e.get("transition") == "revision" for e in events)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_gate_error_names_the_violated_predicate_precisely(tmp_path):
     """REDESIGNED (finding 6): the raised integrity error names the SPECIFIC violated predicate, not
     a generic failure — a caller resolving the refusal must be able to tell WHICH invariant broke,
@@ -1220,7 +1204,7 @@ def test_engine_gate_error_names_the_violated_predicate_precisely(tmp_path):
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
     _freeze(run, repo)
-    _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_candidate_worktree(run, repo.path)
 
     with pytest.raises(Exception) as excinfo:
@@ -1228,7 +1212,6 @@ def test_engine_gate_error_names_the_violated_predicate_precisely(tmp_path):
     assert "protected_path_diff" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_proceeds_to_mutation_when_candidate_is_clean(tmp_path):
     """REDESIGNED (finding 6): a clean candidate (verify ok), with its worktree PERSISTED on the
     run's own state, is NOT blocked by the gate: apply_revision — original signature, no integrity
@@ -1251,7 +1234,10 @@ def test_engine_proceeds_to_mutation_when_candidate_is_clean(tmp_path):
         "gate-clean",
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
-    _freeze(run, repo)
+    # Freeze under a REAL venv (autoload ON), the SAME policy the gate provisions under, so the frozen
+    # external pins (pytest + its infra) match what the gate re-resolves — a host-provisioned freeze
+    # would pin nothing and the venv-provisioned gate would read every infra dist as a phantom (#105 #1).
+    _freeze(run, repo, provisioner=_real_pin({}))
     _seed_candidate_worktree(run, repo.path)
 
     oracle = contract.verify_contract_integrity(
@@ -1259,7 +1245,7 @@ def test_engine_proceeds_to_mutation_when_candidate_is_clean(tmp_path):
         candidate_worktree=repo.path,
         base_sha=repo.base_sha,
         adapter=_adapter(),
-        provisioner=_provisioner(),
+        provisioner=_real_pin({}),
     )
     assert oracle.ok is True
 
@@ -1271,7 +1257,6 @@ def test_engine_proceeds_to_mutation_when_candidate_is_clean(tmp_path):
     assert revisions and revisions[-1]["completed"] == ["op-1"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_gate_check_itself_never_invokes_the_ai_provider(tmp_path, monkeypatch):
     """REDESIGNED (finding 6): the gate's integrity check, run from inside apply_revision using the
     run's own persisted candidate_worktree, is exactly as deterministic as a direct
@@ -1297,14 +1282,13 @@ def test_engine_gate_check_itself_never_invokes_the_ai_provider(tmp_path, monkey
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
     _freeze(run, repo)
-    _commit(repo, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
     _seed_candidate_worktree(run, repo.path)
 
     with pytest.raises(Exception, match=r"(?i)protected_path_diff"):
         engine.apply_revision(run, _plan(), _ExplodingGateway(), approver=_approve_all)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_gate_check_never_invokes_the_ai_provider_on_clean_path(tmp_path, monkeypatch):
     """Finding 5: the earlier no-AI engine coverage was refusal-only. The gate is exactly as
     deterministic on the CLEAN (proceeding) path as it is on the refusal path — no provider
@@ -1333,7 +1317,9 @@ def test_engine_gate_check_never_invokes_the_ai_provider_on_clean_path(tmp_path,
         "gate-noai-clean",
         candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
     )
-    _freeze(run, repo)
+    # Freeze under a REAL venv (autoload ON), symmetric with the gate's provisioner, so the frozen infra
+    # pins match what the gate re-resolves and the clean candidate is not phantom-blocked (#105 #1).
+    _freeze(run, repo, provisioner=_real_pin({}))
     _seed_candidate_worktree(run, repo.path)
 
     oracle = contract.verify_contract_integrity(
@@ -1341,7 +1327,7 @@ def test_engine_gate_check_never_invokes_the_ai_provider_on_clean_path(tmp_path,
         candidate_worktree=repo.path,
         base_sha=repo.base_sha,
         adapter=_adapter(),
-        provisioner=_provisioner(),
+        provisioner=_real_pin({}),
     )
     assert oracle.ok is True
 
@@ -1353,7 +1339,6 @@ def test_engine_gate_check_never_invokes_the_ai_provider_on_clean_path(tmp_path,
     assert revisions and revisions[-1]["completed"] == ["op-1"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_apply_revision_proceeds_unchanged_with_no_frozen_manifest(tmp_path):
     """Finding 6 (backward compatibility, superseding the deleted mandatory-kwarg test): a run with
     NO frozen contract manifest at all — the pre-S13 shape, e.g. a plain buildable run that never
@@ -1386,7 +1371,6 @@ def test_engine_apply_revision_proceeds_unchanged_with_no_frozen_manifest(tmp_pa
 
 
 @pytest.mark.parametrize("predicate", sorted(_GATE_SCENARIOS))
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_engine_gate_blocks_every_predicate(tmp_path, monkeypatch, predicate):
     """R5 finding #24, REDESIGNED per finding 6: the gate must block on EVERY predicate, sourcing
     its integrity context entirely from the run's OWN PERSISTED state — never from a caller-supplied
@@ -1419,3 +1403,310 @@ def test_engine_gate_blocks_every_predicate(tmp_path, monkeypatch, predicate):
     assert predicate in str(excinfo.value)
     events = store.RunStore().replay_events(run)
     assert not any(e.get("transition") == "revision" for e in events)
+
+
+# =============================================================== S13 remediation (#19) — T7/T9/T11
+# PENDING acceptance tests closing the Codex NO-SHIP holes where a wrong/inert impl passes the
+# existing suite (see s13 Phase A contract, findings #7/#9/#11). Each FAILS the branch impl today.
+
+
+def test_engine_gate_runs_from_worktree_persisted_by_real_build_lifecycle(tmp_path):
+    """Finding #7: the engine gate is inert in production because NOTHING production-side persists a
+    run's ``candidate_worktree`` — only the ``_seed_candidate_worktree`` TEST helper does, so every
+    green gate test is fake-green. Per D-T7 the REAL persistence seam is the ENGINE RUN-STAGE,
+    ``engine._execute_stage``: it holds the store ``s`` and ``run_id`` and runs the run's stage, whose
+    baseline establishment (``verify.establish_green_baseline``) returns a ``BaselineOutcome`` carrying
+    the isolated worktree ``workspace.create_isolated_worktree`` created. Production MUST persist that
+    worktree onto the run record FROM INSIDE ``_execute_stage`` (not by threading ``run_id``/``store``
+    into ``establish_green_baseline`` — a caller-supplied context is the wrong seam). This drives that
+    REAL run-stage seam — a real ``RunStore`` + ``run_id`` — via a stage that establishes the baseline
+    through the DOCUMENTED injection seams (fake workspace + green runner, so no real remote/AI), and,
+    WITHOUT ever calling ``_seed_candidate_worktree``, proves the persisted worktree is what the gate
+    then consults to refuse a violating HEAD before any mutation.
+
+    technical: engine._execute_stage(RunStore(), run, <stage that establishes the baseline>, record)
+    persists store.RunStore().read(run)["candidate_worktree"] == the worktree the stage's
+    BaselineOutcome carried (repo.path, from the injected create_isolated_worktree). Today
+    _execute_stage RUNS the stage but persists nothing, so the field is absent — a MISSING-FIELD
+    assertion failure, never a TypeError from a call signature. engine.apply_revision(run, plan,
+    _ExplodingGateway(), approver=_approve_all) — no integrity kwargs — then raises naming
+    "protected_path_diff" before touching the gateway, and records no "revision" event. Fail-closed
+    control: a run WITH a frozen manifest but NO persisted candidate_worktree does NOT silently skip
+    the gate — apply_revision raises and the gateway is touched for ZERO ops.
+    """
+    from issueforge import engine, verify
+    from issueforge.adapters.base import BaselineStatus
+
+    run = _mk_run()
+    repo = _repo(
+        tmp_path,
+        "gate-lifecycle",
+        candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
+    )
+    _freeze(run, repo)
+    # Advance HEAD so the worktree the lifecycle persists has a protected-path violation.
+    _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+
+    # Documented injection seams (workspace/run_baseline) so no real remote is needed — but the
+    # worktree the lifecycle CREATES is a real checkout whose HEAD violates the frozen contract.
+    fake_ws = SimpleNamespace(
+        fetch_default_sha=lambda checkout: SimpleNamespace(ok=True, sha=repo.base_sha, reason=None),
+        create_isolated_worktree=lambda checkout, sha: SimpleNamespace(
+            ok=True, isolated=True, path=repo.path, reason=None
+        ),
+    )
+
+    def _green_runner(worktree, command, *, adapter, provisioner):
+        return SimpleNamespace(status=BaselineStatus.GREEN)
+
+    def _baseline_stage(_record):
+        # The run-stage establishes the baseline through the documented injection seams; the returned
+        # BaselineOutcome carries the isolated worktree production must persist onto the run record.
+        return verify.establish_green_baseline(
+            repo.path,
+            adapter=_adapter(),
+            workspace=fake_ws,
+            provisioner=_provisioner(),
+            run_baseline=_green_runner,
+            dispatch=None,
+        )
+
+    # The REAL engine run-stage seam, holding the store + run_id. PRODUCTION must persist
+    # candidate_worktree here from the stage's BaselineOutcome; today _execute_stage runs the stage
+    # but persists nothing, which is exactly the inert-gate hole this test pins.
+    s = store.RunStore()
+    engine._execute_stage(s, run, _baseline_stage, s.read(run))
+
+    # Persisted by the run-stage lifecycle, NOT by a test helper (_seed_candidate_worktree unused).
+    persisted = store.RunStore().read(run).get("candidate_worktree")
+    assert persisted is not None and Path(persisted) == repo.path
+
+    # The gate sources its candidate ENTIRELY from that persisted state and refuses before mutating.
+    with pytest.raises(Exception, match=r"(?i)protected_path_diff"):
+        engine.apply_revision(run, _plan(), _ExplodingGateway(), approver=_approve_all)
+    assert not any(e.get("transition") == "revision" for e in store.RunStore().replay_events(run))
+
+    # Fail-closed control: a frozen run with NO persisted candidate_worktree must refuse, never fall
+    # through to a mutation — missing gate context is a refusal, not a pass-through.
+    run2 = _mk_run("gate-lifecycle-failclosed")
+    repo2 = _repo(
+        tmp_path,
+        "gate-lifecycle-failclosed",
+        candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
+    )
+    _freeze(run2, repo2)
+    gw2 = _SpyGateway()
+    with pytest.raises(Exception):
+        engine.apply_revision(run2, _plan(), gw2, approver=_approve_all)
+    assert gw2.calls == []
+    assert not any(e.get("transition") == "revision" for e in store.RunStore().replay_events(run2))
+
+
+def test_verify_after_successful_amendment_loads_the_new_manifest(tmp_path):
+    """Finding #9: amend writes a content-addressed ``contract-manifest-<hash>.json``, but verify's
+    ``_load_frozen_manifest`` always reads the fixed ``contract-manifest.json`` — so an AUTHORIZED
+    amendment never takes effect: verify keeps reloading the pre-amend manifest M0 and re-flags the
+    now-authorized change. This freezes M0, advances HEAD across a real boundary change, amends to a
+    new authoritative manifest M1 at the new commit, and proves a re-run verify passes.
+
+    technical: freeze M0 (protects tests/test_new.py at C0); a real edit advances HEAD to C1; verify
+    at C1 against M0 flags ("protected_path_diff","tests/test_new.py"); amend_contract(reason="#19: ...",
+    diff_text=<real C0..C1 diff>, ...) succeeds with contract_commit == C1; a re-run
+    verify_contract_integrity for the SAME run reports ok is True (M1 authoritative). Control: the
+    prior M0 artifact stays retained byte-for-byte (audit history intact).
+    """
+    from issueforge import contract
+
+    run = _mk_run()
+    repo = _repo(
+        tmp_path,
+        "verify-after-amend",
+        candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
+    )
+    original = _freeze(run, repo)
+    original_bytes = original.artifact_path.read_bytes()
+    assert "tests/test_new.py" in original.manifest["contract_paths"]
+
+    c0 = repo.candidate_sha
+    c1 = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    repo.candidate_sha = c1
+
+    # Pre-amend: verify at C1 against M0 flags the as-yet-unauthorized boundary change.
+    pre = contract.verify_contract_integrity(
+        run,
+        candidate_worktree=repo.path,
+        base_sha=repo.base_sha,
+        adapter=_adapter(),
+        provisioner=_provisioner(),
+    )
+    assert pre.ok is False
+    assert ("protected_path_diff", "tests/test_new.py") in {
+        (v.predicate, v.detail) for v in pre.violations
+    }
+
+    # Authorize it: amend to a genuinely new authoritative manifest M1 at contract_commit C1.
+    _seed_freeze_evidence(run, repo, head=c1)
+    diff_text = _real_diff(repo.path, c0, c1)
+    amended = contract.amend_contract(
+        run,
+        reason="#19: authorized boundary change",
+        diff_text=diff_text,
+        candidate_worktree=repo.path,
+        base_sha=repo.base_sha,
+        adapter=_adapter(),
+        provisioner=_provisioner(),
+        approver=_approve_all,
+    )
+    assert amended.approved is True
+    assert amended.manifest["contract_commit"] == c1
+
+    # M1 is now authoritative: the previously-flagged change is authorized, so verify passes.
+    post = contract.verify_contract_integrity(
+        run,
+        candidate_worktree=repo.path,
+        base_sha=repo.base_sha,
+        adapter=_adapter(),
+        provisioner=_provisioner(),
+    )
+    assert post.ok is True
+
+    # Audit history intact: the prior M0 artifact remains retained, byte-for-byte.
+    assert original.artifact_path.read_bytes() == original_bytes
+
+
+def test_amend_refused_on_noop_empty_diff_unchanged_head(tmp_path):
+    """Finding #11: amend_contract has no guard that the diff is non-empty / HEAD advanced / the new
+    manifest hash differs. With HEAD unchanged from contract_commit the real diff is empty, so an
+    empty diff_text matches it and approval succeeds — persisting the original bytes as a "new"
+    content-addressed artifact. A no-op amendment must instead be REFUSED and write nothing.
+
+    technical: freeze M0 at HEAD C0; HEAD is NOT advanced (real diff is ""); amend_contract(reason=
+    "#19: no-op", diff_text="", ...) is refused (raises ValueError OR returns FreezeResult(approved=
+    False, manifest=None)); no new manifest artifact is written (only contract-manifest.json exists);
+    the on-disk manifest bytes and sha256 are unchanged.
+    """
+    from issueforge import contract
+    from issueforge.paths import run_dir
+
+    run = _mk_run()
+    repo = _repo(
+        tmp_path,
+        "amend-noop",
+        candidate_files={"tests/test_new.py": "def test_x():\n    assert 1 == 2\n"},
+    )
+    original = _freeze(run, repo)
+    before = _manifest_bytes(run)
+
+    # HEAD is NOT advanced: candidate HEAD == contract_commit C0, so the real diff is empty.
+    assert _real_diff(repo.path, repo.candidate_sha, repo.candidate_sha) == ""
+
+    refused = False
+    try:
+        result = contract.amend_contract(
+            run,
+            reason="#19: no-op",
+            diff_text="",
+            candidate_worktree=repo.path,
+            base_sha=repo.base_sha,
+            adapter=_adapter(),
+            provisioner=_provisioner(),
+            approver=_approve_all,
+        )
+        assert result.approved is False
+        assert result.manifest is None
+        refused = True
+    except ValueError:
+        refused = True
+    assert refused
+
+    # No new manifest artifact was written — only the original contract-manifest.json exists.
+    manifests = sorted(p.name for p in run_dir(run).glob("contract-manifest*.json"))
+    assert manifests == ["contract-manifest.json"]
+    # The retained manifest bytes and hash are unchanged.
+    assert _manifest_bytes(run) == before == original.artifact_path.read_bytes()
+    assert hashlib.sha256(_manifest_bytes(run)).hexdigest() == original.manifest_hash
+
+
+# ============================================================ round-2 remediation (#105, Codex NO-SHIP/6)
+# Finding #3: engine._integrity_gate derives its provisioner's frozen external pins from the ORIGINAL
+# contract-manifest.json (M0), while verify_contract_integrity loads the LATEST approved amended
+# manifest (M1) via _load_frozen_manifest. After an approved amendment that changes an external pin,
+# the gate provisions M0's pins but verify checks against M1's, so a legitimate M1-valid candidate is
+# FALSE-BLOCKED. Committed xfail(strict=True) until Phase B derives the gate's pins from the active
+# (amended) manifest too.
+
+
+def _real_pin(pins: dict[str, str]):
+    """A provisioner building a REAL venv with ``pins`` installed (mirrors
+    test_integrity_verify._real_pin_provisioner), so external identity resolves from the provisioned
+    interpreter — the only channel that makes the frozen vs amended external-pin values differ."""
+
+    def _provision(worktree, frozen_deps=None):
+        merged = dict(pins)
+        if frozen_deps:
+            merged.update(frozen_deps)
+        return _adapter().provision_environment(worktree, merged)
+
+    return _provision
+
+
+def test_engine_gate_provisions_from_the_amended_manifest_not_the_original(tmp_path):
+    """Finding #3: after an approved amendment changes an external pin (M0 platformdirs 4.10.0 ->
+    M1 4.9.0), the engine gate must provision under the ACTIVE amended manifest's pins, exactly as
+    verify loads them. Today the gate reads M0's contract-manifest.json for its provisioner pins while
+    verify loads M1, so the gate installs 4.10.0, verify expects 4.9.0, and a candidate that is clean
+    under the approved amendment is FALSE-BLOCKED with an external_pin violation. The fix makes the gate
+    derive its pins from _load_frozen_manifest (M1); then apply_revision proceeds cleanly to the gateway."""
+    from issueforge import contract, engine
+
+    run = _mk_run()
+    repo = _repo(
+        tmp_path,
+        "gate-amended-pins",
+        candidate_files={
+            "tests/test_new.py": "def test_x():\n    assert 1 == 2\n",
+            "tests/conftest.py": "import platformdirs  # noqa: F401\n",
+            # gitignore bytecode so collection's regenerated .pyc stays UNTRACKED (as in any real repo)
+            # — otherwise _commit's `git add -A` would track a stale .pyc and trip the freeze TOCTOU.
+            ".gitignore": "__pycache__/\n*.pyc\n",
+        },
+    )
+    _seed_freeze_evidence(run, repo)
+    # M0: freeze with platformdirs pinned 4.10.0.
+    m0 = contract.freeze_contract(
+        run,
+        candidate_worktree=repo.path,
+        base_sha=repo.base_sha,
+        adapter=_adapter(),
+        provisioner=_real_pin({"platformdirs": "4.10.0"}),
+        approver=_approve_all,
+    )
+    assert ("platformdirs", "4.10.0") in {(d, v) for d, v in m0.manifest["external_pins"]}
+
+    # Advance HEAD with a real contract change, then amend to M1 with platformdirs 4.9.0.
+    contract_commit = repo.candidate_sha
+    new_head = _commit(repo.path, {"tests/test_new.py": "def test_x():\n    assert 1 == 3\n"})
+    repo.candidate_sha = new_head
+    _seed_freeze_evidence(run, repo, head=new_head)
+    diff = _real_diff(repo.path, contract_commit, new_head)
+    m1 = contract.amend_contract(
+        run,
+        reason="#19: re-pin platformdirs after resolving an authorized dependency change",
+        diff_text=diff,
+        candidate_worktree=repo.path,
+        base_sha=repo.base_sha,
+        adapter=_adapter(),
+        provisioner=_real_pin({"platformdirs": "4.9.0"}),
+        approver=_approve_all,
+    )
+    assert m1.approved is True
+    assert ("platformdirs", "4.9.0") in {(d, v) for d, v in m1.manifest["external_pins"]}
+    _seed_candidate_worktree(run, repo.path)
+
+    # The candidate is clean under the APPROVED amendment (M1). The engine gate must not false-block it.
+    gw = _SpyGateway()
+    engine.apply_revision(run, _plan(), gw, approver=_approve_all)
+    assert [c for c in gw.calls if c[0] == "update_body"], (
+        "the gate false-blocked an M1-valid candidate because it provisioned the ORIGINAL manifest's "
+        "pins instead of the active amended manifest's"
+    )

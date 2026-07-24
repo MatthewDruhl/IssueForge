@@ -9,9 +9,12 @@ than a silent stub, so a caller can never mistake an unbuilt operation for a rea
 
 from __future__ import annotations
 
+import configparser
 import importlib.metadata
 import json
 import os
+import shlex
+import tomllib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -967,6 +970,11 @@ class PytestAdapter:
                 f"instrumented contract discovery did not complete cleanly "
                 f"(collect_rc={collect_rc!r}); refusing a partial closure"
             )
+        # ``pytest-reportlog`` is installed by ``_provision_default`` and force-loaded via
+        # ``verify._BASELINE`` in BOTH freeze and the gate — which share one autoload policy (#105 #1) —
+        # so it re-resolves identically on both sides and needs no special-casing here. It is deliberately
+        # NOT filtered out: an UNCONDITIONAL exclusion would blind the gate to a candidate that genuinely
+        # imports ``pytest_reportlog`` at a drifted version (round-2 gate finding #2).
         external = tuple(sorted({(str(d), str(v)) for d, v in graph.get("external") or []}))
 
         def _relrepo(fpath: object) -> str | None:
@@ -1037,7 +1045,331 @@ class PytestAdapter:
         )
 
     def validate_invocation(self, command: object) -> object:
-        raise NotImplementedError("validate_invocation lands in S13")
+        """Reject a dangerous pytest invocation OUTRIGHT (#19, S13).
+
+        ``command`` is an invocation object carrying ``.command`` (the argv) and an optional
+        ``.test_config`` (a frozen ``{"source", "content"}`` config, e.g. ``pytest.ini``'s
+        ``addopts``). A clean invocation returns ``None``; a dangerous mode raises
+        :class:`InvocationError` (a ``ValueError``) whose message NAMES the offending flag/plugin
+        token. Dangerous modes: retries/rerun (``--reruns``), sharding/xdist (``-n`` / ``--dist``),
+        bail (``-x`` / ``--maxfail``), force-exit (``--force-exit``), pass-with-no-tests
+        (``--suppress-no-test-exit-code``), and a candidate reporter/postprocessor plugin
+        (``-p <plugin>`` other than a ``no:`` disable form, or ``--report``). Each mode is caught in
+        both split (``-n 4``) and combined (``-n4`` / ``--maxfail=1``) spellings, from argv AND from
+        a frozen config source's ``addopts`` (named ``addopts:<token>``). Fully deterministic — it
+        never touches the AI/provider seam.
+        """
+        argv = list(getattr(command, "command", command) or ())
+        needle = _first_disallowed_token(argv)
+        if needle is not None:
+            raise InvocationError(needle)
+        test_config = getattr(command, "test_config", None)
+        if isinstance(test_config, dict):
+            addopts = _config_addopts_tokens(
+                str(test_config.get("content") or ""), source=test_config.get("source")
+            )
+            config_needle = _first_disallowed_token(addopts)
+            if config_needle is not None:
+                raise InvocationError(f"addopts:{config_needle}")
+        # A config file the command references via ANY ``-c`` spelling is a frozen config source too:
+        # read it from the worktree and check its ``addopts`` (a dangerous mode smuggled through an
+        # otherwise unprotected config file the parser never opened — S13 finding #6). Every spelling
+        # must be recognized, not only the split ``-c <cfg>`` form: ``-c<cfg>``, ``-c=<cfg>``, and
+        # ``--config-file[= ]<cfg>`` all point pytest at the same file (#105 finding #6).
+        worktree = getattr(command, "worktree", None)
+        if worktree:
+            for cfg_rel in _referenced_config_files(argv):
+                cfg_path = Path(worktree) / cfg_rel
+                if cfg_path.is_file():
+                    cfg_needle = _first_disallowed_token(
+                        _config_addopts_tokens(cfg_path.read_text(), source=cfg_rel)
+                    )
+                    if cfg_needle is not None:
+                        raise InvocationError(f"addopts:{cfg_needle}")
+        return None
+
+
+class InvocationError(ValueError):
+    """A dangerous invocation flag/config token was rejected. ``token`` is the exact offending
+    string (an argv flag like ``-x``, a plugin name like ``myreporter``, or an ``addopts:<flag>``
+    config token); it is also the message, so a ``str(err)`` substring check finds it."""
+
+    def __init__(self, token: str) -> None:
+        self.token = token
+        super().__init__(token)
+
+
+# Flags whose mere presence (exact, or with an attached ``=value``) is a dangerous mode; the token
+# reported is the canonical flag itself. ``-n`` (xdist) is handled separately to catch the attached
+# ``-n4`` spelling. ``--numprocesses``/``--tx`` are the xdist ALIASES of ``-n``/its transport; they
+# are value-bearing so both the split (``--numprocesses 4``) and attached (``--numprocesses=4`` /
+# ``--tx=popen``) spellings raise, each naming the alias itself (#19, S13 finding #5).
+_DANGEROUS_VALUE_FLAGS = ("--reruns", "--dist", "--maxfail", "--report", "--numprocesses", "--tx")
+# ``-d`` (xdist distributed) and ``--exitfirst`` (the bail alias of ``-x``) join the bare-flag set.
+_DANGEROUS_BARE_FLAGS = (
+    "-x",
+    "--force-exit",
+    "--suppress-no-test-exit-code",
+    "-d",
+    "--exitfirst",
+    # ``--forked`` (pytest-forked: each test in its own forked process) is a candidate-controlled
+    # execution-mode plugin flag in the same family as ``--reruns``/``-n`` (#105 finding #5).
+    "--forked",
+)
+# Short options that CONSUME the remainder of a single-dash cluster as their value (so chars after
+# them are a value, not further flags): ``-k``/``-m``/``-o``/``-c``/``-p``/``-r``/``-W`` and kin.
+# ``-n`` is handled separately (it is itself dangerous, whatever its attached value).
+_VALUE_TAKING_SHORT = frozenset("kmocprwW")
+# Dangerous SHORT bare flags (single char) that must still be caught INSIDE a cluster like ``-qx``.
+_DANGEROUS_SHORT = {"x": "-x", "d": "-d"}
+
+
+def _parse_short_cluster(tok: str) -> tuple[list[str], str | None, str | None]:
+    """Decompose a single-dash short-option cluster into ``(bare_flags, value_option, attached_value)``.
+
+    ``bare_flags`` are the leading no-argument short flags; ``value_option`` is the FIRST value-taking
+    short option encountered (which consumes the cluster remainder as its value) and ``attached_value``
+    is that remainder (``None`` when the option is the last char, so its value is the next argv token).
+    Returns ``([], None, None)`` for anything that is not a single-dash cluster (``--long``, ``-x``,
+    ``-c=cfg``). This is what lets a dangerous flag / plugin / config hidden in a cluster like ``-qx`` /
+    ``-qpmyreporter`` / ``-qccustom.ini`` be processed rather than silently skipped (round-2 gate finding #3)."""
+    if not tok.startswith("-") or tok.startswith("--") or "=" in tok or len(tok) <= 2:
+        return [], None, None
+    body = tok[1:]
+    bare: list[str] = []
+    for idx, ch in enumerate(body):
+        if ch in _VALUE_TAKING_SHORT:
+            return bare, ch, (body[idx + 1 :] or None)
+        bare.append(ch)
+    return bare, None, None
+
+
+def _first_dangerous_token(tokens: object) -> str | None:
+    """The FIRST dangerous flag/plugin token in ``tokens`` (an argv list), or None if clean.
+
+    A ``-p <plugin>`` selecting anything other than a ``no:`` disable form returns the plugin name
+    (a candidate reporter/postprocessor). Value-bearing flags are matched exactly or with an attached
+    ``=value``; ``-n`` also matches the attached ``-n4`` spelling. A dangerous short flag hidden inside
+    a cluster (``-qx``), and any ``@argfile`` (which smuggles further args past argv scanning), are
+    both caught (#105 finding #5)."""
+    toks = [str(t) for t in (tokens or ())]
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        # An ``@argfile`` makes pytest read further args from a file, bypassing argv scanning entirely;
+        # a sanctioned frozen command never needs one, so reject it outright.
+        if tok.startswith("@"):
+            return tok
+        if tok == "-p":
+            plugin = toks[i + 1] if i + 1 < len(toks) else ""
+            if plugin and not plugin.startswith("no:"):
+                return plugin
+            i += 2
+            continue
+        if tok.startswith("-p") and len(tok) > 2:  # attached -p<plugin>
+            plugin = tok[2:]
+            if plugin and not plugin.startswith("no:"):
+                return plugin
+            i += 1
+            continue
+        for flag in _DANGEROUS_VALUE_FLAGS:
+            if tok == flag or tok.startswith(flag + "="):
+                return flag
+        if tok in _DANGEROUS_BARE_FLAGS:
+            return tok
+        if tok.startswith("-n") and not tok.startswith("--"):  # -n, -n4, -n=4
+            return "-n"
+        # Short-option CLUSTER (single dash, >2 chars, e.g. ``-qx``/``-qpmyreporter``/``-qccustom.ini``):
+        # a dangerous bare short flag is caught; a value-taking option's VALUE is processed, not just
+        # skipped — a clustered ``-p<plugin>`` is a candidate reporter (round-2 gate finding #3). A clustered
+        # ``-c<cfg>`` config is read separately via ``_referenced_config_files``.
+        bare, vopt, vval = _parse_short_cluster(tok)
+        if bare or vopt is not None:
+            for ch in bare:
+                if ch in _DANGEROUS_SHORT:
+                    return _DANGEROUS_SHORT[ch]
+                if ch == "n":
+                    return "-n"
+            if vopt == "p":
+                plugin = vval if vval is not None else (toks[i + 1] if i + 1 < len(toks) else "")
+                if plugin and not plugin.startswith("no:"):
+                    return plugin
+        i += 1
+    return None
+
+
+# === Allowlist: a sanctioned baseline may ONLY use flags that don't change WHICH tests run, how many
+# times, or inject config/plugins. Everything else is refused by default — the denylist above names the
+# common dangerous flags with their canonical token; this allowlist closes the unbounded tail (``-o`` /
+# ``--override-ini`` ini-injection, ``-k``/``-m`` selection, ``--deselect``/``--ignore``/``--lf``, and any
+# unknown future flag). Round-2 gate follow-up: a flag denylist is bottomless; default-deny is the fix.
+# Long flags that are safe (output/reporting/rootdir/config only). Value forms (``--tb=short``) match on
+# the base before ``=``. ``--config-file`` is safe because the referenced file's addopts are scanned.
+_SAFE_LONG_FLAGS = frozenset(
+    {
+        "--tb",
+        "--color",
+        "--code-highlight",
+        "--no-header",
+        "--no-summary",
+        "--rootdir",
+        "--config-file",
+        "--capture",
+        "--showlocals",
+        "--durations",
+        "--durations-min",
+        "--verbose",
+        "--quiet",
+    }
+)
+# Safe bare short flags: quiet/verbose/no-capture/showlocals — none select or reorder tests.
+_SAFE_SHORT_BARE = frozenset("qvsl")
+# Safe value-taking short options: ``-c`` (config, content scanned), ``-r`` (report chars), ``-p``
+# (plugin — the denylist already refused every non-``no:`` enable form, so any ``-p`` reaching here is a
+# disable). Their VALUES are non-dash tokens, skipped as positionals.
+_SAFE_VALUE_SHORT = frozenset("crp")
+
+
+def _is_safe_flag(tok: str) -> bool:
+    """Whether a single argv flag token is on the sanctioned-baseline allowlist (see the module note)."""
+    if tok.startswith("--"):
+        return tok.split("=", 1)[0] in _SAFE_LONG_FLAGS
+    # ``-c``/``-c<cfg>``/``-c=cfg``, ``-p``/``-p<plugin>``, ``-r``/``-r<chars>`` — value-taking safe shorts.
+    if len(tok) >= 2 and tok[1] in _SAFE_VALUE_SHORT:
+        return True
+    if len(tok) == 2:
+        return tok[1] in _SAFE_SHORT_BARE
+    # A ``-X=value`` single-short whose option is not a safe value-short (checked above) is unsafe — its
+    # ``=`` would otherwise make the cluster parser bail and wrongly read as empty (e.g. ``-oaddopts=-x``).
+    if "=" in tok:
+        return False
+    # A cluster: every bare member must be safe and any value-taking option must be a safe one.
+    bare, vopt, _vval = _parse_short_cluster(tok)
+    if any(ch not in _SAFE_SHORT_BARE for ch in bare):
+        return False
+    return vopt is None or vopt in _SAFE_VALUE_SHORT
+
+
+def _first_unrecognized_flag(tokens: object) -> str | None:
+    """The FIRST pytest flag that is NOT on the sanctioned-baseline allowlist, or None. Skips the
+    interpreter/module prefix (everything up to and including a ``pytest`` token — a leading
+    ``python -m pytest`` / ``-m pytest`` is not pytest arguments) so ``-m`` there is Python's module flag,
+    while a ``-m`` AFTER ``pytest`` is marker SELECTION and is refused. Non-dash tokens are test paths or
+    flag values and are skipped."""
+    toks = [str(t) for t in (tokens or ())]
+    try:
+        start = toks.index("pytest") + 1
+    except ValueError:
+        start = 0
+    for tok in toks[start:]:
+        if not tok.startswith("-"):
+            continue
+        if tok.startswith("@"):  # argfile — also caught by the denylist; refuse defensively
+            return tok
+        if not _is_safe_flag(tok):
+            return tok
+    return None
+
+
+def _first_disallowed_token(tokens: object) -> str | None:
+    """The FIRST token that is dangerous (denylist, canonical token) OR simply not allowlisted. This is
+    the single gate ``validate_invocation`` applies to argv and to every config ``addopts`` set."""
+    needle = _first_dangerous_token(tokens)
+    if needle is not None:
+        return needle
+    return _first_unrecognized_flag(tokens)
+
+
+def _referenced_config_files(argv: object) -> list[str]:
+    """Every config-file path an argv references through a ``-c``/``--config-file`` flag, across all
+    spellings: split (``-c <cfg>`` / ``--config-file <cfg>``), attached (``-c<cfg>``), ``=`` forms
+    (``-c=<cfg>`` / ``--config-file=<cfg>``), AND a ``-c`` hidden in a short-option cluster
+    (``-qccustom.ini`` / ``-qc custom.ini``) — the enumerative gaps split-only / non-cluster readers
+    missed (#105 finding #6, round-2 gate finding #3)."""
+    toks = [str(t) for t in (argv or ())]
+    files: list[str] = []
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if tok in ("-c", "--config-file"):
+            if i + 1 < len(toks):
+                files.append(toks[i + 1])
+                i += 2
+                continue
+        elif tok.startswith("-c="):
+            files.append(tok[3:])
+        elif tok.startswith("--config-file="):
+            files.append(tok[len("--config-file=") :])
+        elif tok.startswith("-") and not tok.startswith("--"):
+            # A single-dash token: an attached/clustered ``-c<cfg>`` (``-ccustom.ini`` or ``-qccustom.ini``)
+            # or a clustered split ``-qc custom.ini``. ``_parse_short_cluster`` finds the FIRST value-taking
+            # option; if that is ``-c`` its value (attached remainder, else the next token) is the config.
+            _bare, vopt, vval = _parse_short_cluster(tok)
+            if vopt == "c":
+                if vval is not None:
+                    files.append(vval)
+                elif i + 1 < len(toks):
+                    files.append(toks[i + 1])
+                    i += 2
+                    continue
+        i += 1
+    return [f for f in files if f]
+
+
+def _split_addopts(text: str) -> list[str]:
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
+
+
+def _config_addopts_tokens(content: str, source: str | None = None) -> list[str]:
+    """The tokenized ``addopts`` from a frozen config source's text, across EVERY pytest config
+    shape a dangerous mode can hide in (#19, S13 finding #6): a single-line ``[pytest]`` ini
+    ``addopts``, a MULTILINE ini ``addopts`` continuation (indented follow-on lines), and a
+    ``pyproject.toml`` ``[tool.pytest.ini_options] addopts`` string OR array. Round-2 gate finding #5 adds the
+    native TOML tables the provisioned pytest also honors: a ``pytest.toml`` / ``.pytest.toml``
+    top-level ``[pytest] addopts`` and a ``pyproject.toml`` native ``[tool.pytest] addopts``. ``source``
+    (a config filename) disambiguates TOML from ini and which TOML table to read."""
+    src_name = (source or "").rsplit("/", 1)[-1]
+    is_toml = src_name.endswith(".toml") or (
+        source is None and ("[tool.pytest.ini_options]" in content or "[tool.pytest]" in content)
+    )
+    if is_toml:
+        try:
+            data = tomllib.loads(content)
+        except tomllib.TOMLDecodeError:
+            return []
+        # pytest.toml / .pytest.toml carry a TOP-LEVEL [pytest] table; pyproject.toml carries a native
+        # [tool.pytest] table OR the [tool.pytest.ini_options] table. Read whichever the file uses.
+        if src_name in ("pytest.toml", ".pytest.toml"):
+            candidates = [data.get("pytest", {}).get("addopts")]
+        else:
+            tool_pytest = data.get("tool", {}).get("pytest", {})
+            candidates = [
+                tool_pytest.get("addopts"),
+                tool_pytest.get("ini_options", {}).get("addopts"),
+            ]
+        for addopts in candidates:
+            if isinstance(addopts, str):
+                return _split_addopts(addopts)
+            if isinstance(addopts, list):
+                return [str(tok) for tok in addopts]
+        return []
+    # ini: read ``addopts`` ONLY from pytest's OWN section — ``[pytest]`` (pytest.ini / tox.ini) or
+    # ``[tool:pytest]`` (setup.cfg) — via a real INI parser, never the first ``addopts``-shaped line in
+    # ANY section. A naive line scan lets a decoy ``addopts`` in a foreign section (placed before the
+    # real one) mask a dangerous mode in the true pytest section (#105 finding #6). configparser folds
+    # indented continuation lines into the value, so the multiline ``addopts`` form is still covered.
+    cp = configparser.ConfigParser(strict=False, interpolation=None)
+    try:
+        cp.read_string(content)
+    except configparser.Error:
+        return []
+    for section in ("pytest", "tool:pytest"):
+        if cp.has_section(section) and cp.has_option(section, "addopts"):
+            return _split_addopts(cp.get(section, "addopts"))
+    return []
 
 
 registry.register(PytestAdapter())

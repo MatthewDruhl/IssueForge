@@ -213,7 +213,6 @@ def _approve_all(_payload) -> bool:
 # ========================================================================================== tests
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_validate_invocation_accepts_clean_manifest_command(tmp_path):
     """A plain, sanctioned command from the manifest is accepted: no raise (R4 clean case — no
     internal-field/return-value inspection, only the absence of a raise is observable/pinned).
@@ -228,7 +227,6 @@ def test_validate_invocation_accepts_clean_manifest_command(tmp_path):
     adapter.validate_invocation(_invocation(repo, ["pytest", "tests/"]))
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_supplies_frozen_manifest_command_not_head(tmp_path):
     """(Finding #11) The FROZEN manifest command drives ``validate_invocation`` through ``verify``,
     never a live re-read of candidate HEAD's ``.issueforge.toml`` — proven observably via a spy on
@@ -288,7 +286,6 @@ def test_verify_contract_integrity_supplies_frozen_manifest_command_not_head(tmp
     assert ("pytest", "-x", "tests/") not in supplied_commands
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_detects_wrapper_drift_as_invocation_violation(tmp_path):
     """(Finding #10) A wrapper script referenced by the FROZEN command that drifts at HEAD (after
     the freeze) is caught by re-running ``validate_invocation`` through ``verify`` — never proven
@@ -356,7 +353,6 @@ def test_verify_contract_integrity_detects_wrapper_drift_as_invocation_violation
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_verify_contract_integrity_detects_custom_config_drift_as_invocation_violation(tmp_path):
     """(Finding #2, confirmation round) A custom config file REFERENCED by the frozen command via
     ``-c`` that is OTHERWISE UNPROTECTED (not a member of ``contract_paths`` on its own — it holds
@@ -428,7 +424,6 @@ def test_verify_contract_integrity_detects_custom_config_drift_as_invocation_vio
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_validate_invocation_rejects_candidate_postprocessor_via_reporter_hook(tmp_path):
     """(Finding #12) A candidate-specified postprocessor is represented as a candidate-specified
     reporter/plugin/report hook — NOT the invented ``--postprocess`` flag — and rejected.
@@ -448,7 +443,6 @@ def test_validate_invocation_rejects_candidate_postprocessor_via_reporter_hook(t
     assert "postprocess_plugin" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     "flag_tokens,needle",
     [
@@ -474,7 +468,6 @@ def test_validate_invocation_rejects_sharding_xdist(tmp_path, flag_tokens, needl
     assert needle in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     "flag_tokens,needle",
     [(["-x"], "-x"), (["--maxfail=1"], "--maxfail"), (["--maxfail", "1"], "--maxfail")],
@@ -495,7 +488,6 @@ def test_validate_invocation_rejects_bail(tmp_path, flag_tokens, needle):
     assert needle in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_validate_invocation_rejects_force_exit(tmp_path):
     """The force-exit mode is prohibited-or-modelled: ``--force-exit`` raises, naming the flag."""
     repo, _base_sha = _repo(
@@ -508,7 +500,6 @@ def test_validate_invocation_rejects_force_exit(tmp_path):
     assert "--force-exit" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_validate_invocation_rejects_pass_with_no_tests(tmp_path):
     """The pass-with-no-tests mode is prohibited-or-modelled: ``--suppress-no-test-exit-code``
     raises, naming the flag.
@@ -523,7 +514,6 @@ def test_validate_invocation_rejects_pass_with_no_tests(tmp_path):
     assert "--suppress-no-test-exit-code" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     "flag_tokens,needle",
     [
@@ -548,7 +538,6 @@ def test_validate_invocation_rejects_custom_reporter(tmp_path, flag_tokens, need
     assert needle in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize("flag_tokens", [["--reruns=3"], ["--reruns", "3"]])
 def test_validate_invocation_rejects_rerun_plugin_but_allows_disable_form(tmp_path, flag_tokens):
     """A rerun/retry plugin flag is prohibited-or-modelled (both combined and split spellings);
@@ -571,7 +560,6 @@ def test_validate_invocation_rejects_rerun_plugin_but_allows_disable_form(tmp_pa
     adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", "-p", "no:randomly"]))
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_prohibited_mode_via_verify_contract_integrity_surfaces_as_invocation_violation(tmp_path):
     """A prohibited pytest mode that made it into a FROZEN manifest (freeze_contract itself does
     not gate on validate_invocation — it composes the command straight from the committed toml)
@@ -624,7 +612,6 @@ def test_prohibited_mode_via_verify_contract_integrity_surfaces_as_invocation_vi
     assert any(v.predicate == "invocation" and v.detail == "-x" for v in report.violations)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 @pytest.mark.parametrize(
     "addopts_value,needle",
     [
@@ -669,7 +656,6 @@ def test_validate_invocation_rejects_dangerous_modes_from_frozen_config_addopts(
     assert f"addopts:{needle}" in str(excinfo.value)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#19)")
 def test_validate_invocation_never_invokes_the_ai_provider(tmp_path, monkeypatch):
     """(Finding #5, confirmation round / R7) ``validate_invocation`` is fully deterministic — it
     never delegates to the AI/provider seam, on EITHER the clean-accept path or the
@@ -697,3 +683,486 @@ def test_validate_invocation_never_invokes_the_ai_provider(tmp_path, monkeypatch
     with pytest.raises(ValueError) as excinfo:
         adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", "-x"]))
     assert "-x" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "flag_tokens,needle",
+    [
+        (["--numprocesses", "4"], "--numprocesses"),
+        (["--numprocesses=4"], "--numprocesses"),
+        (["-d"], "-d"),
+        (["--tx=popen"], "--tx"),
+        (["--exitfirst"], "--exitfirst"),
+    ],
+)
+def test_validate_invocation_rejects_all_dangerous_aliases(tmp_path, flag_tokens, needle):
+    """(Finding #5) ``_first_dangerous_token`` misses the xdist aliases ``--numprocesses``/``-d``/
+    ``--tx`` and the pytest bail alias ``--exitfirst`` — the SAME dangerous modes it already
+    rejects under their canonical spellings (``-n``/``--dist``/``-x``). Each alias, in split
+    (``--numprocesses 4``) and attached (``--numprocesses=4`` / ``--tx=popen``) form, must raise
+    ``ValueError`` naming the offending token; the harmless ``-p no:randomly`` disable-form control
+    stays clean.
+
+    A wrong-but-plausible impl that only enumerates the canonical spellings returns ``None`` for
+    every alias here and silently accepts the dangerous mode.
+    """
+    repo, _base_sha = _repo(
+        tmp_path,
+        f"alias-{needle.strip('-')}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
+    )
+    adapter = _adapter()
+    with pytest.raises(ValueError) as excinfo:
+        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", *flag_tokens]))
+    assert needle in str(excinfo.value)
+
+    # Clean control: the ``no:`` plugin-disable form is explicitly sanctioned and must not raise.
+    adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", "-p", "no:randomly"]))
+
+
+@pytest.mark.parametrize(
+    "case_id,repo_files,command,test_config",
+    [
+        (
+            "multiline-ini-continuation",
+            {"tests/test_x.py": "def test_x():\n    assert True\n"},
+            ["pytest", "tests/"],
+            {
+                "source": "pytest.ini",
+                "content": "[pytest]\naddopts =\n    -p no:cacheprovider\n    -x\n",
+            },
+        ),
+        (
+            "toml-array",
+            {"tests/test_x.py": "def test_x():\n    assert True\n"},
+            ["pytest", "tests/"],
+            {
+                "source": "pyproject.toml",
+                "content": '[tool.pytest.ini_options]\naddopts = ["-x"]\n',
+            },
+        ),
+        (
+            "dash-c-custom-ini-file",
+            {
+                "tests/test_x.py": "def test_x():\n    assert True\n",
+                "custompytest.ini": "[pytest]\naddopts = -x\n",
+            },
+            ["pytest", "-c", "custompytest.ini", "tests/"],
+            None,
+        ),
+    ],
+)
+def test_validate_invocation_rejects_dangerous_opts_in_all_frozen_config_forms(
+    tmp_path, case_id, repo_files, command, test_config
+):
+    """(Finding #6) ``_config_addopts_tokens`` parses ONLY a single-line ``[pytest]`` ``addopts``.
+    A dangerous ``-x`` still smuggled through a FROZEN CONFIG in another shape is silently accepted
+    today: (a) a MULTILINE ini ``addopts`` continuation line, (b) a ``pyproject.toml``
+    ``[tool.pytest.ini_options] addopts = ["-x"]`` TOML array, or (c) a config file referenced by a
+    frozen ``-c custompytest.ini`` (never read at all). Each form must raise ``ValueError`` naming
+    the config-sourced ``-x`` token (R1's canonical config detail ``addopts:-x``, of which ``-x`` is
+    a substring).
+
+    The single-line ini form is already caught (see
+    ``test_validate_invocation_rejects_dangerous_modes_from_frozen_config_addopts``); these three
+    forms are the enumerative gaps the current one-line parser misses.
+    """
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base_sha = _repo(tmp_path, f"cfgform-{case_id}", repo_files)
+    if test_config is None:
+        invocation = _invocation(repo, command)
+    else:
+        invocation = _invocation_with_config(
+            repo,
+            command,
+            config_source=test_config["source"],
+            config_content=test_config["content"],
+        )
+    adapter = _adapter()
+    # STRONG (R1): the exact typed error, not merely a ValueError whose message CONTAINS "-x" (which a
+    # parser crash that quotes the input would satisfy). Every config form must resolve to the same
+    # canonical config-sourced token ``addopts:-x`` via ``.token`` exact-equality.
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(invocation)
+    assert excinfo.value.token == "addopts:-x"
+
+
+# ============================================================ round-2 remediation (#105, Codex NO-SHIP/6)
+# Finding #5: _first_dangerous_token misses short-option CLUSTERS (-qx/-qd), --forked, and @argfile
+# expansion. Finding #6: only the split `-c FILE` spelling is inspected (-cFILE/-c=FILE/--config-file
+# bypass), and the ini addopts scan grabs the FIRST addopts in ANY section (a decoy in a foreign
+# section masks the real [pytest]/[tool:pytest] one). Each test asserts the CORRECT (post-fix)
+# rejection so a wrong impl fails; committed xfail(strict=True) PENDING until Phase B flips them.
+
+
+@pytest.mark.parametrize(
+    "cluster,needle",
+    [("-qx", "-x"), ("-xq", "-x"), ("-qd", "-d")],
+)
+def test_validate_invocation_rejects_dangerous_flag_in_short_option_cluster(
+    tmp_path, cluster, needle
+):
+    """A dangerous short flag CLUSTERED with a benign one (``-qx`` = quiet+exitfirst, ``-qd`` =
+    quiet+xdist-distributed) must be rejected naming the dangerous member. Today ``_first_dangerous_token``
+    only matches ``-x``/``-d`` as WHOLE tokens, so ``-qx`` sails through — a one-character bypass of the
+    bail/xdist guard (#105 finding #5)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base_sha = _repo(
+        tmp_path,
+        f"cluster-{cluster.strip('-')}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
+    )
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", cluster]))
+    assert excinfo.value.token == needle
+
+
+def test_validate_invocation_rejects_forked_plugin_flag(tmp_path):
+    """``--forked`` (pytest-forked: each test in its own forked process) is a candidate-controlled
+    execution-mode plugin flag in the same family as ``--reruns``/``-n``; it must be rejected naming
+    ``--forked``. Today it is in no dangerous list and is silently accepted (#105 finding #5)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base_sha = _repo(
+        tmp_path, "forked", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+    )
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", "--forked"]))
+    assert excinfo.value.token == "--forked"
+
+
+def test_validate_invocation_rejects_dangerous_flag_smuggled_via_argfile(tmp_path):
+    """pytest reads extra args from a file referenced as ``@argfile``; a dangerous flag hidden inside
+    the argfile bypasses argv scanning entirely. The frozen sanctioned command has no need for an
+    argfile, so any ``@``-prefixed arg is rejected outright, naming the ``@argfile`` token. Today the
+    ``@args.txt`` token is scanned as an opaque string and accepted (#105 finding #5)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base_sha = _repo(
+        tmp_path, "argfile", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+    )
+    (repo / "args.txt").write_text("-x\n")
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", "@args.txt"]))
+    assert excinfo.value.token == "@args.txt"
+
+
+@pytest.mark.parametrize(
+    "cflag",
+    ["-ccustom.ini", "-c=custom.ini", "--config-file custom.ini", "--config-file=custom.ini"],
+)
+def test_validate_invocation_rejects_dangerous_addopts_via_all_config_flag_spellings(
+    tmp_path, cflag
+):
+    """A dangerous ``addopts`` smuggled through a config file the command names via any ``-c`` spelling
+    OTHER than the split ``-c FILE`` (attached ``-cFILE``, ``-c=FILE``, or ``--config-file``) must be
+    caught the same way. Today only the split ``-c FILE`` form is read from the worktree, so every other
+    spelling never opens the file and the ``-x`` inside is accepted (#105 finding #6)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base_sha = _repo(
+        tmp_path,
+        f"cflag-{cflag.strip('-').replace('=', '').replace(' ', '')[:8]}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
+    )
+    (repo / "custom.ini").write_text("[pytest]\naddopts = -x\n")
+    command = (
+        ["pytest", "tests/", *cflag.split(" ")] if " " in cflag else ["pytest", "tests/", cflag]
+    )
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(_invocation(repo, command))
+    assert excinfo.value.token == "addopts:-x"
+
+
+def test_validate_invocation_reads_addopts_only_from_the_pytest_config_section(tmp_path):
+    """The ini ``addopts`` scan must bind to pytest's OWN section (``[tool:pytest]`` in setup.cfg,
+    ``[pytest]`` in pytest.ini), not the first ``addopts``-shaped line in ANY section. A decoy benign
+    ``addopts`` in a foreign section placed BEFORE the real pytest section must not mask the dangerous
+    ``-x`` in ``[tool:pytest]``. Today the naive line scan returns the first ``addopts`` it sees (the
+    decoy) and the real dangerous mode is accepted (#105 finding #6)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base_sha = _repo(
+        tmp_path, "cfg-section", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+    )
+    content = "[flake8]\naddopts = --statistics\n\n[tool:pytest]\naddopts = -x\n"
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(
+            _invocation_with_config(
+                repo, ["pytest", "tests/"], config_source="setup.cfg", config_content=content
+            )
+        )
+    assert excinfo.value.token == "addopts:-x"
+
+
+# ============================================================ round-3 remediation (#105, Codex NO-SHIP/6 R2)
+# #3: value-taking options inside a short cluster must be PROCESSED, not skipped (-qpmyreporter is a
+# candidate reporter; -qccustom.ini references a config). #4: verify must byte-compare a config the
+# frozen command references via ANY -c spelling, including attached -c<cfg>. #5: the provisioned pytest
+# (9.1+) honors pytest.toml/.pytest.toml/[tool.pytest], which must be selected + parsed.
+
+
+@pytest.mark.parametrize("cluster,plugin", [("-qpmyreporter", "myreporter"), ("-vpevil", "evil")])
+def test_validate_invocation_rejects_candidate_plugin_in_short_cluster(tmp_path, cluster, plugin):
+    """A candidate reporter/postprocessor smuggled as ``-p<plugin>`` inside a short-option cluster
+    (``-qpmyreporter`` = ``-q -p myreporter``) must be rejected naming the plugin. The earlier cluster
+    scan stopped at the value-taking ``p`` without reading its value (round-2 Codex #3)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base_sha = _repo(
+        tmp_path, f"clusterp-{plugin}", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+    )
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", cluster]))
+    assert excinfo.value.token == plugin
+
+
+@pytest.mark.parametrize("cluster", ["-qccustom.ini", "-vqccustom.ini"])
+def test_validate_invocation_rejects_dangerous_addopts_via_clustered_c_flag(tmp_path, cluster):
+    """A dangerous ``addopts`` in a config referenced by a ``-c`` hidden in a short cluster
+    (``-qccustom.ini`` = ``-q -c custom.ini``) must be caught — the cluster's ``-c`` value was never
+    read as a config path before (round-2 Codex #3)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base_sha = _repo(
+        tmp_path,
+        f"clusterc-{cluster.strip('-')}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
+    )
+    (repo / "custom.ini").write_text("[pytest]\naddopts = -x\n")
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", cluster]))
+    assert excinfo.value.token == "addopts:-x"
+
+
+def test_verify_detects_attached_c_config_drift_as_invocation_violation(tmp_path):
+    """A config referenced by the frozen command via the ATTACHED ``-c<cfg>`` spelling that drifts at
+    HEAD must fire an ``invocation`` violation, exactly like the split ``-c <cfg>`` form. The attached
+    spelling is a single ``-``-prefixed token, so the bare-token drift scan skipped it (round-2 Codex #4)."""
+    from issueforge import contract
+
+    repo, base_sha = _repo(
+        tmp_path,
+        "attached-c-drift",
+        {
+            "configs/contract.ini": "[pytest]\n",
+            "tests/test_x.py": "def test_x():\n    assert True\n",
+            ".issueforge.toml": (
+                'baseline = ["pytest", "-cconfigs/contract.ini", "tests/"]\nframework = "pytest"\n'
+            ),
+        },
+    )
+    run_id = "run-attached-c-drift"
+    _mk_run(run_id)
+    _seed_freeze_proof(
+        run_id, base_sha=base_sha, head_sha=base_sha, added_id="tests/test_x.py::test_x"
+    )
+    _seed_done_review(run_id, head_sha=base_sha)
+    adapter = _adapter()
+    fr = contract.freeze_contract(
+        run_id,
+        candidate_worktree=repo,
+        base_sha=base_sha,
+        adapter=adapter,
+        provisioner=_provisioner(),
+        approver=_approve_all,
+    )
+    assert fr.approved is True
+    assert "configs/contract.ini" not in fr.manifest["contract_paths"]
+
+    _commit(repo, {"configs/contract.ini": "[pytest]\naddopts = -x\n"}, "mutate attached-c config")
+    report = contract.verify_contract_integrity(
+        run_id,
+        candidate_worktree=repo,
+        base_sha=base_sha,
+        adapter=adapter,
+        provisioner=_provisioner(),
+    )
+    assert report.ok is False
+    assert any(
+        v.predicate == "invocation" and v.detail == "configs/contract.ini"
+        for v in report.violations
+    )
+
+
+@pytest.mark.parametrize(
+    "source,content",
+    [
+        ("pytest.toml", '[pytest]\naddopts = ["-x"]\n'),
+        (".pytest.toml", '[pytest]\naddopts = ["-x"]\n'),
+        ("pyproject.toml", '[tool.pytest]\naddopts = ["-x"]\n'),
+    ],
+)
+def test_validate_invocation_rejects_dangerous_addopts_in_native_toml_config(
+    tmp_path, source, content
+):
+    """The provisioned pytest (9.1+) honors ``pytest.toml``/``.pytest.toml`` top-level ``[pytest]`` and a
+    native ``pyproject.toml`` ``[tool.pytest]`` table. A dangerous ``addopts`` in any of these must be
+    caught, not silently accepted by a parser that only knew ``[tool.pytest.ini_options]`` (round-2
+    Codex #5)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base_sha = _repo(
+        tmp_path,
+        f"toml-{source.strip('.').replace('.', '-')}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
+    )
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(
+            _invocation_with_config(
+                repo, ["pytest", "tests/"], config_source=source, config_content=content
+            )
+        )
+    assert excinfo.value.token == "addopts:-x"
+
+
+def test_freeze_selects_pytest_toml_and_verify_catches_its_dangerous_addopts(tmp_path):
+    """End-to-end #5: a repo whose only pytest config is ``pytest.toml`` with ``addopts = ["-x"]`` — a
+    file the provisioned pytest applies — must be SELECTED as the frozen config and its dangerous mode
+    caught at verify. Before the fix ``_select_pytest_config`` never looked at ``pytest.toml``, so the
+    frozen command's ``-x`` was invisible to the gate."""
+    from issueforge import contract
+
+    repo, base_sha = _repo(
+        tmp_path,
+        "pytest-toml-select",
+        {
+            "pytest.toml": '[pytest]\naddopts = ["-x"]\n',
+            "tests/test_x.py": "def test_x():\n    assert True\n",
+        },
+    )
+    run_id = "run-pytest-toml-select"
+    _mk_run(run_id)
+    _seed_freeze_proof(
+        run_id, base_sha=base_sha, head_sha=base_sha, added_id="tests/test_x.py::test_x"
+    )
+    _seed_done_review(run_id, head_sha=base_sha)
+    adapter = _adapter()
+    fr = contract.freeze_contract(
+        run_id,
+        candidate_worktree=repo,
+        base_sha=base_sha,
+        adapter=adapter,
+        provisioner=_provisioner(),
+        approver=_approve_all,
+    )
+    assert fr.approved is True
+    assert fr.manifest["test_config"].get("source") == "pytest.toml"
+
+    report = contract.verify_contract_integrity(
+        run_id,
+        candidate_worktree=repo,
+        base_sha=base_sha,
+        adapter=adapter,
+        provisioner=_provisioner(),
+    )
+    assert report.ok is False
+    assert any(v.predicate == "invocation" and v.detail == "addopts:-x" for v in report.violations)
+
+
+# ==================================================== round-4: allowlist redesign (default-deny guard)
+# A flag DENYLIST is unbounded (a candidate found -o addopts=-x injects any dangerous mode past it).
+# The sanctioned baseline may ONLY use flags that don't change WHICH tests run, how many times, or
+# inject config/plugins; every other flag — known or unknown-future — is refused by default.
+
+
+@pytest.mark.parametrize(
+    "flag_tokens,needle",
+    [
+        (["-o", "addopts=-x"], "-o"),
+        (["-oaddopts=-x"], "-oaddopts=-x"),
+        (["-k", "not slow"], "-k"),
+        (["-m", "slow"], "-m"),
+        (["--deselect", "tests/t.py::a"], "--deselect"),
+        (["--lf"], "--lf"),
+        (["--last-failed"], "--last-failed"),
+        (["--stepwise"], "--stepwise"),
+        (["--ignore=tests/x.py"], "--ignore=tests/x.py"),
+        (["-qk", "slow"], "-qk"),
+    ],
+)
+def test_validate_invocation_refuses_any_flag_off_the_sanctioned_allowlist(
+    tmp_path, flag_tokens, needle
+):
+    """A default-deny allowlist: ``-o``/``--override-ini`` (ini injection — a universal denylist bypass),
+    ``-k``/``-m`` (test selection), ``--deselect``/``--ignore``/``--lf``/``--stepwise`` (which/how-many
+    tests run), and a dangerous flag hidden in a cluster (``-qk``) are all refused, each named."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base = _repo(
+        tmp_path,
+        f"allow-{needle.strip('-')[:8]}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
+    )
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", *flag_tokens]))
+    assert excinfo.value.token == needle
+
+
+def test_validate_invocation_refuses_override_ini_injecting_addopts(tmp_path):
+    """``--override-ini=addopts=-x`` is the long-form of the universal ini-injection bypass and must be
+    refused (it sets ``addopts`` — and thus any mode — in-flight, sidestepping the flag scan)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base = _repo(
+        tmp_path, "allow-override-ini", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+    )
+    adapter = _adapter()
+    with pytest.raises(InvocationError):
+        adapter.validate_invocation(
+            _invocation(repo, ["pytest", "tests/", "--override-ini=addopts=-x"])
+        )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["pytest", "tests/", "-q"],
+        ["pytest", "tests/", "-v", "-s"],
+        ["pytest", "tests/", "--tb=short"],
+        ["pytest", "tests/", "-p", "no:randomly"],
+        ["-m", "pytest", "tests/"],
+        ["pytest", "tests/", "-qsv"],
+    ],
+)
+def test_validate_invocation_accepts_safe_baseline_flags(tmp_path, command):
+    """The allowlist must not over-refuse a legitimate baseline: quiet/verbose/no-capture, ``--tb``, a
+    ``-p no:`` disable, the ``python -m pytest`` prefix, and a benign short cluster all pass."""
+    repo, _base = _repo(
+        tmp_path,
+        f"safe-{'-'.join(command).replace('/', '').replace(':', '')[:10]}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
+    )
+    adapter = _adapter()
+    adapter.validate_invocation(_invocation(repo, command))  # must not raise
+
+
+def test_select_pytest_config_prefers_empty_always_source_over_lower_precedence(tmp_path):
+    """pytest treats ``pytest.ini`` as the config source whenever it EXISTS, even empty, and ignores
+    every lower-precedence file. ``_select_pytest_config`` must do the same — an empty ``pytest.ini``
+    alongside a ``setup.cfg`` ``[tool:pytest]`` must select ``pytest.ini`` (what pytest actually reads),
+    not the setup.cfg the marker heuristic would otherwise fall through to (round-3 precedence gap)."""
+    from issueforge.contract import _select_pytest_config
+
+    repo, base_sha = _repo(
+        tmp_path,
+        "always-source",
+        {
+            "pytest.ini": "",  # empty: no [pytest] table, but pytest still treats it as authoritative
+            "setup.cfg": "[tool:pytest]\naddopts = -x\n",
+            "tests/test_x.py": "def test_x():\n    assert True\n",
+        },
+    )
+    name, _text = _select_pytest_config(repo, base_sha)
+    assert name == "pytest.ini"
