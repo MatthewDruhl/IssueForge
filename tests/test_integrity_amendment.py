@@ -1409,19 +1409,26 @@ def test_engine_gate_blocks_every_predicate(tmp_path, monkeypatch, predicate):
 def test_engine_gate_runs_from_worktree_persisted_by_real_build_lifecycle(tmp_path):
     """Finding #7: the engine gate is inert in production because NOTHING production-side persists a
     run's ``candidate_worktree`` — only the ``_seed_candidate_worktree`` TEST helper does, so every
-    green gate test is fake-green. The REAL persistence seam is the baseline-establishment lifecycle:
-    ``verify.establish_green_baseline`` creates the isolated worktree
-    (``workspace.create_isolated_worktree``) and MUST persist that path onto the run record for
-    ``run_id`` via the store. This drives that real lifecycle — with ``run_id`` + a real ``RunStore``,
-    the REQUIRED new signature — and, WITHOUT ever calling ``_seed_candidate_worktree``, proves the
-    persisted worktree is what the gate then consults to refuse a violating HEAD before any mutation.
+    green gate test is fake-green. Per D-T7 the REAL persistence seam is the ENGINE RUN-STAGE,
+    ``engine._execute_stage``: it holds the store ``s`` and ``run_id`` and runs the run's stage, whose
+    baseline establishment (``verify.establish_green_baseline``) returns a ``BaselineOutcome`` carrying
+    the isolated worktree ``workspace.create_isolated_worktree`` created. Production MUST persist that
+    worktree onto the run record FROM INSIDE ``_execute_stage`` (not by threading ``run_id``/``store``
+    into ``establish_green_baseline`` — a caller-supplied context is the wrong seam). This drives that
+    REAL run-stage seam — a real ``RunStore`` + ``run_id`` — via a stage that establishes the baseline
+    through the DOCUMENTED injection seams (fake workspace + green runner, so no real remote/AI), and,
+    WITHOUT ever calling ``_seed_candidate_worktree``, proves the persisted worktree is what the gate
+    then consults to refuse a violating HEAD before any mutation.
 
-    technical: verify.establish_green_baseline(checkout, run_id=<run>, store=RunStore(), ...) persists
-    store.RunStore().read(run)["candidate_worktree"] == the worktree create_isolated_worktree returned;
-    engine.apply_revision(run, plan, _ExplodingGateway(), approver=_approve_all) — no integrity kwargs
-    — then raises naming "protected_path_diff" before touching the gateway, and records no "revision"
-    event. Fail-closed control: a run WITH a frozen manifest but NO persisted candidate_worktree does
-    NOT silently skip the gate — apply_revision raises and the gateway is touched for ZERO ops.
+    technical: engine._execute_stage(RunStore(), run, <stage that establishes the baseline>, record)
+    persists store.RunStore().read(run)["candidate_worktree"] == the worktree the stage's
+    BaselineOutcome carried (repo.path, from the injected create_isolated_worktree). Today
+    _execute_stage RUNS the stage but persists nothing, so the field is absent — a MISSING-FIELD
+    assertion failure, never a TypeError from a call signature. engine.apply_revision(run, plan,
+    _ExplodingGateway(), approver=_approve_all) — no integrity kwargs — then raises naming
+    "protected_path_diff" before touching the gateway, and records no "revision" event. Fail-closed
+    control: a run WITH a frozen manifest but NO persisted candidate_worktree does NOT silently skip
+    the gate — apply_revision raises and the gateway is touched for ZERO ops.
     """
     from issueforge import engine, verify
     from issueforge.adapters.base import BaselineStatus
@@ -1448,22 +1455,27 @@ def test_engine_gate_runs_from_worktree_persisted_by_real_build_lifecycle(tmp_pa
     def _green_runner(worktree, command, *, adapter, provisioner):
         return SimpleNamespace(status=BaselineStatus.GREEN)
 
-    # The REAL baseline-establishment lifecycle with run_id + a real RunStore. PRODUCTION must persist
-    # candidate_worktree here; today establish_green_baseline does not accept run_id/store at all,
-    # which is exactly the inert-gate hole this test pins.
-    verify.establish_green_baseline(
-        repo.path,
-        run_id=run,
-        store=store.RunStore(),
-        adapter=_adapter(),
-        workspace=fake_ws,
-        provisioner=_provisioner(),
-        run_baseline=_green_runner,
-        dispatch=None,
-    )
+    def _baseline_stage(_record):
+        # The run-stage establishes the baseline through the documented injection seams; the returned
+        # BaselineOutcome carries the isolated worktree production must persist onto the run record.
+        return verify.establish_green_baseline(
+            repo.path,
+            adapter=_adapter(),
+            workspace=fake_ws,
+            provisioner=_provisioner(),
+            run_baseline=_green_runner,
+            dispatch=None,
+        )
 
-    # Persisted by the lifecycle, NOT by a test helper (_seed_candidate_worktree is never called).
-    assert Path(store.RunStore().read(run)["candidate_worktree"]) == repo.path
+    # The REAL engine run-stage seam, holding the store + run_id. PRODUCTION must persist
+    # candidate_worktree here from the stage's BaselineOutcome; today _execute_stage runs the stage
+    # but persists nothing, which is exactly the inert-gate hole this test pins.
+    s = store.RunStore()
+    engine._execute_stage(s, run, _baseline_stage, s.read(run))
+
+    # Persisted by the run-stage lifecycle, NOT by a test helper (_seed_candidate_worktree unused).
+    persisted = store.RunStore().read(run).get("candidate_worktree")
+    assert persisted is not None and Path(persisted) == repo.path
 
     # The gate sources its candidate ENTIRELY from that persisted state and refuses before mutating.
     with pytest.raises(Exception, match=r"(?i)protected_path_diff"):

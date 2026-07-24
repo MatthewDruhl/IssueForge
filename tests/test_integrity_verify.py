@@ -1041,10 +1041,24 @@ def test_verify_flags_uncommitted_assertion_weakening_in_frozen_test(tmp_path):
         "fixture setup: the node-id set must stay identical so recollection cannot be what catches this"
     )
 
-    report = _verify(fz)
-    assert report.ok is False
-    assert any(
-        v.predicate == "protected_path_diff" and v.detail == _NEW_FILE for v in report.violations
+    # The OBSERVABLE contract: an uncommitted weakening of a frozen test is caught and the offending
+    # path is named. Accept EITHER fail-closed shape — a typed refusal whose message names the dirty
+    # path, OR a report.ok False carrying SOME violation whose .detail names the path (any predicate:
+    # a dedicated dirty-tree predicate is as valid as ``protected_path_diff``). We do NOT over-
+    # constrain to a single predicate/tuple. A committed-vs-committed impl catches neither (no diff,
+    # no recollection delta) and wrongly returns ok True / raises nothing.
+    try:
+        report = _verify(fz)
+    except Exception as exc:  # a typed fail-closed refusal is an acceptable outcome
+        assert _NEW_FILE in str(exc), (
+            "verify refused the dirty tree but its message did not name the offending frozen path"
+        )
+        return
+    assert report.ok is False, (
+        "verify silently accepted an uncommitted weakening of a frozen acceptance test"
+    )
+    assert any(v.detail == _NEW_FILE for v in report.violations), (
+        "verify reported not-ok but no violation named the offending frozen path"
     )
 
 
@@ -1112,7 +1126,11 @@ def test_dirty_refusal_does_not_exempt_tracked_bytecode(tmp_path):
     """
     pyc_rel = "tests/__pycache__/helper.pyc"
 
-    # (1) TRACKED bytecode: committed into the frozen tree, then its committed bytes CHANGED at HEAD.
+    # (1) TRACKED bytecode committed into the FROZEN tree (contract_commit == HEAD, a clean freeze),
+    # then MODIFIED-BUT-UNCOMMITTED in the worktree at verify time. This is what exercises the
+    # ``_dirty_refusal`` tracked-cache exemption (contract.py:1509 ``_is_cache_noise``) — NOT the
+    # committed contract_commit..HEAD diff. A wrong fix that only handles a COMMITTED .pyc change at
+    # HEAD (a diff-range fix) would still miss this uncommitted tracked-cache mutation and wrongly pass.
     fz = _frozen(tmp_path, "tracked-pyc", extra={pyc_rel: "original tracked bytecode\n"})
     worktree = fz.scen.candidate_worktree
     assert pyc_rel in set(_git(worktree, "ls-files", "--", pyc_rel).stdout.split()), (
@@ -1122,20 +1140,44 @@ def test_dirty_refusal_does_not_exempt_tracked_bytecode(tmp_path):
         "fixture setup: a .pyc is never a frozen boundary member — this proves the exemption, not the "
         "boundary, is what must catch it"
     )
+    # Modify the tracked .pyc IN THE WORKTREE and DO NOT commit it.
     (worktree / pyc_rel).write_text("altered tracked bytecode\n")
-    _commit_all(worktree, "alter the tracked bytecode artifact at HEAD")
-
-    report = _verify(fz)
-    assert report.ok is False
-    assert any(v.detail == pyc_rel for v in report.violations), (
-        "a TRACKED .pyc byte change must be caught and its path named, never exempted as cache noise"
+    # Prove it is genuinely TRACKED and genuinely uncommitted-dirty at assert time.
+    dirty = set(_git(worktree, "diff", "HEAD", "--name-only").stdout.split())
+    assert pyc_rel in dirty, (
+        "fixture setup: the tracked .pyc must be uncommitted-dirty (differ from HEAD) at verify time — "
+        "this is what hits the _dirty_refusal tracked-cache exemption, not the commit-range diff"
     )
+
+    # The tracked dirty .pyc must be caught: report.ok False naming the .pyc path, OR a typed refusal
+    # whose message names it. A committed-only / cache-noise-exempting impl misses it (ok True).
+    try:
+        report = _verify(fz)
+    except Exception as exc:  # a typed dirty-tree refusal is an acceptable fail-closed outcome
+        assert pyc_rel in str(exc), (
+            "verify refused the dirty tree but its message did not name the tracked .pyc path"
+        )
+    else:
+        assert report.ok is False, (
+            "verify silently exempted an uncommitted TRACKED .pyc byte change as cache noise"
+        )
+        assert any(v.detail == pyc_rel for v in report.violations), (
+            "a TRACKED .pyc byte change must be caught and its path named, never exempted as cache noise"
+        )
 
     # (2) CONTROL: an UNTRACKED .pyc is real cache noise and must stay exempted — no false refusal.
     ctl = _frozen(tmp_path, "untracked-pyc")
     noise = ctl.scen.candidate_worktree / "tests/__pycache__/noise.pyc"
     noise.parent.mkdir(parents=True, exist_ok=True)
     noise.write_text("uncommitted cache noise\n")  # NEVER git-added
+    assert not _git(
+        ctl.scen.candidate_worktree,
+        "ls-files",
+        "--",
+        str(noise.relative_to(ctl.scen.candidate_worktree)),
+    ).stdout.strip(), (
+        "control setup: the noise .pyc must be UNTRACKED so it exercises the legitimate cache exemption"
+    )
     ctl_report = _verify(ctl)
     assert ctl_report.ok is True
     assert not any(v.detail.endswith(".pyc") for v in ctl_report.violations)
@@ -1152,17 +1194,29 @@ def test_engine_gate_resolves_deps_in_provisioned_authoritative_env_not_host(tmp
     never the host, or a host that happens to match the frozen version masks a real authoritative drift.
 
     D-T8 resolved: rather than a heavy engine-driven venv-diff, this pins the OBSERVABLE that the gate's
-    authoritative pin re-resolution runs under a provisioned interpreter, NOT ``sys.executable``. A spy
-    wraps ``contract._authoritative_versions`` (delegating to the real resolver so behavior is untouched)
-    and records which interpreter each re-resolution ran under; the real engine gate is driven via
-    ``engine.apply_revision`` (which derives its context entirely from persisted run state).
+    authoritative pin re-resolution runs in a GENUINELY ISOLATED provisioned environment, not the host.
+    A spy wraps ``contract._authoritative_versions`` (delegating to the real resolver so behavior is
+    untouched) and records which interpreter each re-resolution ran under; the real engine gate is
+    driven via ``engine.apply_revision`` (which derives its context entirely from persisted run state).
+
+    Strengthening note (over the earlier draft): a bare ``interpreter != sys.executable`` is a TAUTOLOGY
+    — a symlink/console-script wrapper/other path into the SAME host environment satisfies it while
+    still resolving pins from the host's site-packages. The version-delta form (a frozen 4.10.0 vs an
+    authoritative 4.9.0 producing ``("external_pin", "platformdirs 4.10.0->4.9.0")``) is NOT constructible
+    as a currently-red / correctly-passable test on this branch: the only channel that can supply a 4.9.0
+    authoritative env to the gate is ``engine._gate_provisioner`` itself (verify already resolves
+    correctly in whatever provisioner it is handed — see
+    ``test_external_pin_flags_re_resolved_dependency_version_delta``), so injecting that env MASKS the
+    very host-vs-authoritative bug under test (the gate would pass today). This test therefore proves
+    isolation directly: every re-resolution must run under an interpreter whose ``sys.prefix`` differs
+    from the host's — a wrapper/symlink to the host shares the host prefix and is caught.
 
     technical (contract): freeze with platformdirs pinned 4.10.0 in a real venv and a frozen
     tests/conftest.py importing platformdirs; persist the run's candidate_worktree; drive
     ``engine.apply_revision(run_id, [], gateway, approver=...)``. The gate must re-resolve external pins
-    at least once, under a provisioned interpreter that is NOT ``sys.executable``. Today the host
-    provisioner either resolves under ``sys.executable`` or (platformdirs absent on the host) never
-    re-resolves authoritatively at all — both fail this; a provisioned-venv impl passes.
+    at least once, under a provisioned interpreter whose ``sys.prefix`` is NOT the host's. Today the host
+    provisioner re-resolves under the host interpreter (the host ``sys.prefix``), so this fails now; a
+    provisioned-venv impl (its own prefix) passes.
     """
     from issueforge import contract, engine
 
@@ -1205,7 +1259,27 @@ def test_engine_gate_resolves_deps_in_provisioned_authoritative_env_not_host(tmp
         "the integrity gate never re-resolved external pins in a provisioned authoritative env "
         "(it provisioned the host interpreter, which cannot see the frozen dependency)"
     )
-    assert all(interp != sys.executable for interp in used_interpreters), (
-        "the integrity gate resolved external pins under the HOST interpreter (sys.executable), not "
-        "the target's provisioned authoritative env"
+
+    # STRONG (closes the flagged tautology): a bare ``interp != sys.executable`` proves only TEXTUAL
+    # inequality — a symlink, a console-script wrapper, or any other path into the SAME host
+    # environment would satisfy it while still resolving pins from the host's site-packages. Require
+    # instead that every re-resolution ran in a GENUINELY ISOLATED environment, proven by its own
+    # ``sys.prefix`` differing from the host's: a provisioned authoritative venv has its own prefix,
+    # whereas a host-equivalent wrapper shares the host prefix and is caught here. Today the gate
+    # re-resolves under the host interpreter (same prefix as the host), so this fails now; a
+    # provisioned-venv impl (its own prefix) passes.
+    def _sys_prefix(interpreter: object) -> str:
+        out = subprocess.run(
+            [str(interpreter), "-c", "import sys; print(sys.prefix)"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return out.stdout.strip()
+
+    host_prefix = _sys_prefix(sys.executable)
+    assert all(_sys_prefix(interp) != host_prefix for interp in used_interpreters), (
+        "the integrity gate re-resolved external pins in the HOST environment (same sys.prefix), not a "
+        "genuinely isolated provisioned authoritative venv — a wrapper/symlink to the host python would "
+        "pass a mere ``interp != sys.executable`` check but shares the host prefix and is caught here"
     )

@@ -769,6 +769,8 @@ def test_validate_invocation_rejects_dangerous_opts_in_all_frozen_config_forms(
     ``test_validate_invocation_rejects_dangerous_modes_from_frozen_config_addopts``); these three
     forms are the enumerative gaps the current one-line parser misses.
     """
+    from issueforge.adapters.pytest_adapter import InvocationError
+
     repo, _base_sha = _repo(tmp_path, f"cfgform-{case_id}", repo_files)
     if test_config is None:
         invocation = _invocation(repo, command)
@@ -780,6 +782,9 @@ def test_validate_invocation_rejects_dangerous_opts_in_all_frozen_config_forms(
             config_content=test_config["content"],
         )
     adapter = _adapter()
-    with pytest.raises(ValueError) as excinfo:
+    # STRONG (R1): the exact typed error, not merely a ValueError whose message CONTAINS "-x" (which a
+    # parser crash that quotes the input would satisfy). Every config form must resolve to the same
+    # canonical config-sourced token ``addopts:-x`` via ``.token`` exact-equality.
+    with pytest.raises(InvocationError) as excinfo:
         adapter.validate_invocation(invocation)
-    assert "-x" in str(excinfo.value)
+    assert excinfo.value.token == "addopts:-x"
