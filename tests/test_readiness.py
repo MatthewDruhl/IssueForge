@@ -1018,6 +1018,49 @@ def test_ready_persist_adds_only_the_readiness_field_and_no_status(tmp_path):
     assert "status" not in full
 
 
+# ===================================================== GIT_* env scrubbing (#112 gate finding 3)
+
+
+def test_poisoned_git_env_does_not_corrupt_the_readiness_verdict(tmp_path, monkeypatch):
+    """An ambient GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE redirect must not steer the readiness git
+    reads at a DIFFERENT repository — the verdict certifies the candidate worktree, not whatever the
+    inherited environment points at.
+
+    technical (contract): a valid, clean, in-scope candidate that is otherwise ``ready`` is evaluated
+    while ``os.environ`` carries GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE pointing at a DECOY repo whose
+    HEAD differs from the candidate. If the readiness git calls inherited that redirect, ``cat-file`` /
+    ``rev-parse HEAD`` would resolve against the decoy and the candidate_sha predicate would wrongly
+    refuse (non_commit / stale). Scrubbing the location-redirecting GIT_* family keeps the verdict
+    ``ready`` and bound to the real candidate sha.
+    """
+    from issueforge.verify import issue_readiness
+
+    repo, base, cc, cand = _candidate_repo(tmp_path)
+    _persist_record(RUN_ID, repo=repo, base=base, contract_commit=cc, candidate=cand)
+
+    # A DECOY repo whose HEAD differs from the candidate (distinct impl content -> distinct tree/sha),
+    # redirected to via the GIT_* family.
+    decoy, _b, _c, decoy_head = _candidate_repo(
+        tmp_path, name="decoy", extra_impl_paths=("src/decoy.py",)
+    )
+    assert decoy_head != cand
+    monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(decoy))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(decoy / ".git" / "index"))
+
+    verdict = issue_readiness(
+        RUN_ID,
+        adapter=_adapter(),
+        provisioner=_provisioner(),
+        run_baseline=_runner(),
+        verify_integrity=_integrity(),
+    )
+    # Without the GIT_* scrub the poisoned redirect would flip this to not_ready.
+    assert verdict["readiness"] == "ready"
+    assert verdict["ready_sha"] == cand
+    assert _read_readiness(RUN_ID) == verdict
+
+
 # ===================================================== deeper no-side-effects guard
 
 

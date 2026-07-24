@@ -644,11 +644,20 @@ _FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _readiness_git(worktree: Path, *args: str) -> process.CommandResult:
-    """A read-only git read against the candidate worktree, through the subprocess seam."""
+    """A read-only git read against the candidate worktree, through the subprocess seam.
+
+    The location-redirecting GIT_* family (GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE / …) is scrubbed
+    from the inherited environment, exactly as the workspace and committed-baseline git reads already
+    do. A leftover or hostile ambient redirect would otherwise make cat-file / rev-parse HEAD /
+    status --porcelain / diff inspect a DIFFERENT repository's state while nominally running ``-C``
+    the candidate worktree — silently corrupting the readiness verdict (#112 gate finding 3). Reuses
+    the established ``workspace._scrubbed_git_env`` seam rather than reinventing the scrub list.
+    """
     return process.run(
         ["git", "-C", str(worktree), *args],
         cwd=worktree,
         timeout=_READINESS_GIT_TIMEOUT,
+        env=_workspace_mod._scrubbed_git_env(),
     )
 
 
