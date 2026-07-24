@@ -31,7 +31,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from issueforge import config as _config
-from issueforge import engine, integrity, process, providers
+from issueforge import integrity, process, providers
 from issueforge import verify as _verify
 from issueforge import workspace as _workspace_mod
 from issueforge.adapters.base import BaselineStatus, Outcome
@@ -566,6 +566,11 @@ def author_tests(
             )
 
     # The buildable + revision-applied gate (records the single authoring event on success).
+    # Imported lazily so ``contract`` carries no import-time dependency on ``engine`` (which now
+    # imports ``contract`` at module load for the S-candidate seam defaults — a top-level edge here
+    # would be a cycle).
+    from issueforge import engine
+
     engine.enter_authoring(run_id, revision_applied=revision_applied)
     return author(run_id=run_id, dispositions=dict(dispositions))
 
