@@ -1400,6 +1400,8 @@ _PYTEST_CONFIG_FORMS = (
     ("tox.ini", ("[pytest]",)),
     ("setup.cfg", ("[tool:pytest]",)),
 )
+# Files pytest treats as the config source whenever they EXIST, even with no ``[pytest]`` table.
+_PYTEST_ALWAYS_SOURCE = frozenset({"pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini"})
 
 
 def _git_bytes(repo: Path, *args: str) -> tuple[int, bytes]:
@@ -1608,7 +1610,14 @@ def _select_pytest_config(repo: Path, commit: str) -> tuple[str | None, str]:
     """The winning pytest config file (repo-relative path, committed text) by pytest precedence."""
     for name, markers in _PYTEST_CONFIG_FORMS:
         rc, text = _git_text(repo, "show", f"{commit}:{name}")
-        if rc == 0 and any(marker in text for marker in markers):
+        if rc != 0:
+            continue
+        # ``pytest.ini`` / ``.pytest.ini`` / ``pytest.toml`` / ``.pytest.toml`` are ALWAYS the config
+        # source when they exist, even without a ``[pytest]`` table — pytest stops at them and ignores
+        # every lower-precedence file (``findpaths.load_config_dict_from_file``). Selecting a later file
+        # in that case would freeze the WRONG config. The other files are a source only when their pytest
+        # section is present.
+        if name in _PYTEST_ALWAYS_SOURCE or any(marker in text for marker in markers):
             return name, text
     return None, ""
 

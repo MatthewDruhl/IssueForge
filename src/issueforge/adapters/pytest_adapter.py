@@ -1060,7 +1060,7 @@ class PytestAdapter:
         never touches the AI/provider seam.
         """
         argv = list(getattr(command, "command", command) or ())
-        needle = _first_dangerous_token(argv)
+        needle = _first_disallowed_token(argv)
         if needle is not None:
             raise InvocationError(needle)
         test_config = getattr(command, "test_config", None)
@@ -1068,7 +1068,7 @@ class PytestAdapter:
             addopts = _config_addopts_tokens(
                 str(test_config.get("content") or ""), source=test_config.get("source")
             )
-            config_needle = _first_dangerous_token(addopts)
+            config_needle = _first_disallowed_token(addopts)
             if config_needle is not None:
                 raise InvocationError(f"addopts:{config_needle}")
         # A config file the command references via ANY ``-c`` spelling is a frozen config source too:
@@ -1081,7 +1081,7 @@ class PytestAdapter:
             for cfg_rel in _referenced_config_files(argv):
                 cfg_path = Path(worktree) / cfg_rel
                 if cfg_path.is_file():
-                    cfg_needle = _first_dangerous_token(
+                    cfg_needle = _first_disallowed_token(
                         _config_addopts_tokens(cfg_path.read_text(), source=cfg_rel)
                     )
                     if cfg_needle is not None:
@@ -1196,6 +1196,88 @@ def _first_dangerous_token(tokens: object) -> str | None:
                     return plugin
         i += 1
     return None
+
+
+# === Allowlist: a sanctioned baseline may ONLY use flags that don't change WHICH tests run, how many
+# times, or inject config/plugins. Everything else is refused by default — the denylist above names the
+# common dangerous flags with their canonical token; this allowlist closes the unbounded tail (``-o`` /
+# ``--override-ini`` ini-injection, ``-k``/``-m`` selection, ``--deselect``/``--ignore``/``--lf``, and any
+# unknown future flag). Round-2 gate follow-up: a flag denylist is bottomless; default-deny is the fix.
+# Long flags that are safe (output/reporting/rootdir/config only). Value forms (``--tb=short``) match on
+# the base before ``=``. ``--config-file`` is safe because the referenced file's addopts are scanned.
+_SAFE_LONG_FLAGS = frozenset(
+    {
+        "--tb",
+        "--color",
+        "--code-highlight",
+        "--no-header",
+        "--no-summary",
+        "--rootdir",
+        "--config-file",
+        "--capture",
+        "--showlocals",
+        "--durations",
+        "--durations-min",
+        "--verbose",
+        "--quiet",
+    }
+)
+# Safe bare short flags: quiet/verbose/no-capture/showlocals — none select or reorder tests.
+_SAFE_SHORT_BARE = frozenset("qvsl")
+# Safe value-taking short options: ``-c`` (config, content scanned), ``-r`` (report chars), ``-p``
+# (plugin — the denylist already refused every non-``no:`` enable form, so any ``-p`` reaching here is a
+# disable). Their VALUES are non-dash tokens, skipped as positionals.
+_SAFE_VALUE_SHORT = frozenset("crp")
+
+
+def _is_safe_flag(tok: str) -> bool:
+    """Whether a single argv flag token is on the sanctioned-baseline allowlist (see the module note)."""
+    if tok.startswith("--"):
+        return tok.split("=", 1)[0] in _SAFE_LONG_FLAGS
+    # ``-c``/``-c<cfg>``/``-c=cfg``, ``-p``/``-p<plugin>``, ``-r``/``-r<chars>`` — value-taking safe shorts.
+    if len(tok) >= 2 and tok[1] in _SAFE_VALUE_SHORT:
+        return True
+    if len(tok) == 2:
+        return tok[1] in _SAFE_SHORT_BARE
+    # A ``-X=value`` single-short whose option is not a safe value-short (checked above) is unsafe — its
+    # ``=`` would otherwise make the cluster parser bail and wrongly read as empty (e.g. ``-oaddopts=-x``).
+    if "=" in tok:
+        return False
+    # A cluster: every bare member must be safe and any value-taking option must be a safe one.
+    bare, vopt, _vval = _parse_short_cluster(tok)
+    if any(ch not in _SAFE_SHORT_BARE for ch in bare):
+        return False
+    return vopt is None or vopt in _SAFE_VALUE_SHORT
+
+
+def _first_unrecognized_flag(tokens: object) -> str | None:
+    """The FIRST pytest flag that is NOT on the sanctioned-baseline allowlist, or None. Skips the
+    interpreter/module prefix (everything up to and including a ``pytest`` token — a leading
+    ``python -m pytest`` / ``-m pytest`` is not pytest arguments) so ``-m`` there is Python's module flag,
+    while a ``-m`` AFTER ``pytest`` is marker SELECTION and is refused. Non-dash tokens are test paths or
+    flag values and are skipped."""
+    toks = [str(t) for t in (tokens or ())]
+    try:
+        start = toks.index("pytest") + 1
+    except ValueError:
+        start = 0
+    for tok in toks[start:]:
+        if not tok.startswith("-"):
+            continue
+        if tok.startswith("@"):  # argfile — also caught by the denylist; refuse defensively
+            return tok
+        if not _is_safe_flag(tok):
+            return tok
+    return None
+
+
+def _first_disallowed_token(tokens: object) -> str | None:
+    """The FIRST token that is dangerous (denylist, canonical token) OR simply not allowlisted. This is
+    the single gate ``validate_invocation`` applies to argv and to every config ``addopts`` set."""
+    needle = _first_dangerous_token(tokens)
+    if needle is not None:
+        return needle
+    return _first_unrecognized_flag(tokens)
 
 
 def _referenced_config_files(argv: object) -> list[str]:

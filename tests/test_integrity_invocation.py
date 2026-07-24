@@ -1029,3 +1029,94 @@ def test_freeze_selects_pytest_toml_and_verify_catches_its_dangerous_addopts(tmp
     )
     assert report.ok is False
     assert any(v.predicate == "invocation" and v.detail == "addopts:-x" for v in report.violations)
+
+
+# ==================================================== round-4: allowlist redesign (default-deny guard)
+# A flag DENYLIST is unbounded (a candidate found -o addopts=-x injects any dangerous mode past it).
+# The sanctioned baseline may ONLY use flags that don't change WHICH tests run, how many times, or
+# inject config/plugins; every other flag — known or unknown-future — is refused by default.
+
+
+@pytest.mark.parametrize(
+    "flag_tokens,needle",
+    [
+        (["-o", "addopts=-x"], "-o"),
+        (["-oaddopts=-x"], "-oaddopts=-x"),
+        (["-k", "not slow"], "-k"),
+        (["-m", "slow"], "-m"),
+        (["--deselect", "tests/t.py::a"], "--deselect"),
+        (["--lf"], "--lf"),
+        (["--last-failed"], "--last-failed"),
+        (["--stepwise"], "--stepwise"),
+        (["--ignore=tests/x.py"], "--ignore=tests/x.py"),
+        (["-qk", "slow"], "-qk"),
+    ],
+)
+def test_validate_invocation_refuses_any_flag_off_the_sanctioned_allowlist(tmp_path, flag_tokens, needle):
+    """A default-deny allowlist: ``-o``/``--override-ini`` (ini injection — a universal denylist bypass),
+    ``-k``/``-m`` (test selection), ``--deselect``/``--ignore``/``--lf``/``--stepwise`` (which/how-many
+    tests run), and a dangerous flag hidden in a cluster (``-qk``) are all refused, each named."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base = _repo(
+        tmp_path, f"allow-{needle.strip('-')[:8]}", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+    )
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", *flag_tokens]))
+    assert excinfo.value.token == needle
+
+
+def test_validate_invocation_refuses_override_ini_injecting_addopts(tmp_path):
+    """``--override-ini=addopts=-x`` is the long-form of the universal ini-injection bypass and must be
+    refused (it sets ``addopts`` — and thus any mode — in-flight, sidestepping the flag scan)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base = _repo(
+        tmp_path, "allow-override-ini", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+    )
+    adapter = _adapter()
+    with pytest.raises(InvocationError):
+        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", "--override-ini=addopts=-x"]))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["pytest", "tests/", "-q"],
+        ["pytest", "tests/", "-v", "-s"],
+        ["pytest", "tests/", "--tb=short"],
+        ["pytest", "tests/", "-p", "no:randomly"],
+        ["-m", "pytest", "tests/"],
+        ["pytest", "tests/", "-qsv"],
+    ],
+)
+def test_validate_invocation_accepts_safe_baseline_flags(tmp_path, command):
+    """The allowlist must not over-refuse a legitimate baseline: quiet/verbose/no-capture, ``--tb``, a
+    ``-p no:`` disable, the ``python -m pytest`` prefix, and a benign short cluster all pass."""
+    repo, _base = _repo(
+        tmp_path, f"safe-{'-'.join(command).replace('/', '').replace(':', '')[:10]}",
+        {"tests/test_x.py": "def test_x():\n    assert True\n"},
+    )
+    adapter = _adapter()
+    adapter.validate_invocation(_invocation(repo, command))  # must not raise
+
+
+def test_select_pytest_config_prefers_empty_always_source_over_lower_precedence(tmp_path):
+    """pytest treats ``pytest.ini`` as the config source whenever it EXISTS, even empty, and ignores
+    every lower-precedence file. ``_select_pytest_config`` must do the same — an empty ``pytest.ini``
+    alongside a ``setup.cfg`` ``[tool:pytest]`` must select ``pytest.ini`` (what pytest actually reads),
+    not the setup.cfg the marker heuristic would otherwise fall through to (round-3 precedence gap)."""
+    from issueforge.contract import _select_pytest_config
+
+    repo, base_sha = _repo(
+        tmp_path,
+        "always-source",
+        {
+            "pytest.ini": "",  # empty: no [pytest] table, but pytest still treats it as authoritative
+            "setup.cfg": "[tool:pytest]\naddopts = -x\n",
+            "tests/test_x.py": "def test_x():\n    assert True\n",
+        },
+    )
+    name, _text = _select_pytest_config(repo, base_sha)
+    assert name == "pytest.ini"
