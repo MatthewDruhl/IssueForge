@@ -1042,18 +1042,14 @@ def test_verify_flags_uncommitted_assertion_weakening_in_frozen_test(tmp_path):
     )
 
     # The OBSERVABLE contract: an uncommitted weakening of a frozen test is caught and the offending
-    # path is named. Accept EITHER fail-closed shape — a typed refusal whose message names the dirty
-    # path, OR a report.ok False carrying SOME violation whose .detail names the path (any predicate:
-    # a dedicated dirty-tree predicate is as valid as ``protected_path_diff``). We do NOT over-
-    # constrain to a single predicate/tuple. A committed-vs-committed impl catches neither (no diff,
-    # no recollection delta) and wrongly returns ok True / raises nothing.
-    try:
-        report = _verify(fz)
-    except Exception as exc:  # a typed fail-closed refusal is an acceptable outcome
-        assert _NEW_FILE in str(exc), (
-            "verify refused the dirty tree but its message did not name the offending frozen path"
-        )
-        return
+    # path is NAMED. verify_contract_integrity returns an IntegrityReport for every predicate, so a
+    # dirty-tree weakening surfaces the same structured way: report.ok is False with SOME violation
+    # whose .detail names the frozen path. We deliberately do NOT pin which predicate (a dedicated
+    # dirty-tree predicate is as valid as ``protected_path_diff``), but we DO require the structured
+    # report rather than a bare ``except Exception`` that any incidental crash naming the path would
+    # satisfy. A committed-vs-committed impl catches neither (no diff, no recollection delta) and
+    # wrongly returns ok True.
+    report = _verify(fz)
     assert report.ok is False, (
         "verify silently accepted an uncommitted weakening of a frozen acceptance test"
     )
@@ -1124,6 +1120,8 @@ def test_dirty_refusal_does_not_exempt_tracked_bytecode(tmp_path):
     reports report.ok True and no violation names a ``.pyc`` (no false refusal). Today the unconditional
     exemption misses the tracked change (ok True) and thus fails part (1).
     """
+    from issueforge import contract
+
     pyc_rel = "tests/__pycache__/helper.pyc"
 
     # (1) TRACKED bytecode committed into the FROZEN tree (contract_commit == HEAD, a clean freeze),
@@ -1149,8 +1147,19 @@ def test_dirty_refusal_does_not_exempt_tracked_bytecode(tmp_path):
         "this is what hits the _dirty_refusal tracked-cache exemption, not the commit-range diff"
     )
 
-    # The tracked dirty .pyc must be caught: report.ok False naming the .pyc path, OR a typed refusal
-    # whose message names it. A committed-only / cache-noise-exempting impl misses it (ok True).
+    # PRIMARY (pins the EXACT finding — the tracked-cache exemption in ``_dirty_refusal`` — not merely
+    # "verify lacks dirty-tree integration"): call ``_dirty_refusal`` DIRECTLY. It must NAME the tracked
+    # dirty .pyc, because a TRACKED sourceless bytecode artifact is not cache noise. Today
+    # ``_is_cache_noise`` filters it unconditionally, so ``_dirty_refusal`` returns None here — the bug.
+    head = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+    refusal = contract._dirty_refusal(worktree, head)
+    assert refusal is not None and pyc_rel in refusal, (
+        "a TRACKED .pyc byte change must be caught by _dirty_refusal and its path named, never exempted "
+        f"as cache noise (got refusal={refusal!r})"
+    )
+
+    # INTEGRATION: the same tracked dirty .pyc must also be caught end-to-end through verify —
+    # report.ok False naming the .pyc path, OR a typed refusal whose message names it.
     try:
         report = _verify(fz)
     except Exception as exc:  # a typed dirty-tree refusal is an acceptable fail-closed outcome
@@ -1260,26 +1269,22 @@ def test_engine_gate_resolves_deps_in_provisioned_authoritative_env_not_host(tmp
         "(it provisioned the host interpreter, which cannot see the frozen dependency)"
     )
 
-    # STRONG (closes the flagged tautology): a bare ``interp != sys.executable`` proves only TEXTUAL
-    # inequality — a symlink, a console-script wrapper, or any other path into the SAME host
-    # environment would satisfy it while still resolving pins from the host's site-packages. Require
-    # instead that every re-resolution ran in a GENUINELY ISOLATED environment, proven by its own
-    # ``sys.prefix`` differing from the host's: a provisioned authoritative venv has its own prefix,
-    # whereas a host-equivalent wrapper shares the host prefix and is caught here. Today the gate
-    # re-resolves under the host interpreter (same prefix as the host), so this fails now; a
-    # provisioned-venv impl (its own prefix) passes.
-    def _sys_prefix(interpreter: object) -> str:
-        out = subprocess.run(
-            [str(interpreter), "-c", "import sys; print(sys.prefix)"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        return out.stdout.strip()
+    # STRONG (closes the flagged tautology precisely): a bare ``interp != sys.executable`` proves only
+    # TEXTUAL inequality, and even a differing ``sys.prefix`` is an imperfect proxy (a stray
+    # system-site interpreter differs; an isolated container could share it). The EXACT observable for
+    # "re-resolved in the provisioned authoritative env" is that the interpreter lives UNDER
+    # IssueForge's OWNED STATE ROOT: ``_provision_default`` builds every authoritative venv at
+    # ``state_root()/envs/...`` and hands back a wrapper file under that root, whereas the host
+    # ``sys.executable`` is NEVER under the state root. Both sides are resolved so the macOS
+    # ``/tmp -> /private/tmp`` normalization applies consistently. Today the gate re-resolves under the
+    # host interpreter (outside the state root), so this fails now; a provisioned-venv impl passes.
+    from issueforge.paths import state_root
 
-    host_prefix = _sys_prefix(sys.executable)
-    assert all(_sys_prefix(interp) != host_prefix for interp in used_interpreters), (
-        "the integrity gate re-resolved external pins in the HOST environment (same sys.prefix), not a "
-        "genuinely isolated provisioned authoritative venv — a wrapper/symlink to the host python would "
-        "pass a mere ``interp != sys.executable`` check but shares the host prefix and is caught here"
-    )
+    owned_root = state_root().resolve()
+    for interp in used_interpreters:
+        resolved = Path(str(interp)).resolve()
+        assert owned_root == resolved or owned_root in resolved.parents, (
+            f"the integrity gate re-resolved external pins under {resolved}, which is NOT within "
+            f"IssueForge's owned state root {owned_root} — a host interpreter (sys.executable) is never "
+            "under the state root, so the gate provisioned the host rather than the authoritative env"
+        )
