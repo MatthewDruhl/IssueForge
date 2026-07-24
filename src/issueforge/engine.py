@@ -16,12 +16,11 @@ paused/parked/failed its run is not overwritten to completed).
 
 from __future__ import annotations
 
-import ast
 import json
 import subprocess
 import uuid
 from collections.abc import Callable
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from io import StringIO
 from pathlib import Path
@@ -32,6 +31,7 @@ from issueforge import contract, github, providers, store
 from issueforge import verify as _verify
 from issueforge.adapters.base import BaselineStatus
 from issueforge.adapters.base import registry as _adapter_registry
+from issueforge.paths import state_root
 from issueforge.registry import Registry
 from issueforge.state import IllegalTransition, State, transition
 
@@ -759,31 +759,56 @@ def _candidate_head(worktree: Path) -> str:
     return _candidate_git(worktree, "rev-parse", "HEAD")
 
 
-def _authored_node_ids(worktree: Path, contract_paths: list[str]) -> tuple[str, ...]:
-    """Derive the REAL pytest node ids of the authored tests by parsing the authored contract files
-    (``<path>::<test_fn>`` and ``<path>::<TestClass>::<test_method>``), so the id handed to
-    ``prove_red`` is the genuine authored id — not a fabricated placeholder."""
-    ids: list[str] = []
-    for rel in contract_paths:
-        path = Path(worktree) / rel
-        if not path.exists():
-            continue
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except SyntaxError:
-            continue
-        for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
-                "test"
-            ):
-                ids.append(f"{rel}::{node.name}")
-            elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
-                for item in node.body:
-                    if isinstance(
-                        item, (ast.FunctionDef, ast.AsyncFunctionDef)
-                    ) and item.name.startswith("test"):
-                        ids.append(f"{rel}::{node.name}::{item.name}")
-    return tuple(ids)
+def _collect_ids(adapter: object, worktree: Path) -> tuple[str, ...]:
+    """The adapter's authoritative ``--collect-only`` node-id set for ``worktree`` (the same real seam
+    ``contract._collect`` uses): provision the environment, then ``canonical_collect``."""
+    handle = adapter.provision_environment(Path(worktree), None)
+    invocation = SimpleNamespace(
+        worktree=Path(worktree),
+        interpreter=handle.interpreter,
+        command=["-m", "pytest"],
+        env=getattr(handle, "env", None),
+    )
+    collection = adapter.canonical_collect(invocation)
+    return tuple(getattr(collection, "ids", ()) or ())
+
+
+@contextmanager
+def _base_worktree(candidate_worktree: Path, base_sha: str) -> Any:
+    """A throwaway detached git worktree of the candidate's own repo pinned at ``base_sha`` — the
+    clean BEFORE state for authoritative collection. Git itself creates and removes the worktree
+    directory (no raw filesystem write here), placed under IssueForge's own state root, never
+    touching any registered checkout (criterion 1)."""
+    path = Path(state_root()).resolve() / "candidate-base" / uuid.uuid4().hex
+    _candidate_git(candidate_worktree, "worktree", "add", "-q", "--detach", str(path), base_sha)
+    try:
+        yield path
+    finally:
+        _candidate_git(candidate_worktree, "worktree", "remove", "--force", str(path), check=False)
+
+
+def _added_node_ids(candidate_worktree: Path, base_sha: str, adapter: object) -> tuple[str, ...]:
+    """The REAL added pytest ids: authoritative candidate collection MINUS the base collection at
+    ``base_sha`` (``adapter.select_baseline``), so parametrized-case suffixes are included and any
+    pre-existing test in an EDITED contract file is excluded — exactly the ids the real
+    ``prove_red`` recomputes as ``added``. Source-AST reconstruction (which mishandled both) is not
+    used."""
+    with _base_worktree(candidate_worktree, base_sha) as before:
+        base_ids = _collect_ids(adapter, before)
+    candidate_ids = _collect_ids(adapter, candidate_worktree)
+    return tuple(adapter.select_baseline(base_ids, candidate_ids).added)
+
+
+def _capture_head_ref(worktree: Path) -> str:
+    """The worktree's current HEAD attachment: its short branch name when HEAD is symbolic, else the
+    exact commit sha (a detached HEAD)."""
+    branch = _candidate_git(worktree, "symbolic-ref", "--short", "-q", "HEAD", check=False)
+    return branch or _candidate_head(worktree)
+
+
+def _restore_head_ref(worktree: Path, ref: str) -> None:
+    """Re-attach the worktree to ``ref`` (branch name or sha), undoing a transient detach."""
+    _candidate_git(worktree, "checkout", "-q", ref, check=False)
 
 
 def _authoring_prompt(
@@ -906,15 +931,23 @@ def run_candidate(
 
     # 2) Red proof (reused) BEFORE approval: the authored tests must collect and FAIL for the named
     #    behavior while the baseline stays green. A REFUSED proof pauses cold — no approval, no commit.
-    targeted_ids = _authored_node_ids(candidate_worktree, contract_paths)
-    proof = prove_red(
-        run_id,
-        targeted_ids=targeted_ids,
-        base_checkout=base_checkout,
-        candidate_worktree=candidate_worktree,
-        base_sha=base_sha,
-        adapter=adapter,
-    )
+    targeted_ids = _added_node_ids(candidate_worktree, base_sha, adapter)
+    # ``prove_red``'s real seam ``_checkout_detached``-es the registered base checkout to run the base
+    # suite at the bound sha, changing its HEAD attachment. Capture the checkout's exact attachment
+    # and restore it in a ``finally`` so the registered normal checkout is left byte-for-byte
+    # untouched (criterion 1) even on the REAL seam — never only under the fake proof.
+    base_ref = _capture_head_ref(base_checkout)
+    try:
+        proof = prove_red(
+            run_id,
+            targeted_ids=targeted_ids,
+            base_checkout=base_checkout,
+            candidate_worktree=candidate_worktree,
+            base_sha=base_sha,
+            adapter=adapter,
+        )
+    finally:
+        _restore_head_ref(base_checkout, base_ref)
     if not getattr(proof, "accepted", False):
         return _pause_candidate(st, run_id, "red_proof_rejected")
 
@@ -974,11 +1007,14 @@ def run_candidate(
     _candidate_git(candidate_worktree, "commit", "-m", "Land candidate implementation (#114)")
     candidate_sha = _candidate_head(candidate_worktree)
 
-    # 8) Persist the candidate run-record fields as FLAT keys plus summarized evidence.
+    # 8) Persist the candidate run-record fields as FLAT keys plus summarized evidence. The status is
+    #    left ``running`` here ON PURPOSE: when this stage is driven through ``engine.run(stage=...)``,
+    #    ``_finalize`` performs the running->completed transition AND releases/advances the queue slot
+    #    (it only acts on a still-``running`` run). Writing ``completed`` here would wedge the queue —
+    #    ``_finalize`` would see a non-running status and skip the slot release.
     st.apply(
         run_id,
         lambda _r: {
-            "status": State.COMPLETED.value,
             "contract_commit": contract_commit,
             "candidate_sha": candidate_sha,
             "candidate_worktree": str(candidate_worktree),

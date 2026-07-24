@@ -1023,3 +1023,45 @@ def test_candidate_stage_is_pluggable_into_the_engine_run_stage_seam(
     assert base_checkout.resolve() != candidate.resolve()
     assert _head(candidate) != base_sha
     assert _head(candidate) == seen["result"].candidate_sha
+    # Finding 4 lock: a SUCCESSFUL stage must let _finalize perform running->completed AND release the
+    # queue slot. run_candidate must NOT pre-write status=completed (which would leave _finalize
+    # seeing a non-running status and wedge the slot on "run-114").
+    assert store.RunStore().read("run-114")["status"] == "completed"
+    assert store.RunStore().read_queue()["active"] is None
+
+
+def test_prove_red_detaching_the_base_checkout_is_restored(
+    make_git_repo, tmp_path, isolated_state_home
+):
+    """Finding 6 lock: the REAL prove_red seam detaches the registered base checkout (via
+    contract._checkout_detached) to run the base suite at the bound sha. The engine must restore the
+    registered checkout's exact HEAD attachment so criterion 1 (normal checkout untouched) holds on
+    the REAL seam — not only under a fake proof that never detaches.
+
+    technical (contract): with a prove_red that DETACHES base_checkout (git checkout <earlier sha>)
+    before returning its proof, after run_candidate the base checkout is re-attached to its original
+    branch (symbolic-ref HEAD unchanged) with its HEAD sha and porcelain byte-for-byte identical.
+    """
+    _run_candidate()
+    run_id, record, candidate, base_checkout, base_sha = _seed(make_git_repo)
+    before_branch = _run_git(base_checkout, "symbolic-ref", "HEAD")
+    before_head = _head(base_checkout)
+    before_status = _porcelain(base_checkout)
+    detach_to = _run_git(base_checkout, "rev-parse", "HEAD^")
+
+    fakes = _Fakes(candidate, base_sha)
+    original_prove_red = fakes.prove_red
+
+    def detaching_prove_red(*args, **kwargs):
+        # mirror contract._checkout_detached: move the registered checkout off its branch to an
+        # earlier, detached commit — exactly what breaks criterion 1 without the finally-restore.
+        _run_git(base_checkout, "checkout", "-q", detach_to)
+        assert _head(base_checkout) == detach_to  # HEAD genuinely moved off the branch tip
+        return original_prove_red(*args, **kwargs)
+
+    fakes.prove_red = detaching_prove_red
+    _call(record, fakes)
+
+    assert _run_git(base_checkout, "symbolic-ref", "HEAD") == before_branch
+    assert _head(base_checkout) == before_head
+    assert _porcelain(base_checkout) == before_status
