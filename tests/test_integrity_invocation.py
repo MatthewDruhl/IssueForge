@@ -890,3 +890,142 @@ def test_validate_invocation_reads_addopts_only_from_the_pytest_config_section(t
             _invocation_with_config(repo, ["pytest", "tests/"], config_source="setup.cfg", config_content=content)
         )
     assert excinfo.value.token == "addopts:-x"
+
+
+# ============================================================ round-3 remediation (#105, Codex NO-SHIP/6 R2)
+# #3: value-taking options inside a short cluster must be PROCESSED, not skipped (-qpmyreporter is a
+# candidate reporter; -qccustom.ini references a config). #4: verify must byte-compare a config the
+# frozen command references via ANY -c spelling, including attached -c<cfg>. #5: the provisioned pytest
+# (9.1+) honors pytest.toml/.pytest.toml/[tool.pytest], which must be selected + parsed.
+
+
+@pytest.mark.parametrize("cluster,plugin", [("-qpmyreporter", "myreporter"), ("-vpevil", "evil")])
+def test_validate_invocation_rejects_candidate_plugin_in_short_cluster(tmp_path, cluster, plugin):
+    """A candidate reporter/postprocessor smuggled as ``-p<plugin>`` inside a short-option cluster
+    (``-qpmyreporter`` = ``-q -p myreporter``) must be rejected naming the plugin. The earlier cluster
+    scan stopped at the value-taking ``p`` without reading its value (round-2 Codex #3)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base_sha = _repo(
+        tmp_path, f"clusterp-{plugin}", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+    )
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", cluster]))
+    assert excinfo.value.token == plugin
+
+
+@pytest.mark.parametrize("cluster", ["-qccustom.ini", "-vqccustom.ini"])
+def test_validate_invocation_rejects_dangerous_addopts_via_clustered_c_flag(tmp_path, cluster):
+    """A dangerous ``addopts`` in a config referenced by a ``-c`` hidden in a short cluster
+    (``-qccustom.ini`` = ``-q -c custom.ini``) must be caught — the cluster's ``-c`` value was never
+    read as a config path before (round-2 Codex #3)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base_sha = _repo(
+        tmp_path, f"clusterc-{cluster.strip('-')}", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+    )
+    (repo / "custom.ini").write_text("[pytest]\naddopts = -x\n")
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", cluster]))
+    assert excinfo.value.token == "addopts:-x"
+
+
+def test_verify_detects_attached_c_config_drift_as_invocation_violation(tmp_path):
+    """A config referenced by the frozen command via the ATTACHED ``-c<cfg>`` spelling that drifts at
+    HEAD must fire an ``invocation`` violation, exactly like the split ``-c <cfg>`` form. The attached
+    spelling is a single ``-``-prefixed token, so the bare-token drift scan skipped it (round-2 Codex #4)."""
+    from issueforge import contract
+
+    repo, base_sha = _repo(
+        tmp_path,
+        "attached-c-drift",
+        {
+            "configs/contract.ini": "[pytest]\n",
+            "tests/test_x.py": "def test_x():\n    assert True\n",
+            ".issueforge.toml": (
+                'baseline = ["pytest", "-cconfigs/contract.ini", "tests/"]\nframework = "pytest"\n'
+            ),
+        },
+    )
+    run_id = "run-attached-c-drift"
+    _mk_run(run_id)
+    _seed_freeze_proof(run_id, base_sha=base_sha, head_sha=base_sha, added_id="tests/test_x.py::test_x")
+    _seed_done_review(run_id, head_sha=base_sha)
+    adapter = _adapter()
+    fr = contract.freeze_contract(
+        run_id, candidate_worktree=repo, base_sha=base_sha, adapter=adapter,
+        provisioner=_provisioner(), approver=_approve_all,
+    )
+    assert fr.approved is True
+    assert "configs/contract.ini" not in fr.manifest["contract_paths"]
+
+    _commit(repo, {"configs/contract.ini": "[pytest]\naddopts = -x\n"}, "mutate attached-c config")
+    report = contract.verify_contract_integrity(
+        run_id, candidate_worktree=repo, base_sha=base_sha, adapter=adapter, provisioner=_provisioner()
+    )
+    assert report.ok is False
+    assert any(
+        v.predicate == "invocation" and v.detail == "configs/contract.ini" for v in report.violations
+    )
+
+
+@pytest.mark.parametrize(
+    "source,content",
+    [
+        ("pytest.toml", '[pytest]\naddopts = ["-x"]\n'),
+        (".pytest.toml", '[pytest]\naddopts = ["-x"]\n'),
+        ("pyproject.toml", '[tool.pytest]\naddopts = ["-x"]\n'),
+    ],
+)
+def test_validate_invocation_rejects_dangerous_addopts_in_native_toml_config(tmp_path, source, content):
+    """The provisioned pytest (9.1+) honors ``pytest.toml``/``.pytest.toml`` top-level ``[pytest]`` and a
+    native ``pyproject.toml`` ``[tool.pytest]`` table. A dangerous ``addopts`` in any of these must be
+    caught, not silently accepted by a parser that only knew ``[tool.pytest.ini_options]`` (round-2
+    Codex #5)."""
+    from issueforge.adapters.pytest_adapter import InvocationError
+
+    repo, _base_sha = _repo(
+        tmp_path, f"toml-{source.strip('.').replace('.', '-')}", {"tests/test_x.py": "def test_x():\n    assert True\n"}
+    )
+    adapter = _adapter()
+    with pytest.raises(InvocationError) as excinfo:
+        adapter.validate_invocation(
+            _invocation_with_config(repo, ["pytest", "tests/"], config_source=source, config_content=content)
+        )
+    assert excinfo.value.token == "addopts:-x"
+
+
+def test_freeze_selects_pytest_toml_and_verify_catches_its_dangerous_addopts(tmp_path):
+    """End-to-end #5: a repo whose only pytest config is ``pytest.toml`` with ``addopts = ["-x"]`` — a
+    file the provisioned pytest applies — must be SELECTED as the frozen config and its dangerous mode
+    caught at verify. Before the fix ``_select_pytest_config`` never looked at ``pytest.toml``, so the
+    frozen command's ``-x`` was invisible to the gate."""
+    from issueforge import contract
+
+    repo, base_sha = _repo(
+        tmp_path,
+        "pytest-toml-select",
+        {
+            "pytest.toml": '[pytest]\naddopts = ["-x"]\n',
+            "tests/test_x.py": "def test_x():\n    assert True\n",
+        },
+    )
+    run_id = "run-pytest-toml-select"
+    _mk_run(run_id)
+    _seed_freeze_proof(run_id, base_sha=base_sha, head_sha=base_sha, added_id="tests/test_x.py::test_x")
+    _seed_done_review(run_id, head_sha=base_sha)
+    adapter = _adapter()
+    fr = contract.freeze_contract(
+        run_id, candidate_worktree=repo, base_sha=base_sha, adapter=adapter,
+        provisioner=_provisioner(), approver=_approve_all,
+    )
+    assert fr.approved is True
+    assert fr.manifest["test_config"].get("source") == "pytest.toml"
+
+    report = contract.verify_contract_integrity(
+        run_id, candidate_worktree=repo, base_sha=base_sha, adapter=adapter, provisioner=_provisioner()
+    )
+    assert report.ok is False
+    assert any(v.predicate == "invocation" and v.detail == "addopts:-x" for v in report.violations)

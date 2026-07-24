@@ -1377,3 +1377,14 @@ def test_gate_provisioner_uses_symmetric_plugin_autoload_policy_with_freeze(tmp_
         f"disables autoload ({gate_env.get('PYTEST_DISABLE_PLUGIN_AUTOLOAD')!r}) while freeze does not "
         f"({freeze_env.get('PYTEST_DISABLE_PLUGIN_AUTOLOAD')!r})"
     )
+    # Equality alone is not enough (round-2 Codex #6): disabling autoload on BOTH paths would satisfy it
+    # yet silently drop every entry-point plugin dependency from both closures. The shared policy must be
+    # autoload ON — neither side sets PYTEST_DISABLE_PLUGIN_AUTOLOAD — so freeze genuinely pins
+    # entry-point plugins (see test_freeze_pins_externally_autoloaded_plugin_...) and the gate re-resolves
+    # them, rather than both blindly agreeing to see nothing.
+    assert freeze_env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") != "1", (
+        "freeze must keep plugin autoload ON so entry-point plugin dependencies are discovered and pinned"
+    )
+    assert gate_env.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") != "1", (
+        "the gate must keep plugin autoload ON to re-resolve the plugin dependencies freeze pinned"
+    )

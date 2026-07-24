@@ -970,22 +970,12 @@ class PytestAdapter:
                 f"instrumented contract discovery did not complete cleanly "
                 f"(collect_rc={collect_rc!r}); refusing a partial closure"
             )
-        # The harness injects ``pytest-reportlog`` as its OWN report-log reporter (installed by
-        # ``_provision_default``, force-loaded via ``verify._BASELINE``). With plugin autoload ON it is
-        # discovered like any entry-point plugin, but it is IssueForge instrumentation — NOT a candidate
-        # contract dependency — so it is never pinned as an external. Otherwise it pollutes external_pins
-        # and, because freeze and the gate must share ONE autoload policy (#105 finding #1), a
-        # host-provisioned freeze that lacks it would read the venv-provisioned gate's reportlog as a
-        # phantom drift.
-        external = tuple(
-            sorted(
-                {
-                    (str(d), str(v))
-                    for d, v in (graph.get("external") or [])
-                    if str(d).lower().replace("_", "-") != "pytest-reportlog"
-                }
-            )
-        )
+        # ``pytest-reportlog`` is installed by ``_provision_default`` and force-loaded via
+        # ``verify._BASELINE`` in BOTH freeze and the gate — which share one autoload policy (#105 #1) —
+        # so it re-resolves identically on both sides and needs no special-casing here. It is deliberately
+        # NOT filtered out: an UNCONDITIONAL exclusion would blind the gate to a candidate that genuinely
+        # imports ``pytest_reportlog`` at a drifted version (round-2 gate finding #2).
+        external = tuple(sorted({(str(d), str(v)) for d, v in graph.get("external") or []}))
 
         def _relrepo(fpath: object) -> str | None:
             if not fpath:
@@ -1134,6 +1124,26 @@ _VALUE_TAKING_SHORT = frozenset("kmocprwW")
 _DANGEROUS_SHORT = {"x": "-x", "d": "-d"}
 
 
+def _parse_short_cluster(tok: str) -> tuple[list[str], str | None, str | None]:
+    """Decompose a single-dash short-option cluster into ``(bare_flags, value_option, attached_value)``.
+
+    ``bare_flags`` are the leading no-argument short flags; ``value_option`` is the FIRST value-taking
+    short option encountered (which consumes the cluster remainder as its value) and ``attached_value``
+    is that remainder (``None`` when the option is the last char, so its value is the next argv token).
+    Returns ``([], None, None)`` for anything that is not a single-dash cluster (``--long``, ``-x``,
+    ``-c=cfg``). This is what lets a dangerous flag / plugin / config hidden in a cluster like ``-qx`` /
+    ``-qpmyreporter`` / ``-qccustom.ini`` be processed rather than silently skipped (round-2 gate finding #3)."""
+    if not tok.startswith("-") or tok.startswith("--") or "=" in tok or len(tok) <= 2:
+        return [], None, None
+    body = tok[1:]
+    bare: list[str] = []
+    for idx, ch in enumerate(body):
+        if ch in _VALUE_TAKING_SHORT:
+            return bare, ch, (body[idx + 1 :] or None)
+        bare.append(ch)
+    return bare, None, None
+
+
 def _first_dangerous_token(tokens: object) -> str | None:
     """The FIRST dangerous flag/plugin token in ``tokens`` (an argv list), or None if clean.
 
@@ -1169,26 +1179,31 @@ def _first_dangerous_token(tokens: object) -> str | None:
             return tok
         if tok.startswith("-n") and not tok.startswith("--"):  # -n, -n4, -n=4
             return "-n"
-        # Short-option CLUSTER (single dash, >2 chars, e.g. ``-qx``/``-qd``/``-xq``): scan each member.
-        # A dangerous short flag anywhere in the cluster is caught; a value-taking short option consumes
-        # the cluster remainder as its value, so scanning stops there. ``-n`` inside a cluster is xdist.
-        if tok.startswith("-") and not tok.startswith("--") and len(tok) > 2:
-            for ch in tok[1:]:
+        # Short-option CLUSTER (single dash, >2 chars, e.g. ``-qx``/``-qpmyreporter``/``-qccustom.ini``):
+        # a dangerous bare short flag is caught; a value-taking option's VALUE is processed, not just
+        # skipped — a clustered ``-p<plugin>`` is a candidate reporter (round-2 gate finding #3). A clustered
+        # ``-c<cfg>`` config is read separately via ``_referenced_config_files``.
+        bare, vopt, vval = _parse_short_cluster(tok)
+        if bare or vopt is not None:
+            for ch in bare:
                 if ch in _DANGEROUS_SHORT:
                     return _DANGEROUS_SHORT[ch]
                 if ch == "n":
                     return "-n"
-                if ch in _VALUE_TAKING_SHORT:
-                    break
+            if vopt == "p":
+                plugin = vval if vval is not None else (toks[i + 1] if i + 1 < len(toks) else "")
+                if plugin and not plugin.startswith("no:"):
+                    return plugin
         i += 1
     return None
 
 
 def _referenced_config_files(argv: object) -> list[str]:
     """Every config-file path an argv references through a ``-c``/``--config-file`` flag, across all
-    spellings: split (``-c <cfg>`` / ``--config-file <cfg>``), attached (``-c<cfg>``), and ``=`` forms
-    (``-c=<cfg>`` / ``--config-file=<cfg>``) — the enumerative gap the split-only reader missed (#105
-    finding #6)."""
+    spellings: split (``-c <cfg>`` / ``--config-file <cfg>``), attached (``-c<cfg>``), ``=`` forms
+    (``-c=<cfg>`` / ``--config-file=<cfg>``), AND a ``-c`` hidden in a short-option cluster
+    (``-qccustom.ini`` / ``-qc custom.ini``) — the enumerative gaps split-only / non-cluster readers
+    missed (#105 finding #6, round-2 gate finding #3)."""
     toks = [str(t) for t in (argv or ())]
     files: list[str] = []
     i = 0
@@ -1203,8 +1218,18 @@ def _referenced_config_files(argv: object) -> list[str]:
             files.append(tok[3:])
         elif tok.startswith("--config-file="):
             files.append(tok[len("--config-file=") :])
-        elif tok.startswith("-c") and len(tok) > 2:  # attached -c<cfg>
-            files.append(tok[2:])
+        elif tok.startswith("-") and not tok.startswith("--"):
+            # A single-dash token: an attached/clustered ``-c<cfg>`` (``-ccustom.ini`` or ``-qccustom.ini``)
+            # or a clustered split ``-qc custom.ini``. ``_parse_short_cluster`` finds the FIRST value-taking
+            # option; if that is ``-c`` its value (attached remainder, else the next token) is the config.
+            _bare, vopt, vval = _parse_short_cluster(tok)
+            if vopt == "c":
+                if vval is not None:
+                    files.append(vval)
+                elif i + 1 < len(toks):
+                    files.append(toks[i + 1])
+                    i += 2
+                    continue
         i += 1
     return [f for f in files if f]
 
@@ -1220,22 +1245,35 @@ def _config_addopts_tokens(content: str, source: str | None = None) -> list[str]
     """The tokenized ``addopts`` from a frozen config source's text, across EVERY pytest config
     shape a dangerous mode can hide in (#19, S13 finding #6): a single-line ``[pytest]`` ini
     ``addopts``, a MULTILINE ini ``addopts`` continuation (indented follow-on lines), and a
-    ``pyproject.toml`` ``[tool.pytest.ini_options] addopts`` string OR array. ``source`` (a config
-    filename) disambiguates TOML from ini; absent it, a ``[tool.pytest.ini_options]`` marker in the
-    content selects TOML."""
-    is_toml = (source or "").endswith(".toml") or (
-        source is None and "[tool.pytest.ini_options]" in content
+    ``pyproject.toml`` ``[tool.pytest.ini_options] addopts`` string OR array. Round-2 gate finding #5 adds the
+    native TOML tables the provisioned pytest also honors: a ``pytest.toml`` / ``.pytest.toml``
+    top-level ``[pytest] addopts`` and a ``pyproject.toml`` native ``[tool.pytest] addopts``. ``source``
+    (a config filename) disambiguates TOML from ini and which TOML table to read."""
+    src_name = (source or "").rsplit("/", 1)[-1]
+    is_toml = src_name.endswith(".toml") or (
+        source is None
+        and ("[tool.pytest.ini_options]" in content or "[tool.pytest]" in content)
     )
     if is_toml:
         try:
             data = tomllib.loads(content)
         except tomllib.TOMLDecodeError:
             return []
-        addopts = data.get("tool", {}).get("pytest", {}).get("ini_options", {}).get("addopts")
-        if isinstance(addopts, str):
-            return _split_addopts(addopts)
-        if isinstance(addopts, list):
-            return [str(tok) for tok in addopts]
+        # pytest.toml / .pytest.toml carry a TOP-LEVEL [pytest] table; pyproject.toml carries a native
+        # [tool.pytest] table OR the [tool.pytest.ini_options] table. Read whichever the file uses.
+        if src_name in ("pytest.toml", ".pytest.toml"):
+            candidates = [data.get("pytest", {}).get("addopts")]
+        else:
+            tool_pytest = data.get("tool", {}).get("pytest", {})
+            candidates = [
+                tool_pytest.get("addopts"),
+                tool_pytest.get("ini_options", {}).get("addopts"),
+            ]
+        for addopts in candidates:
+            if isinstance(addopts, str):
+                return _split_addopts(addopts)
+            if isinstance(addopts, list):
+                return [str(tok) for tok in addopts]
         return []
     # ini: read ``addopts`` ONLY from pytest's OWN section — ``[pytest]`` (pytest.ini / tox.ini) or
     # ``[tool:pytest]`` (setup.cfg) — via a real INI parser, never the first ``addopts``-shaped line in

@@ -1386,11 +1386,19 @@ class FreezeResult:
 _MANIFEST_ARTIFACT = "contract-manifest.json"
 # pytest config forms in precedence order (highest first), each with the section marking a real
 # pytest configuration in that file.
+# The pytest config files, in the SAME precedence order pytest itself resolves them
+# (``_pytest.config.findpaths.locate_config``), with the table/section marker(s) each must contain to
+# be a config source. Round-2 gate finding #5: the earlier list omitted ``pytest.toml`` / ``.pytest.toml`` /
+# ``.pytest.ini`` and the native ``[tool.pytest]`` pyproject table, all supported by the provisioned
+# pytest — so a ``pytest.toml`` with ``addopts = ["-x"]`` applied in production but was never frozen.
 _PYTEST_CONFIG_FORMS = (
-    ("pytest.ini", "[pytest]"),
-    ("pyproject.toml", "[tool.pytest.ini_options]"),
-    ("tox.ini", "[pytest]"),
-    ("setup.cfg", "[tool:pytest]"),
+    ("pytest.toml", ("[pytest]",)),
+    (".pytest.toml", ("[pytest]",)),
+    ("pytest.ini", ("[pytest]",)),
+    (".pytest.ini", ("[pytest]",)),
+    ("pyproject.toml", ("[tool.pytest]", "[tool.pytest.ini_options]")),
+    ("tox.ini", ("[pytest]",)),
+    ("setup.cfg", ("[tool:pytest]",)),
 )
 
 
@@ -1598,9 +1606,9 @@ def _resolve_committed_symlink(
 
 def _select_pytest_config(repo: Path, commit: str) -> tuple[str | None, str]:
     """The winning pytest config file (repo-relative path, committed text) by pytest precedence."""
-    for name, marker in _PYTEST_CONFIG_FORMS:
+    for name, markers in _PYTEST_CONFIG_FORMS:
         rc, text = _git_text(repo, "show", f"{commit}:{name}")
-        if rc == 0 and marker in text:
+        if rc == 0 and any(marker in text for marker in markers):
             return name, text
     return None, ""
 
@@ -2298,11 +2306,16 @@ def verify_contract_integrity(
         if token is None:
             raise
         violations.append(("invocation", token))
-    # (B) a wrapper/config file REFERENCED by the frozen command that drifted at HEAD.
-    for tok in baseline:
-        tok = str(tok)
-        if tok.startswith("-"):
-            continue
+    # (B) a wrapper/config file REFERENCED by the frozen command that drifted at HEAD. Bare-token
+    # references (a split ``-c custom.ini`` leaves ``custom.ini`` as its own token) plus EVERY ``-c``/
+    # ``--config-file`` spelling the flag-parser resolves (attached ``-ccustom.ini``, ``-c=cfg``,
+    # ``--config-file=cfg``, clustered ``-qccustom.ini``) — otherwise an attached-spelling config could
+    # drift at HEAD unchecked (round-2 gate finding #4).
+    from issueforge.adapters.pytest_adapter import _referenced_config_files
+
+    referenced = [t for t in (str(x) for x in baseline) if not t.startswith("-")]
+    referenced += _referenced_config_files(baseline)
+    for tok in dict.fromkeys(referenced):  # dedup, preserve order
         if _committed_object_type(worktree, contract_commit, tok) != "blob":
             continue
         _brc, old_ref = _git_bytes(worktree, "show", f"{contract_commit}:{tok}")
