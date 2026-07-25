@@ -81,12 +81,14 @@ import pytest
 _STATES = {"queued", "running", "paused", "parked", "cancelled", "completed", "failed"}
 _EDGES = {
     "queued": {"running", "cancelled"},
-    "running": {"paused", "parked", "completed", "failed"},
+    # PoC-D (#115) added the running -> waiting-for-merge delivery edge.
+    "running": {"paused", "parked", "completed", "failed", "waiting-for-merge"},
     "paused": {"running", "parked", "cancelled"},
     "parked": {"running"},
     "completed": set(),
     "cancelled": set(),
     "failed": set(),
+    "waiting-for-merge": set(),
 }
 
 
@@ -162,12 +164,12 @@ def _child(state_home, body):
 
 
 def test_state_enum_members_are_exactly_the_seven_declared_states(isolated_state_home):
-    """The State enum declares exactly seven members (no aliases), each mapping to its status string.
+    """The State enum declares exactly the eight members (no aliases), each mapping to its status
+    string.
 
     technical (contract): issueforge.state.State is an enum.Enum subclass; {name: m.value for name,
-    m in State.__members__.items()} == {"QUEUED":"queued","RUNNING":"running","PAUSED":"paused",
-    "PARKED":"parked","CANCELLED":"cancelled","COMPLETED":"completed","FAILED":"failed"} (exactly
-    seven names, so no hidden alias inflates the value set).
+    m in State.__members__.items()} == the eight declared name->status pairs (PoC-D #115 added
+    WAITING_FOR_MERGE -> "waiting-for-merge"), so no hidden alias inflates the value set.
     """
     import enum
 
@@ -182,6 +184,7 @@ def test_state_enum_members_are_exactly_the_seven_declared_states(isolated_state
         "CANCELLED": "cancelled",
         "COMPLETED": "completed",
         "FAILED": "failed",
+        "WAITING_FOR_MERGE": "waiting-for-merge",
     }
 
 
@@ -201,14 +204,20 @@ def test_transitions_table_declares_exactly_the_expected_edges(isolated_state_ho
 
 
 def test_terminal_set_is_exactly_the_three_states_with_no_outgoing_edge(isolated_state_home):
-    """TERMINAL is exactly {completed, cancelled, failed} — the states with no outgoing edge — and no others.
+    """TERMINAL is exactly the states with no outgoing edge — and no others.
 
-    technical (contract): TERMINAL == {State.COMPLETED, State.CANCELLED, State.FAILED}; and for every
-    State s, (TRANSITIONS[s] == set()) iff (s in TERMINAL).
+    technical (contract): TERMINAL == {State.COMPLETED, State.CANCELLED, State.FAILED,
+    State.WAITING_FOR_MERGE} (PoC-D #115 added the terminal delivered state); and for every State s,
+    (TRANSITIONS[s] == set()) iff (s in TERMINAL).
     """
     from issueforge.state import TERMINAL, TRANSITIONS, State
 
-    assert TERMINAL == {State.COMPLETED, State.CANCELLED, State.FAILED}
+    assert TERMINAL == {
+        State.COMPLETED,
+        State.CANCELLED,
+        State.FAILED,
+        State.WAITING_FOR_MERGE,
+    }
     for s in State:
         assert (TRANSITIONS[s] == set()) is (s in TERMINAL)
 
@@ -349,7 +358,12 @@ def _drive_to(engine, state_name, run_id="run-x", number=148, make_git_repo=None
         _admit_paused(make_git_repo, run_id, number=number)
         engine.park(run_id)
     elif state_name == "completed":
-        engine.run(f"DandD#{number}", issue_open=lambda s, n: True, new_run_id=lambda: run_id)
+        engine.run(
+            f"DandD#{number}",
+            issue_open=lambda s, n: True,
+            new_run_id=lambda: run_id,
+            stage=engine._default_stage,
+        )
     elif state_name == "cancelled":
         _admit_paused(make_git_repo, run_id, number=number)
         engine.cancel(run_id)

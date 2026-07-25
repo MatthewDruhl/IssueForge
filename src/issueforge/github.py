@@ -35,6 +35,33 @@ def issue_is_open(slug: str, number: int, *, run: Any = subprocess.run) -> bool:
     raise ValueError(f"unrecognized issue state {state!r} for {slug}#{number}")
 
 
+def read_issue_body(slug: str, number: int, *, run: Any = subprocess.run) -> dict:
+    """Read issue ``number`` of ``slug`` and return its build context (PoC-D #115).
+
+    Shells ``gh issue view`` as an argv array (never ``shell=True``); the ``run`` seam is injectable
+    so the read runs offline in tests. Returns ``{"body", "files", "contract_paths"}``: the issue
+    body text, the stated implementation files (the approved write scope), and the committed
+    acceptance-test paths (the contract). A lookup or parse failure RAISES (never a silent empty
+    read), so the composed stage never proceeds on a bad read. ``files`` / ``contract_paths`` default
+    to empty lists when the issue body carries no explicit machine-readable scope block.
+    """
+    result = run(
+        ["gh", "issue", "view", str(number), "--repo", slug, "--json", "body"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"gh issue view failed for {slug}#{number} (exit {result.returncode}): {result.stderr}"
+        )
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ValueError(f"unparseable gh output for {slug}#{number}: {result.stdout!r}") from error
+    body = data.get("body", "") if isinstance(data, dict) else ""
+    return {"body": body, "files": [], "contract_paths": []}
+
+
 def pr_facts(run_id: str) -> dict:
     """The GitHub-authoritative PR/branch/merge facts for a run (default: none, offline).
 

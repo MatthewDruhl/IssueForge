@@ -185,7 +185,12 @@ def test_admission_after_a_crash_reconciles_and_admits_a_new_run(
     _seed_queue("run-ghost", [])
     assert not store.manifest_path("run-ghost").exists()
 
-    engine.run("DandD#148", issue_open=lambda s, n: True, new_run_id=lambda: "run-new")
+    engine.run(
+        "DandD#148",
+        issue_open=lambda s, n: True,
+        new_run_id=lambda: "run-new",
+        stage=engine._default_stage,
+    )
 
     assert store.RunStore().read("run-new")["status"] == "completed"
     q = store.RunStore().read_queue()
@@ -263,7 +268,12 @@ def test_recovery_preserves_fifo_a_new_run_does_not_jump_a_pre_existing_waiter(
 
     monkeypatch.setattr(engine, "_default_stage", recording_stage)
 
-    engine.run("DandD#148", issue_open=lambda s, n: True, new_run_id=lambda: "run-new")
+    engine.run(
+        "DandD#148",
+        issue_open=lambda s, n: True,
+        new_run_id=lambda: "run-new",
+        stage=engine._default_stage,
+    )
 
     assert "run-waiter" in dispatched, f"the pre-existing waiter was stranded: {dispatched!r}"
     assert "run-new" in dispatched, f"the new run never ran: {dispatched!r}"
@@ -374,7 +384,12 @@ def test_recovery_drains_a_long_persistent_fifo_without_recursionerror(
     waiters = [f"run-w{i:04d}" for i in range(1200)]
     _seed_many_queued(waiters)
 
-    engine.run("DandD#148", issue_open=lambda s, n: True, new_run_id=lambda: "run-new")
+    engine.run(
+        "DandD#148",
+        issue_open=lambda s, n: True,
+        new_run_id=lambda: "run-new",
+        stage=engine._default_stage,
+    )
 
     assert store.RunStore().read(waiters[0])["status"] == "completed"
     assert store.RunStore().read(waiters[-1])["status"] == "completed"

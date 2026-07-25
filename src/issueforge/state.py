@@ -24,19 +24,34 @@ class State(enum.Enum):
     CANCELLED = "cancelled"
     COMPLETED = "completed"
     FAILED = "failed"
+    # PoC-D (#115): a delivered run parked on its open PR — terminal, awaiting a human merge. The
+    # engine never merges, so there is no outgoing edge (it is terminal like COMPLETED).
+    WAITING_FOR_MERGE = "waiting-for-merge"
 
 
 TRANSITIONS: dict[State, set[State]] = {
     State.QUEUED: {State.RUNNING, State.CANCELLED},
-    State.RUNNING: {State.PAUSED, State.PARKED, State.COMPLETED, State.FAILED},
+    State.RUNNING: {
+        State.PAUSED,
+        State.PARKED,
+        State.COMPLETED,
+        State.FAILED,
+        State.WAITING_FOR_MERGE,
+    },
     State.PAUSED: {State.RUNNING, State.PARKED, State.CANCELLED},
     State.PARKED: {State.RUNNING},
     State.COMPLETED: set(),
     State.CANCELLED: set(),
     State.FAILED: set(),
+    State.WAITING_FOR_MERGE: set(),
 }
 
-TERMINAL: set[State] = {State.COMPLETED, State.CANCELLED, State.FAILED}
+TERMINAL: set[State] = {
+    State.COMPLETED,
+    State.CANCELLED,
+    State.FAILED,
+    State.WAITING_FOR_MERGE,
+}
 
 
 class IllegalTransition(Exception):
