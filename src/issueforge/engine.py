@@ -1150,6 +1150,24 @@ def _poc_composed_stage(record: dict) -> None:
         return
     write_scope = list(approved_scope)
 
+    # 1c) Resolve the primary provider profile from the OPERATOR-level providers config (#135), not the
+    #     target repo's committed .issueforge.toml. Provider/role config is operator/environment state,
+    #     so the repo contract stays minimal (baseline/acceptance/framework); only ROLES resolve here.
+    #     Resolved BEFORE any fetch/worktree side effect so a missing/invalid operator config pauses with
+    #     NO orphaned worktree (a real run cannot launch without a configured primary role; the
+    #     acceptance path always provides one, so the happy path resolves).
+    from issueforge import paths as _paths
+
+    _providers_path = _paths.providers_config()
+    try:
+        primary_profile = _config.load_roles(tomllib.loads(_providers_path.read_text())).primary
+    except FileNotFoundError:
+        _poc_pause(st, run_id, f"missing provider config: {_providers_path}")
+        return
+    except _config.ConfigError as exc:
+        _poc_pause(st, run_id, f"provider config: {exc}")
+        return
+
     # 2) Fetch the FRESH default-branch tip. A failed read is never negative evidence — it PAUSES.
     fetch = workspace.fetch_default_sha(checkout)
     if not fetch.ok:
@@ -1171,24 +1189,6 @@ def _poc_composed_stage(record: dict) -> None:
     cfg = _config.load_config(candidate_worktree)
     baseline_command = list(cfg.baseline)
     acceptance_command = list(cfg.acceptance or cfg.baseline)
-
-    # Resolve the primary provider profile from the OPERATOR-level providers config (#135), not the
-    # target repo's committed .issueforge.toml. Provider/role config is operator/environment state, so
-    # the repo contract stays minimal (baseline/acceptance/framework); only ROLES move here. A missing
-    # or invalid operator config PAUSES naming the provider configuration (a real run cannot launch
-    # without a configured primary role); the acceptance path always provides one, so the happy path
-    # resolves.
-    from issueforge import paths as _paths
-
-    _providers_path = _paths.providers_config()
-    try:
-        primary_profile = _config.load_roles(tomllib.loads(_providers_path.read_text())).primary
-    except FileNotFoundError:
-        _poc_pause(st, run_id, f"missing provider config: {_providers_path}")
-        return
-    except _config.ConfigError as exc:
-        _poc_pause(st, run_id, f"provider config: {exc}")
-        return
 
     # 4) Prove the committed baseline GREEN before any AI edit (red/failed -> pause).
     baseline_ev = _verify.run_baseline(candidate_worktree, baseline_command, adapter=adapter)

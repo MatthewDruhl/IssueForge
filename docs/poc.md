@@ -55,9 +55,13 @@ Prerequisites:
 
 - An authenticated `claude` CLI on PATH (the config-resolved primary provider profile launches it).
 - `gh` authenticated for the DandD repo (issue read, push, PR open).
-- A registered DandD alias whose checkout carries a committed `.issueforge.toml` with `[providers.*]`
-  and `[roles] primary = ...`. The composed stage now resolves `roles.primary` from the FETCHED committed
-  config and launches that real `config.Profile`, instead of the M1 `SimpleNamespace(name="poc")` stub.
+- A registered DandD alias. Its committed `.issueforge.toml` stays the MINIMAL build contract
+  (`baseline`/`acceptance`/`framework`/`reporter`) and does NOT carry provider/role config.
+- An OPERATOR-level providers config (#135): `~/.config/issueforge/providers.toml` (or the path in the
+  `ISSUEFORGE_PROVIDERS` env var) with `[providers.*]` and `[roles] primary = ...`. The composed stage
+  resolves `roles.primary` from THAT operator config (not the target repo) and launches the real
+  `config.Profile`, instead of the M1 `SimpleNamespace(name="poc")` stub. A missing or role-less operator
+  config pauses the run naming the provider configuration, before any fetch/worktree/authoring side effect.
 - The human enters the approved file scope at the pre-authoring gate: DandD#111 is a plain bug report
   with no machine-readable scope block, so `read_issue_body` yields `files=[]`. Before any AI edit,
   `engine._poc_scope_approver` shows the stated files and reads the human's approved list from stdin;
