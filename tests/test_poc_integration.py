@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -86,7 +87,11 @@ DANDD_CONFIG = (
     'baseline = ["python", "-m", "pytest", "-p", "no:cacheprovider"]\n'
     'acceptance = ["python", "-m", "pytest", "tests/test_greet.py", "-p", "no:cacheprovider"]\n'
     'framework = "pytest"\n'
-    "\n"
+)
+
+# Provider/role config is operator-level (#135), resolved from ``ISSUEFORGE_PROVIDERS``, not the repo's
+# committed ``.issueforge.toml``; ``_install_seams`` points the env var at this valid providers config.
+_PROVIDERS_CONFIG = (
     "[providers.claudecli]\n"
     'executable = ["claude"]\n'
     'start = ["-p", "{prompt}"]\n'
@@ -336,6 +341,12 @@ def _install_seams(
 ) -> SimpleNamespace:
     """Monkeypatch the five LOCKED external boundaries and return their recording handles."""
     from issueforge import engine, github, providers
+
+    # Role resolution is operator-level (#135): point ISSUEFORGE_PROVIDERS at a valid providers config so
+    # the composed run resolves ``roles.primary`` from the operator config, not the repo's committed one.
+    providers_toml = Path(tempfile.mkdtemp()) / "providers.toml"
+    providers_toml.write_text(_PROVIDERS_CONFIG)
+    monkeypatch.setenv("ISSUEFORGE_PROVIDERS", str(providers_toml))
 
     invoker = _make_fake_invoke(impl_mode)
     gateways: list = []

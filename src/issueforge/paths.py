@@ -23,6 +23,14 @@ def state_root() -> Path:
     return Path.home() / ".local" / "state" / "issueforge"
 
 
+def providers_config() -> Path:
+    """The operator-level providers TOML: ``ISSUEFORGE_PROVIDERS`` override, else the default home path."""
+    override = os.environ.get("ISSUEFORGE_PROVIDERS")
+    if override:
+        return Path(override)
+    return Path.home() / ".config" / "issueforge" / "providers.toml"
+
+
 def run_dir(run_id: str) -> Path:
     """The directory holding one run's persisted manifest, events, and artifacts.
 

@@ -42,6 +42,7 @@ against a fetched ``.issueforge.toml`` carrying real ``[providers.*]`` + ``[role
 from __future__ import annotations
 
 import subprocess
+import tempfile
 import tomllib
 import uuid
 from pathlib import Path
@@ -72,23 +73,13 @@ PROVIDER_EXECUTABLE = ["claude"]
 _GIT_ID = ["-c", "user.name=IF Tests", "-c", "user.email=tests@issueforge.invalid"]
 
 
-def _config_text(profile_tag: str) -> str:
-    """The committed ``.issueforge.toml`` carrying a real provider profile + role binding. ``profile_tag``
-    is embedded in the provider ``start`` argv so a resolved profile is bound to the EXACT committed
-    config it came from (S1 stale vs S2 fresh differ only by this tag)."""
+def _config_text() -> str:
+    """The committed ``.issueforge.toml``: the minimal build contract (baseline/acceptance/framework).
+    Provider/role config is operator-level (#135), resolved from ``ISSUEFORGE_PROVIDERS``, not here."""
     return (
         'baseline = ["python", "-m", "pytest", "-p", "no:cacheprovider"]\n'
         'acceptance = ["python", "-m", "pytest", "tests/test_greet.py", "-p", "no:cacheprovider"]\n'
         'framework = "pytest"\n'
-        "\n"
-        f"[providers.{PROVIDER_NAME}]\n"
-        f"executable = {PROVIDER_EXECUTABLE!r}\n"
-        f'start = ["-p", "{{prompt}}", "--profile-tag", "{profile_tag}"]\n'
-        'resume = ["-p", "{prompt}", "--resume", "{session}"]\n'
-        'auth = ["auth", "status"]\n'
-        "\n"
-        "[roles]\n"
-        f'primary = "{PROVIDER_NAME}"\n'
     )
 
 
@@ -217,15 +208,12 @@ def _open_pr_count(instances: list) -> int:
 
 def _seed_dandd(tmp_path: Path) -> SimpleNamespace:
     """A REAL temp DandD checkout with a LOCAL FETCHABLE bare origin (green baseline), registered under
-    the persisted slug ``MatthewDruhl/DandD``. The STALE (S1) checkout HEAD commits a config whose
-    provider tag differs from the FRESH (S2) origin tip, so a stage that resolves the profile from the
-    stale registered checkout instead of the fetched tip binds a DIFFERENT profile and fails T1. Returns
-    the fresh (S2) config text so a test can resolve the EXPECTED profile independently."""
+    the persisted slug ``MatthewDruhl/DandD``. The STALE (S1) checkout HEAD trails the FRESH (S2) origin
+    tip by one commit, so a stage that reads the config from the stale registered checkout instead of the
+    fetched tip runs obsolete commands. Returns the fresh (S2) config text."""
     from issueforge import registry
 
-    stale_tag = f"stale-{uuid.uuid4().hex}"
-    fresh_tag = f"fresh-{uuid.uuid4().hex}"
-    fresh_config = _config_text(fresh_tag)
+    fresh_config = _config_text()
 
     origin = tmp_path / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
@@ -239,7 +227,7 @@ def _seed_dandd(tmp_path: Path) -> SimpleNamespace:
     (seed / "tests" / "test_baseline.py").write_text("def test_baseline():\n    assert True\n")
     (seed / "pyproject.toml").write_text(_PYPROJECT)
     (seed / ".gitignore").write_text("__pycache__/\n*.pyc\n")
-    (seed / ".issueforge.toml").write_text(_config_text(stale_tag))  # S1: stale provider tag
+    (seed / ".issueforge.toml").write_text(_config_text())  # S1: stale checkout HEAD
     _git(seed, "add", "-A")
     _git(seed, "commit", "-qm", "dandd baseline layout")
     _git(seed, "remote", "add", "origin", str(origin))
@@ -257,16 +245,16 @@ def _seed_dandd(tmp_path: Path) -> SimpleNamespace:
 
     stale_head = _head(checkout)
 
-    # Advance origin/main by ONE commit (S2) that ALSO rewrites .issueforge.toml with the FRESH provider
-    # tag, so only a real fetch of the tip yields the fresh profile. The pytest layout is untouched, so
-    # the baseline stays green at S2. We do NOT fetch into the checkout (that would defeat the freshness
-    # proof); the advance clone's successful push is the offline-fetchability proof.
+    # Advance origin/main by ONE commit (S2), so only a real fetch of the tip yields the fresh base. The
+    # pytest layout is untouched, so the baseline stays green at S2. We do NOT fetch into the checkout
+    # (that would defeat the freshness proof); the advance clone's successful push is the offline-
+    # fetchability proof.
     advance = tmp_path / "advance"
     subprocess.run(["git", "clone", "-q", str(origin), str(advance)], check=True)
-    (advance / ".issueforge.toml").write_text(fresh_config)  # S2: fresh provider tag
+    (advance / ".issueforge.toml").write_text(fresh_config)  # S2 (identical minimal build contract)
     (advance / "NOTES.md").write_text("origin advanced to S2\n")
     _git(advance, "add", "-A")
-    _git(advance, "commit", "-qm", "advance origin main to S2 (fresh provider tag)")
+    _git(advance, "commit", "-qm", "advance origin main to S2")
     _git(advance, "push", "-q", "origin", "main")
     fresh_tip = _head(advance)
     assert fresh_tip != stale_head
@@ -276,8 +264,6 @@ def _seed_dandd(tmp_path: Path) -> SimpleNamespace:
         stale_head=stale_head,
         fresh_tip=fresh_tip,
         fresh_config=fresh_config,
-        stale_tag=stale_tag,
-        fresh_tag=fresh_tag,
     )
 
 
@@ -295,6 +281,20 @@ def _install_seams(monkeypatch, *, scope_return, impl_mode: str = "fix") -> Simp
     the persisted write scope can ONLY come from the scope gate, and the gate's recorded call argument is
     exactly that ``[]``."""
     from issueforge import engine, github, providers
+
+    # Role resolution is operator-level (#135): point ISSUEFORGE_PROVIDERS at a valid providers config so
+    # the composed run resolves ``roles.primary`` from the operator config, not the repo's committed one.
+    providers_toml = Path(tempfile.mkdtemp()) / "providers.toml"
+    providers_toml.write_text(
+        f"[providers.{PROVIDER_NAME}]\n"
+        f"executable = {PROVIDER_EXECUTABLE!r}\n"
+        'start = ["-p", "{prompt}"]\n'
+        'resume = ["-p", "{prompt}", "--resume", "{session}"]\n'
+        'auth = ["auth", "status"]\n'
+        "\n[roles]\n"
+        f'primary = "{PROVIDER_NAME}"\n'
+    )
+    monkeypatch.setenv("ISSUEFORGE_PROVIDERS", str(providers_toml))
 
     seq: list = []
     invoker = _make_fake_invoke(seq, impl_mode=impl_mode)
