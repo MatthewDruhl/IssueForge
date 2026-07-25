@@ -42,7 +42,6 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 
 PENDING = "PENDING (#135)"
 
@@ -352,7 +351,6 @@ def _install_seams(monkeypatch, *, impl_mode: str = "fix") -> SimpleNamespace:
 # =========================================================================== the suite
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#135)")
 def test_composed_stage_launches_operator_config_primary_profile(tmp_path, monkeypatch):
     """The composed stage launches the profile from the OPERATOR providers config, and IGNORES a decoy
     provider block committed in the repo's ``.issueforge.toml`` — killing repo-first and repo-then-
@@ -401,7 +399,6 @@ def test_composed_stage_launches_operator_config_primary_profile(tmp_path, monke
     assert expected.rate_limit is not None and expected.rate_limit.exit_code == OP_RL_EXIT
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#135)")
 def test_default_providers_path_is_used_when_env_unset(tmp_path, monkeypatch):
     """When ``ISSUEFORGE_PROVIDERS`` is UNSET, the default ``~/.config/issueforge/providers.toml`` is
     used — an ``os.environ["ISSUEFORGE_PROVIDERS"]``-only impl with no default resolution fails.
@@ -429,7 +426,6 @@ def test_default_providers_path_is_used_when_env_unset(tmp_path, monkeypatch):
     assert home_tag in expected.start
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#135)")
 def test_env_override_wins_over_default_providers_path(tmp_path, monkeypatch):
     """When BOTH the default file and ``ISSUEFORGE_PROVIDERS`` exist, the env override WINS.
 
@@ -465,7 +461,6 @@ def test_env_override_wins_over_default_providers_path(tmp_path, monkeypatch):
     assert env_tag in expected.start and default_tag not in expected.start
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#135)")
 def test_repo_config_needs_no_provider_keys_to_run(tmp_path, monkeypatch):
     """A repo whose committed ``.issueforge.toml`` has NO provider/role keys runs end-to-end — provider
     config is operator-level, so the repo contract stays minimal (DandD#188 preserved).
@@ -489,7 +484,6 @@ def test_repo_config_needs_no_provider_keys_to_run(tmp_path, monkeypatch):
     assert record["status"] == "waiting-for-merge"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#135)")
 def test_missing_operator_config_pauses_even_when_repo_has_roles(tmp_path, monkeypatch):
     """A missing operator providers config pauses the run before any authoring side effect — EVEN when
     the repo config carries valid roles. Proves the operator config is required and the repo is never a
