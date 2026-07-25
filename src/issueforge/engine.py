@@ -242,6 +242,12 @@ def _finalize(
             s.write_record_unlocked(run_id, {**record, "status": COMPLETED})
             event = COMPLETED
             next_id = _advance_unlocked(s, run_id)
+        elif status == State.WAITING_FOR_MERGE.value:
+            # A composed PoC-D (#115) stage that delivered a PR already performed the guarded
+            # running -> waiting-for-merge transition and persisted the terminal status. That state is
+            # TERMINAL (like completed), so release the slot and advance the FIFO — but do NOT
+            # re-transition (the run is no longer running) or overwrite the record.
+            next_id = _advance_unlocked(s, run_id)
         # else: paused (keep slot, no advance) or parked (already advanced by park): do nothing.
     if event is not None:
         s.append_event(run_id, {"transition": event})
@@ -260,7 +266,11 @@ def run(
     if issue_open is None:
         issue_open = github.issue_is_open
     if stage is None:
-        stage = _default_stage
+        # PoC-D (#115): the composed end-to-end stage is the engine's DEFAULT. The bare CLI path
+        # (``cli.run`` -> ``engine.run(spec)``) therefore drives candidate -> readiness -> delivery.
+        # The stub ``_default_stage`` is retained for the queue auto-advance/drain path and is pinned
+        # explicitly by the queue/admission/crash-tx UNIT tests that exercise queue mechanics.
+        stage = _poc_composed_stage
     if new_run_id is None:
         new_run_id = _default_run_id
 
@@ -270,6 +280,19 @@ def run(
     entry = Registry.load().get(alias)  # RegistryError before any run when unregistered
     if not issue_open(entry.slug, number):
         raise ValueError(f"issue {entry.slug}#{number} is not open; refusing to run")
+
+    # Resolved issue context the composed stage reads from the record (the stub ignores it): the
+    # persisted registry slug, the issue number, the registered default branch, the normal checkout,
+    # and the alias (``run_candidate`` re-resolves the entry from ``record["repo"]``).
+    slug_owner, _, slug_repo = entry.slug.partition("/")
+    issue_context = {
+        "repo": alias,
+        "slug": entry.slug,
+        "issue_number": number,
+        "issue_ref": (slug_owner, slug_repo, number),
+        "default_branch": entry.default_branch,
+        "registered_checkout": str(entry.path),
+    }
 
     run_id = new_run_id()
     s = store.RunStore(secrets=secrets)
@@ -299,7 +322,9 @@ def run(
         # empty (which would wrongly admit a second run = double-active). Full multi-file
         # transactionality / startup reconcile is deferred to #48.
         s.write_queue_unlocked(queue)
-        s.write_record_unlocked(run_id, {"run_id": run_id, "status": status}, create=True)
+        s.write_record_unlocked(
+            run_id, {"run_id": run_id, "status": status, **issue_context}, create=True
+        )
 
     s.append_event(run_id, {"transition": QUEUED})
     if not admitted:
@@ -1034,3 +1059,187 @@ def run_candidate(
         candidate_sha=candidate_sha,
         evidence=evidence,
     )
+
+
+# ---------------------------------------------------------------------------
+# PoC-D (#115): the composed default stage — candidate -> readiness -> delivery
+# ---------------------------------------------------------------------------
+#
+# ``engine.run(spec)`` (the bare CLI path) drives this stage by default: it resolves the DandD alias,
+# reads the issue through the seams, fetches the FRESH default-branch tip, opens an isolated detached
+# worktree, proves the committed baseline green, then COMPOSES the three already-built Wave-1 seams —
+# ``run_candidate`` (#114) -> ``verify.issue_readiness`` (#112) -> ``github.deliver_pr`` (#113) — to
+# author + implement one candidate, gate it, and deliver EXACTLY one PR, landing ``waiting-for-merge``
+# without ever merging. Contract-integrity is SCOPED OUT for M1 (#126): readiness runs with a
+# pass-through integrity verdict, so the gate is acceptance + baseline + write-scope only.
+
+
+def _poc_approver(review: Any) -> bool:
+    """The human contract-approval gate the composed stage consults BEFORE freezing the contract.
+
+    Called with ``SimpleNamespace(diff=<authored test diff>, red_evidence=<machine-checked proof>)``.
+    The default is INTERACTIVE (prints the authored test diff + the red evidence, then reads a y/n
+    from stdin); the acceptance suite monkeypatches this module-level seam. Any answer other than an
+    explicit yes rejects, and a closed stdin (EOF) is a rejection — the gate never auto-approves.
+    """
+    print("=== IssueForge: approve the authored acceptance contract? ===")
+    print(getattr(review, "diff", ""))
+    print(f"red evidence: {getattr(review, 'red_evidence', None)!r}")
+    try:
+        answer = input("Freeze this contract and implement it? [y/N] ")
+    except EOFError:
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def _poc_pause(st: store.RunStore, run_id: str, reason: str) -> None:
+    """Persist ``paused`` with a pause reason and no delivery (the composed stage's pause path)."""
+    st.apply(run_id, lambda _r: {"status": State.PAUSED.value, "pause_reason": reason})
+
+
+def _integrity_scoped_out(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+    """Pass-through contract-integrity verdict — integrity is SCOPED OUT for M1 (#126)."""
+    return SimpleNamespace(ok=True, violations=())
+
+
+def _poc_composed_stage(record: dict) -> None:
+    """Compose candidate -> readiness -> delivery for the bare ``engine.run(spec)`` path (#115)."""
+    from issueforge import config as _config
+    from issueforge import workspace
+
+    run_id = record["run_id"]
+    st = store.RunStore()
+
+    slug = record["slug"]
+    number = record["issue_number"]
+    checkout = Path(record["registered_checkout"])
+    default_branch = record["default_branch"]
+    issue_ref = tuple(record["issue_ref"])
+
+    entry = Registry.load().get(record["repo"])
+    adapter = _adapter_registry.resolve(framework=entry.framework, reporter=entry.reporter)
+
+    # 1) Read the issue through the seam: body + approved write scope + committed contract paths.
+    #    (``run()`` already recorded the ``issue_is_open`` check with the resolved slug.)
+    body_info = github.read_issue_body(slug, number)
+    issue_body = body_info["body"]
+    write_scope = list(body_info["files"])
+    contract_paths = list(body_info["contract_paths"])
+
+    # 2) Fetch the FRESH default-branch tip. A failed read is never negative evidence — it PAUSES.
+    fetch = workspace.fetch_default_sha(checkout)
+    if not fetch.ok:
+        _poc_pause(st, run_id, f"fetch_default_sha: {fetch.reason}")
+        return
+    base_sha = fetch.sha
+
+    # 3) Isolated detached worktree at the fresh base (proven isolated from the normal checkout).
+    wt = workspace.create_isolated_worktree(checkout, base_sha)
+    if not (wt.ok and wt.isolated):
+        _poc_pause(st, run_id, f"create_isolated_worktree: {wt.reason}")
+        return
+    candidate_worktree = wt.path
+
+    # The acceptance + baseline commands come from the committed .issueforge.toml of the FETCHED
+    # base — read from the candidate worktree (created at the freshly fetched ``base_sha``), NOT the
+    # registered checkout's possibly-stale HEAD. If the fetched default branch changed the config, the
+    # stage must run the fetched commands, never obsolete ones off a stale checkout (unearned green).
+    cfg = _config.load_config(candidate_worktree)
+    baseline_command = list(cfg.baseline)
+    acceptance_command = list(cfg.acceptance or cfg.baseline)
+
+    # 4) Prove the committed baseline GREEN before any AI edit (red/failed -> pause).
+    baseline_ev = _verify.run_baseline(candidate_worktree, baseline_command, adapter=adapter)
+    if baseline_ev.status is not BaselineStatus.GREEN:
+        _poc_pause(st, run_id, f"baseline_not_green: {baseline_ev.status}")
+        return
+
+    # Seed the run_candidate contract into the record (#114 reads the issue body under "issue").
+    st.apply(
+        run_id,
+        lambda _r: {
+            "issue": issue_body,
+            "write_scope": write_scope,
+            "contract_paths": contract_paths,
+            "acceptance_command": acceptance_command,
+            "baseline_command": baseline_command,
+            "candidate_worktree": str(candidate_worktree),
+            "base_sha": base_sha,
+        },
+    )
+    record = st.read(run_id)
+
+    # 5) Candidate: author -> red proof -> human approval -> contract commit -> implement -> verify.
+    #    ``invoke`` / ``_poc_approver`` are read from their module attributes at call time so the
+    #    acceptance suite's monkeypatched seams are honored; prove_red/run_baseline stay REAL.
+    candidate = run_candidate(
+        record,
+        profile=SimpleNamespace(name="poc"),
+        approver=_poc_approver,
+        invoke=providers.invoke,
+    )
+    if candidate.paused:
+        return  # run_candidate already persisted status=paused; no readiness, no delivery.
+
+    # 6) Readiness = acceptance + baseline + write-scope. Integrity is SCOPED OUT for M1 (#126): a
+    #    pass-through verdict is injected so readiness never runs the deferred integrity gate.
+    verdict = _verify.issue_readiness(
+        run_id, adapter=adapter, verify_integrity=_integrity_scoped_out
+    )
+    if verdict.get("readiness") != "ready":
+        _poc_pause(st, run_id, f"not_ready: {verdict.get('predicate')}")
+        return
+
+    # 7) Flatten the readiness verdict to the flat top-level fields #113 delivery reads, name a branch
+    #    at the candidate sha (the worktree HEAD is detached), and re-target the record for delivery.
+    record = st.read(run_id)
+    candidate_sha = record["candidate_sha"]
+    branch = f"issueforge/{run_id}"
+    subprocess.run(
+        ["git", "-C", str(candidate_worktree), "branch", "-f", branch, candidate_sha],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    st.apply(
+        run_id,
+        lambda _r: {
+            "readiness": "ready",
+            "ready_sha": verdict["ready_sha"],
+            "acceptance": verdict["acceptance"],
+            "baseline": verdict["baseline"],
+            "scope": verdict["scope"],
+            "contract_integrity": verdict["contract_integrity"],
+            "candidate_branch": branch,
+            "registered_checkout": str(candidate_worktree),
+            # deliver_pr (#113) needs record["issue"] as the (owner, repo, number) tuple, but that
+            # overwrites the exact issue BODY seeded for run_candidate (#114). Preserve the body under
+            # a distinct key so the delivered waiting-for-merge record still carries "the exact issue
+            # body ... persisted" (issue #115 acceptance criterion).
+            "issue_body": issue_body,
+            "issue": issue_ref,
+            "repo": issue_ref[:2],
+            "default_branch": default_branch,
+        },
+    )
+    record = st.read(run_id)
+
+    # 8) Deliver EXACTLY one PR (default-branch read -> push -> origin verify -> open PR), never
+    #    merging. The gateway class is read from the module attribute so the fake is honored.
+    github.deliver_pr(record, gateway=github.GhWriteGateway(), store=st)
+    record = st.read(run_id)
+
+    # 9) Terminal: guarded running -> waiting-for-merge + the flat pr_url. ``_finalize`` sees the
+    #    terminal status and releases the worker slot (no re-transition, no overwrite).
+    with st.locked():
+        current = st._read_unlocked(run_id)
+        transition(State(current["status"]), State.WAITING_FOR_MERGE)
+        st.write_record_unlocked(
+            run_id,
+            {
+                **current,
+                "status": State.WAITING_FOR_MERGE.value,
+                "pr_url": record["pr"]["url"],
+            },
+        )
+    st.append_event(run_id, {"transition": State.WAITING_FOR_MERGE.value})

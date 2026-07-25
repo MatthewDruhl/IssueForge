@@ -167,7 +167,8 @@ def repo_list() -> None:
 
 @app.command()
 def run(spec: str = typer.Argument(..., help="ALIAS#N of the issue to run.")) -> None:
-    """Run an issue end-to-end: resolve ALIAS#N, verify it is open, execute the stub stage."""
+    """Run an issue end-to-end: resolve ALIAS#N, verify it is open, then drive the composed PoC-D
+    default stage (candidate -> readiness -> deliver one PR, landing waiting-for-merge; #115)."""
     from issueforge import engine
 
     engine.run(spec)

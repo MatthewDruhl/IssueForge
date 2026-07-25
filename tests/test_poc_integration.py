@@ -48,8 +48,6 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 PENDING = "PENDING (#115)"
 
 SPEC = "DandD#111"
@@ -375,7 +373,6 @@ def _poc_doc_path() -> Path:
 # =========================================================================== the suite
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#115)")
 def test_run_composes_end_to_end_to_waiting_for_merge(tmp_path, monkeypatch):
     """THE GOLDEN: bare ``issueforge run DandD#111`` drives the FULL delivery path — candidate ->
     readiness -> push -> origin verify -> one PR -> waiting-for-merge — with a two-commit candidate
@@ -443,7 +440,6 @@ def test_run_composes_end_to_end_to_waiting_for_merge(tmp_path, monkeypatch):
     assert _porcelain(checkout) == before_status
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#115)")
 def test_default_path_persists_composition_artifacts(tmp_path, monkeypatch):
     """The bare default path persists the composed artifacts the stub never writes — proving the real
     composition ran, via POSITIVE markers (no brittle stub-event negative).
@@ -466,7 +462,6 @@ def test_default_path_persists_composition_artifacts(tmp_path, monkeypatch):
     assert isinstance(record.get("pr"), dict)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#115)")
 def test_alias_resolves_into_issue_read_and_open_check(tmp_path, monkeypatch):
     """The composed path resolves the DandD alias and reads the repo-qualified issue through the
     seams — a stage that hardcoded "DandD#111" instead of propagating the resolved slug fails.
@@ -486,7 +481,6 @@ def test_alias_resolves_into_issue_read_and_open_check(tmp_path, monkeypatch):
     assert (EXPECTED_SLUG, ISSUE_NUMBER) in handles.issue_open_calls
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#115)")
 def test_human_approver_sees_test_diff_and_red_evidence(tmp_path, monkeypatch):
     """Before freezing the contract the composed stage shows the human approver the EXACT authored
     test diff AND the machine-checked red evidence — not an empty or fabricated review.
@@ -508,7 +502,6 @@ def test_human_approver_sees_test_diff_and_red_evidence(tmp_path, monkeypatch):
     assert getattr(review, "red_evidence", None), "approver review is missing the red evidence"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#115)")
 def test_candidate_authored_in_detached_isolated_worktree_with_green_baseline(
     tmp_path, monkeypatch
 ):
@@ -543,7 +536,6 @@ def test_candidate_authored_in_detached_isolated_worktree_with_green_baseline(
     assert "green" in str(baseline_ev["status"]).lower()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#115)")
 def test_readiness_scope_gate_blocks_delivery(tmp_path, monkeypatch):
     """A candidate that PASSES run_candidate (acceptance + baseline green) but writes OUT-OF-SCOPE is
     refused by the #112 readiness scope predicate — proving the composition runs issue_readiness, not
@@ -578,7 +570,6 @@ def test_readiness_scope_gate_blocks_delivery(tmp_path, monkeypatch):
     assert record["write_scope"] == [WRITE_SCOPE_PATH]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#115)")
 def test_candidate_refused_when_acceptance_stays_red(tmp_path, monkeypatch):
     """When the fake implementation does NOT fix the failing test, run_candidate's OWN authoritative
     verification refuses the candidate (acceptance red) and delivery never happens.
@@ -602,7 +593,6 @@ def test_candidate_refused_when_acceptance_stays_red(tmp_path, monkeypatch):
     assert _open_pr_count(handles.gateways) == 0
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#115)")
 def test_rejection_at_approval_pauses_without_side_effects(tmp_path, monkeypatch):
     """A human rejection at the contract-approval gate pauses the run with no GitHub mutation: no
     contract commit is frozen and the gateway is never pushed to or asked to open a PR.
@@ -626,7 +616,6 @@ def test_rejection_at_approval_pauses_without_side_effects(tmp_path, monkeypatch
     assert _open_pr_count(handles.gateways) == 0
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#115)")
 def test_delivered_run_persists_pr_and_arms_duplicate_guard(tmp_path, monkeypatch):
     """A delivered run persists the full PR facts with status "waiting-for-merge", ARMING the
     idempotency guard (a re-entry over this record is a no-op).
@@ -655,7 +644,6 @@ def test_delivered_run_persists_pr_and_arms_duplicate_guard(tmp_path, monkeypatc
     }
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#115)")
 def test_poc_doc_records_scope_command_and_deferral():
     """The PoC scope doc exists and records the proof command AND binds each deferred successor to
     deferral wording — a doc claiming #20/#21/#22 are done must fail.

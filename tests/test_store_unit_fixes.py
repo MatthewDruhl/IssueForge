@@ -193,5 +193,10 @@ def test_the_engine_still_admits_a_new_run_after_a_stage_crash(make_git_repo, is
         )
 
     # A fresh run is admitted (RUNNING), proving the slot was freed.
-    record = engine.run("DandD#149", issue_open=lambda s, n: True, new_run_id=lambda: "run-2")
+    record = engine.run(
+        "DandD#149",
+        issue_open=lambda s, n: True,
+        new_run_id=lambda: "run-2",
+        stage=engine._default_stage,
+    )
     assert record["status"] == engine.COMPLETED

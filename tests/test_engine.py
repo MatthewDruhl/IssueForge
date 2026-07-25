@@ -89,7 +89,12 @@ def test_run_records_the_exact_queued_running_completed_transition_sequence(
     from issueforge import engine, store
 
     _register(make_git_repo)
-    engine.run("DandD#148", issue_open=lambda s, n: True, new_run_id=lambda: "run-1")
+    engine.run(
+        "DandD#148",
+        issue_open=lambda s, n: True,
+        new_run_id=lambda: "run-1",
+        stage=engine._default_stage,
+    )
 
     events = store.RunStore().replay_events("run-1")
     assert all("transition" in e for e in events)
@@ -109,10 +114,14 @@ def test_run_command_completes_end_to_end_through_the_cli(
     actually ran (a "stage" transition recorded before "completed"), so a CLI that merely writes
     "completed" cannot pass.
     """
-    from issueforge import github, store
+    from issueforge import engine, github, store
 
     _register(make_git_repo)
     monkeypatch.setattr(github, "issue_is_open", lambda *a, **k: True)
+    # The engine default is now the composed PoC-D stage (#115); this test exercises the CLI ->
+    # engine.run -> default-stage -> completed wiring, so pin the default back to the stub stage the
+    # queue/admission mechanics assert on (the composed stage has its own suite: test_poc_integration).
+    monkeypatch.setattr(engine, "_poc_composed_stage", engine._default_stage)
 
     result = CliRunner().invoke(app, ["run", "DandD#148"])
     assert result.exit_code == 0, getattr(result, "stderr", result.stdout)
@@ -299,7 +308,12 @@ def test_run_state_survives_a_fresh_process_reload(make_git_repo, isolated_state
     from issueforge import engine
 
     _register(make_git_repo)
-    engine.run("DandD#148", issue_open=lambda s, n: True, new_run_id=lambda: "run-1")
+    engine.run(
+        "DandD#148",
+        issue_open=lambda s, n: True,
+        new_run_id=lambda: "run-1",
+        stage=engine._default_stage,
+    )
 
     code = (
         "from issueforge import store\n"
