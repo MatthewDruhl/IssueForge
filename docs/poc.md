@@ -44,3 +44,24 @@ is deferred to its own successor issue:
 Deeper robustness (full failure-stage attribution, byte-for-byte checkout preservation, integrity-mutation
 readiness, and composed resume/retry re-entry) is deferred to #124. End-to-end contract integrity is
 deferred to #126.
+
+## Real manual acceptance run (#129)
+
+The final PoC-D proof is a MANUAL, non-automated run of `issueforge run DandD#111` against the real
+authenticated Claude CLI and GitHub. #129 wires the two production seams the M1 build (#115/#128) stubbed
+so that run can happen; the run itself is not a committed automated test.
+
+Prerequisites:
+
+- An authenticated `claude` CLI on PATH (the config-resolved primary provider profile launches it).
+- `gh` authenticated for the DandD repo (issue read, push, PR open).
+- A registered DandD alias whose checkout carries a committed `.issueforge.toml` with `[providers.*]`
+  and `[roles] primary = ...`. The composed stage now resolves `roles.primary` from the FETCHED committed
+  config and launches that real `config.Profile`, instead of the M1 `SimpleNamespace(name="poc")` stub.
+- The human enters the approved file scope at the pre-authoring gate: DandD#111 is a plain bug report
+  with no machine-readable scope block, so `read_issue_body` yields `files=[]`. Before any AI edit,
+  `engine._poc_scope_approver` shows the stated files and reads the human's approved list from stdin;
+  that list becomes the persisted `write_scope` the readiness scope predicate enforces. Rejecting (an
+  empty line or closed stdin) pauses the run before any fetch, worktree, authoring, push, or PR.
+
+These two automated seams (#129) are what make the real run possible; nothing here executes the live run.

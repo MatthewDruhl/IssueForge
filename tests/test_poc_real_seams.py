@@ -47,8 +47,6 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 PENDING = "PENDING (#129)"
 
 SPEC = "DandD#111"
@@ -343,7 +341,6 @@ def _install_seams(monkeypatch, *, scope_return, impl_mode: str = "fix") -> Simp
 # =========================================================================== the suite
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#129)")
 def test_composed_stage_launches_config_resolved_primary_profile(tmp_path, monkeypatch):
     """The composed stage launches the provider with the config-resolved ``roles.primary`` from the
     FETCHED (S2) config, NOT the M1 ``SimpleNamespace(name="poc")`` stub, a hardcoded profile, a partial
@@ -384,7 +381,6 @@ def test_composed_stage_launches_config_resolved_primary_profile(tmp_path, monke
     assert seeded.stale_tag not in expected.start
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#129)")
 def test_pre_authoring_scope_gate_persists_human_approved_write_scope(tmp_path, monkeypatch):
     """The pre-authoring scope gate is consulted with the issue's stated files BEFORE the first authoring
     invocation, and the human-approved file list (a per-run value the gate returns) becomes the persisted
@@ -419,7 +415,6 @@ def test_pre_authoring_scope_gate_persists_human_approved_write_scope(tmp_path, 
     assert handles.seq.index("scope_gate") < handles.seq.index("invoke")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#129)")
 def test_scope_rejection_pauses_before_authoring_without_side_effects(tmp_path, monkeypatch):
     """A rejection at the pre-authoring scope gate pauses the run BEFORE any other work: the gate is the
     ONLY thing consulted, and no authoring invocation, worktree edit, push, or PR occurs.
@@ -455,7 +450,6 @@ def test_scope_rejection_pauses_before_authoring_without_side_effects(tmp_path, 
     assert _porcelain(checkout) == before_status
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#129)")
 def test_real_scope_approver_default_is_a_genuine_human_gate(monkeypatch):
     """The REAL (unpatched) ``engine._poc_scope_approver`` default is a genuine human gate: it reads the
     human's chosen file list from stdin and returns it; empty input or a closed stdin (EOF) REJECTS.
