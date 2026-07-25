@@ -66,13 +66,28 @@ PR_URL = f"https://github.com/MatthewDruhl/DandD/pull/{PR_NUMBER}"
 CONTRACT_PATH = "tests/test_greet.py"
 WRITE_SCOPE_PATH = "src/dandd/greet.py"
 OUT_OF_SCOPE_PATH = "src/dandd/extra.py"  # written by the scope-violation impl; NOT in write_scope.
-# A test that is genuinely RED at base (``dandd.greet`` is absent) and GREEN after the fake impl.
+# A test whose module IMPORTS cleanly at base (a WRONG-value ``greet`` stub is committed in the seed)
+# so its base failure is a CALL-phase behavioral red (accepted by contract.prove_red), NOT a
+# collection-phase ImportError (rejected as ``import_error``). The fake impl overwrites the stub with
+# the correct value so acceptance goes GREEN.
 _AUTHORED_TEST = "from dandd.greet import greet\n\n\ndef test_greetcase():\n    assert greet('sam') == 'hi sam'\n"
+# The base stub: importable so the authored test fails in the CALL phase (behavioral_red), not at
+# collection. The fake implementation phase OVERWRITES this with the correct value.
+_BASE_IMPL_SOURCE = "def greet(name):\n    return 'WRONG'\n"
 _IMPL_SOURCE = "def greet(name):\n    return f'hi {name}'\n"
 _OUT_OF_SCOPE_SOURCE = "SENTINEL = 'out-of-scope change not in the approved write_scope'\n"
 
+# ``python -m pytest`` runs with cwd=worktree, but ``dandd`` lives under ``src/``; a committed pytest
+# ``pythonpath`` makes ``import dandd`` resolve so acceptance/baseline can reach GREEN in the worktree.
+_PYPROJECT = '[tool.pytest.ini_options]\npythonpath = ["src"]\n'
+
+# ``acceptance`` runs the authored acceptance test; ``baseline`` runs the whole committed suite. Both
+# are argv arrays (config validates them); the composed #115 stage sources the acceptance command from
+# here alongside the baseline the registry already reads.
 DANDD_CONFIG = (
-    'baseline = ["python", "-m", "pytest", "-p", "no:cacheprovider"]\nframework = "pytest"\n'
+    'baseline = ["python", "-m", "pytest", "-p", "no:cacheprovider"]\n'
+    'acceptance = ["python", "-m", "pytest", "tests/test_greet.py", "-p", "no:cacheprovider"]\n'
+    'framework = "pytest"\n'
 )
 
 _GIT_ID = ["-c", "user.name=IF Tests", "-c", "user.email=tests@issueforge.invalid"]
@@ -259,8 +274,18 @@ def _seed_dandd(tmp_path: Path) -> SimpleNamespace:
     subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True)
     (seed / "src" / "dandd").mkdir(parents=True)
     (seed / "src" / "dandd" / "__init__.py").write_text("")
+    # A WRONG-value greet stub committed at base: importable (so the authored test's base failure is a
+    # CALL-phase behavioral red, not a collection ImportError) yet unexercised by the base suite (so
+    # the baseline stays green at base). The fake impl phase overwrites it with the correct value.
+    (seed / "src" / "dandd" / "greet.py").write_text(_BASE_IMPL_SOURCE)
     (seed / "tests").mkdir()
     (seed / "tests" / "test_baseline.py").write_text("def test_baseline():\n    assert True\n")
+    # A committed pytest ``pythonpath`` so ``import dandd`` resolves from ``src/`` when pytest runs in
+    # the worktree; without it the ``src/`` layout is unimportable and acceptance/baseline never green.
+    (seed / "pyproject.toml").write_text(_PYPROJECT)
+    # Ignore pytest's bytecode caches so the engine's ``git add -A`` implementation commit never stages
+    # ``__pycache__/*.pyc`` (which the readiness scope predicate would otherwise flag as out-of-scope).
+    (seed / ".gitignore").write_text("__pycache__/\n*.pyc\n")
     (seed / ".issueforge.toml").write_text(DANDD_CONFIG)
     _git(seed, "add", "-A")
     _git(seed, "commit", "-qm", "dandd baseline layout")
@@ -321,6 +346,7 @@ def _install_seams(
         return {
             "body": f"{EXPECTED_SLUG}#{ISSUE_NUMBER} GREET: greet(name) must return 'hi <name>'",
             "files": [WRITE_SCOPE_PATH],
+            "contract_paths": [CONTRACT_PATH],
         }
 
     def fake_approver(review):
