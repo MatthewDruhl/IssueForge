@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tomllib
 import uuid
 from collections.abc import Callable
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -1092,6 +1093,20 @@ def _poc_approver(review: Any) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
+def _poc_scope_approver(stated_files: Any) -> list | None:
+    """Pre-authoring human scope gate (#129): show the issue's stated files, read the approved file
+    list from stdin (space-separated). An empty line or a closed stdin (EOF) REJECTS (returns None).
+    Never auto-approves."""
+    print("=== IssueForge: approve the write scope BEFORE authoring? ===")
+    print(f"stated files: {list(stated_files)}")
+    try:
+        answer = input("Approved files (space-separated), empty to reject: ")
+    except EOFError:
+        return None
+    files = answer.split()
+    return files or None
+
+
 def _poc_pause(st: store.RunStore, run_id: str, reason: str) -> None:
     """Persist ``paused`` with a pause reason and no delivery (the composed stage's pause path)."""
     st.apply(run_id, lambda _r: {"status": State.PAUSED.value, "pause_reason": reason})
@@ -1123,8 +1138,17 @@ def _poc_composed_stage(record: dict) -> None:
     #    (``run()`` already recorded the ``issue_is_open`` check with the resolved slug.)
     body_info = github.read_issue_body(slug, number)
     issue_body = body_info["body"]
-    write_scope = list(body_info["files"])
+    stated_files = list(body_info["files"])
     contract_paths = list(body_info["contract_paths"])
+
+    # 1b) Pre-authoring human scope gate (#129): the human approves the write scope BEFORE any AI edit,
+    #     fetch, or worktree is created. A rejection (None) pauses with NO side effects. Read as a bare
+    #     module-global so the acceptance suite's monkeypatched seam is honored.
+    approved_scope = _poc_scope_approver(stated_files)
+    if approved_scope is None:
+        _poc_pause(st, run_id, "scope_rejected (pre-authoring scope gate)")
+        return
+    write_scope = list(approved_scope)
 
     # 2) Fetch the FRESH default-branch tip. A failed read is never negative evidence — it PAUSES.
     fetch = workspace.fetch_default_sha(checkout)
@@ -1147,6 +1171,18 @@ def _poc_composed_stage(record: dict) -> None:
     cfg = _config.load_config(candidate_worktree)
     baseline_command = list(cfg.baseline)
     acceptance_command = list(cfg.acceptance or cfg.baseline)
+
+    # Resolve the config's primary provider profile from the FETCHED committed config (never a stale
+    # checkout), so a real run launches the config-resolved provider instead of the M1 SimpleNamespace
+    # stub. A failed config/roles resolution PAUSES naming the roles stage (a real run cannot launch
+    # without a configured role); the acceptance path always provides one, so the happy path resolves.
+    try:
+        primary_profile = _config.load_roles(
+            tomllib.loads(_config._read_committed_config(candidate_worktree, "HEAD"))
+        ).primary
+    except _config.ConfigError as exc:
+        _poc_pause(st, run_id, f"roles_resolution: {exc}")
+        return
 
     # 4) Prove the committed baseline GREEN before any AI edit (red/failed -> pause).
     baseline_ev = _verify.run_baseline(candidate_worktree, baseline_command, adapter=adapter)
@@ -1174,7 +1210,7 @@ def _poc_composed_stage(record: dict) -> None:
     #    acceptance suite's monkeypatched seams are honored; prove_red/run_baseline stay REAL.
     candidate = run_candidate(
         record,
-        profile=SimpleNamespace(name="poc"),
+        profile=primary_profile,
         approver=_poc_approver,
         invoke=providers.invoke,
     )

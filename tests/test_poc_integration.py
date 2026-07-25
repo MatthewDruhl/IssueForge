@@ -86,6 +86,15 @@ DANDD_CONFIG = (
     'baseline = ["python", "-m", "pytest", "-p", "no:cacheprovider"]\n'
     'acceptance = ["python", "-m", "pytest", "tests/test_greet.py", "-p", "no:cacheprovider"]\n'
     'framework = "pytest"\n'
+    "\n"
+    "[providers.claudecli]\n"
+    'executable = ["claude"]\n'
+    'start = ["-p", "{prompt}"]\n'
+    'resume = ["-p", "{prompt}", "--resume", "{session}"]\n'
+    'auth = ["auth", "status"]\n'
+    "\n"
+    "[roles]\n"
+    'primary = "claudecli"\n'
 )
 
 _GIT_ID = ["-c", "user.name=IF Tests", "-c", "user.email=tests@issueforge.invalid"]
@@ -356,6 +365,9 @@ def _install_seams(
     monkeypatch.setattr(github, "issue_is_open", fake_issue_open)
     monkeypatch.setattr(github, "read_issue_body", fake_read_issue_body, raising=False)
     monkeypatch.setattr(engine, "_poc_approver", fake_approver, raising=False)
+    monkeypatch.setattr(
+        engine, "_poc_scope_approver", lambda stated: [WRITE_SCOPE_PATH], raising=False
+    )
 
     return SimpleNamespace(
         invoker=invoker,
