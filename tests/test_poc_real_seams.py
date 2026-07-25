@@ -341,44 +341,10 @@ def _install_seams(monkeypatch, *, scope_return, impl_mode: str = "fix") -> Simp
 # =========================================================================== the suite
 
 
-def test_composed_stage_launches_config_resolved_primary_profile(tmp_path, monkeypatch):
-    """The composed stage launches the provider with the config-resolved ``roles.primary`` from the
-    FETCHED (S2) config, NOT the M1 ``SimpleNamespace(name="poc")`` stub, a hardcoded profile, a partial
-    construction, or a stale-checkout read.
-
-    technical (contract): the fetched (S2) ``.issueforge.toml`` carries ``[providers.claudecli]
-    executable = ["claude"]`` and ``[roles] primary = "claudecli"`` with a per-run FRESH provider tag in
-    ``start`` that differs from the STALE (S1) registered checkout. After engine.run("DandD#111") EVERY
-    fake-invoke call's ``profile`` is byte-for-byte equal (full ``config.Profile`` dataclass equality) to
-    ``config.load_roles(<S2 config>).primary`` — so it is a real ``config.Profile`` (not SimpleNamespace,
-    name != "poc"), carries the FRESH tag (not the stale one), and every field (executable/start/resume/
-    auth/rate_limit/retries) matches the resolved profile. Both the authoring and implementation calls
-    carry it.
-    """
-    seeded = _seed_dandd(tmp_path)
-    handles = _install_seams(monkeypatch, scope_return=[WRITE_SCOPE_PATH])
-    expected = _expected_primary_profile(seeded.fresh_config)
-
-    from issueforge import config, engine, store
-
-    result = engine.run(SPEC)
-    record = store.RunStore().read(result["run_id"])
-
-    assert record["status"] == "waiting-for-merge"
-    assert handles.invoker.calls, "authoring invoke was never called"
-    for call in handles.invoker.calls:
-        profile = call["profile"]
-        assert isinstance(profile, config.Profile), (
-            f"profile is {type(profile)!r}, not config.Profile"
-        )
-        assert not isinstance(profile, SimpleNamespace)
-        assert getattr(profile, "name", None) != "poc"
-        assert (
-            profile == expected
-        )  # full dataclass equality: binds the FRESH-fetched config profile
-    # The fresh tag is genuinely in the launched profile (guards against S1/S2 being conflated).
-    assert seeded.fresh_tag in expected.start
-    assert seeded.stale_tag not in expected.start
+# NOTE: the #129 profile test (``test_composed_stage_launches_config_resolved_primary_profile``) was
+# REMOVED here by #135 as a logged contract amendment: role resolution moves from the fetched repo
+# ``.issueforge.toml`` to an operator-level providers config, so its replacement lives in
+# ``tests/test_poc_operator_providers.py::test_composed_stage_launches_operator_config_primary_profile``.
 
 
 def test_pre_authoring_scope_gate_persists_human_approved_write_scope(tmp_path, monkeypatch):
