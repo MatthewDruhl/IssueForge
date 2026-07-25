@@ -1140,8 +1140,11 @@ def _poc_composed_stage(record: dict) -> None:
         return
     candidate_worktree = wt.path
 
-    # The acceptance + baseline commands come from the committed .issueforge.toml.
-    cfg = _config.load_config(checkout)
+    # The acceptance + baseline commands come from the committed .issueforge.toml of the FETCHED
+    # base — read from the candidate worktree (created at the freshly fetched ``base_sha``), NOT the
+    # registered checkout's possibly-stale HEAD. If the fetched default branch changed the config, the
+    # stage must run the fetched commands, never obsolete ones off a stale checkout (unearned green).
+    cfg = _config.load_config(candidate_worktree)
     baseline_command = list(cfg.baseline)
     acceptance_command = list(cfg.acceptance or cfg.baseline)
 
@@ -1209,6 +1212,11 @@ def _poc_composed_stage(record: dict) -> None:
             "contract_integrity": verdict["contract_integrity"],
             "candidate_branch": branch,
             "registered_checkout": str(candidate_worktree),
+            # deliver_pr (#113) needs record["issue"] as the (owner, repo, number) tuple, but that
+            # overwrites the exact issue BODY seeded for run_candidate (#114). Preserve the body under
+            # a distinct key so the delivered waiting-for-merge record still carries "the exact issue
+            # body ... persisted" (issue #115 acceptance criterion).
+            "issue_body": issue_body,
             "issue": issue_ref,
             "repo": issue_ref[:2],
             "default_branch": default_branch,
