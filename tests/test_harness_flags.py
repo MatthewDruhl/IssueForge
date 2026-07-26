@@ -57,9 +57,10 @@ fixtures through the exact code path the PENDING tests use on the real files. Wi
 a regression inside the helpers would surface only as an XFAIL and look like the expected
 pending state.
 
-The two flag tests carry the literal ``@pytest.mark.xfail(strict=True,
-reason="PENDING (#145)")`` marker: the suite is GREEN now and flips to real green when #145
-edits the four invocations. Confirm the red with ``pytest --runxfail``.
+The two flag tests were committed PENDING with a literal
+``@pytest.mark.xfail(strict=True, reason="PENDING (#145)")`` marker and were flipped to
+REQUIRED when #145 built (markers removed; the four harness invocations now carry the
+flags). They are live regression gates from here on: a PR that drops a flag reds them.
 
 KNOWN, DELIBERATE COVERAGE LIMITS (filed as post-v1 robustness, not silently dropped):
 - Make variable indirection that never spells "pytest" (``$(MAKE) other-target`` recursion)
@@ -490,7 +491,6 @@ def test_failure_message_names_the_file_and_the_full_command() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#145)")
 def test_every_makefile_pytest_invocation_uses_worksteal() -> None:
     """Every Makefile pytest invocation runs with ``-n auto --dist worksteal``.
 
@@ -505,7 +505,6 @@ def test_every_makefile_pytest_invocation_uses_worksteal() -> None:
     assert not offenders, _offenders_message(offenders)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#145)")
 def test_every_ci_pytest_invocation_uses_worksteal() -> None:
     """The CI workflow's pytest step runs with ``-n auto --dist worksteal``.
 
