@@ -1136,6 +1136,19 @@ def _poc_pause(st: store.RunStore, run_id: str, reason: str) -> None:
     st.apply(run_id, lambda _r: {"status": State.PAUSED.value, "pause_reason": reason})
 
 
+def _persist_baseline_diagnostics(st: store.RunStore, run_id: str, evidence: object) -> None:
+    """Persist a non-green baseline's real stdout/stderr + exit code so the pause is diagnosable (#141).
+
+    Writes ``baseline-stdout.log`` / ``baseline-stderr.log`` through the redacting artifact writer —
+    distinct names from ``_persist_captured``'s ``stdout.log`` / ``stderr.log`` (the STAGE's redirected
+    streams), so the subprocess capture and the stage capture stay separate layers. The subprocess
+    exit code is surfaced on the record under ``baseline_exit_code``.
+    """
+    store.write_artifact(run_id, "baseline-stdout.log", getattr(evidence, "stdout", "") or "")
+    store.write_artifact(run_id, "baseline-stderr.log", getattr(evidence, "stderr", "") or "")
+    st.apply(run_id, lambda _r: {"baseline_exit_code": getattr(evidence, "exit_code", None)})
+
+
 def _integrity_scoped_out(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
     """Pass-through contract-integrity verdict — integrity is SCOPED OUT for M1 (#126)."""
     return SimpleNamespace(ok=True, violations=())
@@ -1230,7 +1243,13 @@ def _poc_composed_stage(
     # 4) Prove the committed baseline GREEN before any AI edit (red/failed -> pause).
     baseline_ev = _verify.run_baseline(candidate_worktree, baseline_command, adapter=adapter)
     if baseline_ev.status is not BaselineStatus.GREEN:
-        _poc_pause(st, run_id, f"baseline_not_green: {baseline_ev.status}")
+        # Persist the baseline command's ACTUAL stdout/stderr + exit code (#141): a USAGE_ERROR
+        # pause otherwise surfaces only the classified enum, so the subprocess's real complaint (a
+        # self-provisioned env missing pytest-reportlog, say) never reaches the run record.
+        _persist_baseline_diagnostics(st, run_id, baseline_ev)
+        _poc_pause(
+            st, run_id, f"baseline_not_green: {baseline_ev.status} (exit {baseline_ev.exit_code})"
+        )
         return
 
     # Seed the run_candidate contract into the record (#114 reads the issue body under "issue").

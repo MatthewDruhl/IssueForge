@@ -5,6 +5,8 @@ from pathlib import Path
 
 import typer
 
+from issueforge.io import WriteSeam
+
 app = typer.Typer(help="Turn GitHub issues into human-approved, TDD-built pull requests.")
 
 
@@ -138,22 +140,115 @@ def provider_check(
 repo_app = typer.Typer(help="Register and list verified local clones.")
 app.add_typer(repo_app, name="repo")
 
+# The baseline-env preflight probes with the report-log reporter the adapter injects; a repo whose
+# own baseline environment lacks it is a slow, opaque mid-run USAGE_ERROR, so we bound the probe.
+_PREFLIGHT_TIMEOUT = 120.0
+
+
+def preflight_baseline_env(alias: str, path_token: str) -> str | None:
+    """Probe the just-registered repo's OWN baseline environment for the report-log reporter (#141).
+
+    A module-level seam (mirrors ``_isatty``) so callers and tests can stub it; the DEFAULT genuinely
+    probes. Three outcomes, keyed on running the repo's committed baseline command with the
+    ``--report-log`` the pytest adapter injects:
+
+    * PASS — the command ran and the reporter loaded -> return ``None`` (onboard).
+    * REJECT — the command RAN and pytest conclusively could not load the reporter (it exits nonzero
+      naming the missing plugin) -> return an actionable refusal message the CLI surfaces verbatim.
+    * INCONCLUSIVE — the command could not even start (missing interpreter, or a launcher that failed
+      before reaching pytest) -> return ``None``; nothing was learned about the reporter, so onboard.
+
+    The contract is the OUTCOME, driven by actually executing the command: two environments that
+    differ only in whether the reporter loads are separable only by running them.
+    """
+    import re
+    import uuid
+
+    from issueforge.paths import state_root
+    from issueforge.process import run
+    from issueforge.registry import Registry
+
+    baseline = list(Registry.load().get(alias).baseline)
+    repo_path = Registry.load().get(alias).path
+    if not baseline:
+        return None  # no baseline command to probe against
+
+    # A fresh report directory OUTSIDE the repo, created through the write seam so pytest-reportlog
+    # has a real parent to write into (the report itself is written by the probed subprocess).
+    report_dir = Path(state_root()) / "reports" / uuid.uuid4().hex
+    report_file = report_dir / "report.jsonl"
+    seam = WriteSeam()
+    seam.write_text(report_dir / ".if-keep", "")
+
+    argv = [*baseline, "-p", "no:cacheprovider", f"--report-log={report_file}", "--collect-only"]
+    try:
+        result = run(argv, cwd=repo_path, timeout=_PREFLIGHT_TIMEOUT)
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+        # The command could not start -> inconclusive; nothing was learned about the reporter.
+        return None
+
+    if result.timed_out:
+        return None  # inconclusive
+    # The reporter genuinely loaded IFF it produced its report file — the truest probe, and exactly
+    # what the real run needs. A green, empty, or even failing suite all still WRITE the report when
+    # the reporter is present, so onboard on any run that produced one (PASS).
+    if report_file.exists():
+        return None
+    # No report was written. Either the command never reached pytest (INCONCLUSIVE: a launcher that
+    # failed before pytest, e.g. a missing --directory) or pytest RAN and conclusively could not load
+    # the reporter (REJECT). Only the latter surfaces the reporter as the failure; a launcher error
+    # names its own problem (a missing directory) and says nothing about the reporter.
+    combined = re.sub(r"[-_]", "", (result.stdout + result.stderr).lower())
+    if "reportlog" in combined:
+        return (
+            f"cannot register {alias}: its baseline environment cannot load the pytest-reportlog "
+            f"reporter that IssueForge injects via --report-log. Install pytest-reportlog in the "
+            f"environment that runs the baseline command ({' '.join(baseline)}), then try again."
+        )
+    return None
+
+
+def _restore_registry(prior: str | None) -> None:
+    """Undo a registration the preflight went on to refuse (#141): rewrite the registry to exactly
+    the bytes it held before ``register`` ran, so a refused ``repo add`` leaves nothing registered.
+
+    ``register`` persists BEFORE the preflight runs (the preflight must observe the alias already
+    registered), so a REJECT has to roll the write back. Done through the sanctioned ``WriteSeam``;
+    ``registry.register`` itself stays pure and untouched.
+    """
+    from issueforge.registry import Registry
+
+    seam = WriteSeam()
+    seam.write_text(Registry.registry_path(), prior if prior is not None else '{"entries": []}\n')
+
 
 @repo_app.command("add")
 def repo_add(spec: str = typer.Argument(..., help="ALIAS:PATH of the clone to register.")) -> None:
     """Register a verified existing clone under ALIAS, or refuse loudly on stderr."""
-    from issueforge.registry import RegistryError, register
+    from issueforge.registry import Registry, RegistryError, register
 
     alias, sep, path_token = spec.partition(":")
     if not sep or not alias or not path_token:
         typer.echo(f"invalid ALIAS:PATH argument: {spec!r}", err=True)
         raise typer.Exit(1)
 
+    registry_path = Registry.registry_path()
+    prior = registry_path.read_text(encoding="utf-8") if registry_path.exists() else None
+
     try:
         register(alias, path_token)
     except RegistryError as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(1) from None
+
+    # Preflight the baseline environment AFTER register (register stays pure; the seam observes the
+    # alias already registered). A non-empty message is an actionable refusal: roll the registration
+    # back and surface the seam's own words, so onboarding fails loud here instead of hours later.
+    message = preflight_baseline_env(alias, path_token)
+    if message:
+        _restore_registry(prior)
+        typer.echo(message, err=True)
+        raise typer.Exit(1)
 
     typer.echo(f"registered {alias}")
 

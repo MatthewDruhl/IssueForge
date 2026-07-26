@@ -46,6 +46,11 @@ class Evidence:
     interpreter: object
     env_root: object
     network: object
+    # The baseline subprocess's OWN captured streams (#141). Defaulted so every existing 10-field
+    # construction keeps binding; ``run_baseline`` now fills them instead of discarding them, so a
+    # USAGE_ERROR pause can surface the command's actual complaint, not just the classified enum.
+    stdout: str = ""
+    stderr: str = ""
 
 
 @dataclass(frozen=True)
@@ -269,11 +274,18 @@ def run_baseline(
 
     exit_code: int | None = None
     timed_out = False
+    captured_stdout = ""
+    captured_stderr = ""
     if not launch_failed:
         try:
             result = _execute_baseline(handle, base_command, worktree, report_file, timeout, env)
             exit_code = result.returncode
             timed_out = result.timed_out
+            # Keep the baseline subprocess's OWN stdout/stderr (#141) — the diagnostics a
+            # USAGE_ERROR pause must surface; they were previously read for the exit code and
+            # discarded.
+            captured_stdout = result.stdout
+            captured_stderr = result.stderr
         except _LAUNCH_ERRORS:
             launch_failed = True
         except Exception:  # noqa: BLE001 — a denied-network executor failure pauses, never crashes.
@@ -309,6 +321,8 @@ def run_baseline(
         interpreter=interpreter,
         env_root=getattr(handle, "env_root", None),
         network=getattr(handle, "network", None),
+        stdout=captured_stdout,
+        stderr=captured_stderr,
     )
 
 
