@@ -23,6 +23,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
+from functools import partial
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -262,8 +263,15 @@ def run(
     stage: Callable[[dict], Any] | None = None,
     new_run_id: Callable[[], str] | None = None,
     secrets: set[str] | None = None,
+    approved_scope: list[str] | None = None,
+    auto_approve_contract: bool = False,
 ) -> dict:
-    """Run ``alias#n`` to completion (or land it queued behind the active run)."""
+    """Run ``alias#n`` to completion (or land it queued behind the active run).
+
+    ``approved_scope``/``auto_approve_contract`` (#140) are the HEADLESS answers to the composed
+    stage's two human gates, so any caller (the CLI's ``--scope``/``--yes``, a worker, a future
+    daemon) can drive a run with no keyboard. Left at their defaults the run stays interactive.
+    """
     if issue_open is None:
         issue_open = github.issue_is_open
     if stage is None:
@@ -272,6 +280,15 @@ def run(
         # The stub ``_default_stage`` is retained for the queue auto-advance/drain path and is pinned
         # explicitly by the queue/admission/crash-tx UNIT tests that exercise queue mechanics.
         stage = _poc_composed_stage
+        if approved_scope is not None or auto_approve_contract:
+            # Bind the headless answers ONLY when they were actually supplied, so the interactive
+            # path still calls the module global with ``record`` alone (a monkeypatched stand-in
+            # stage takes no keyword parameters).
+            stage = partial(
+                stage,
+                approved_scope=approved_scope,
+                auto_approve_contract=auto_approve_contract,
+            )
     if new_run_id is None:
         new_run_id = _default_run_id
 
@@ -1107,6 +1124,13 @@ def _poc_scope_approver(stated_files: Any) -> list | None:
     return files or None
 
 
+def _preapproved_contract(_review: Any) -> bool:
+    """The contract-gate stand-in for a headless run (#140): the operator already answered ``--yes``
+    on the command line, so there is nothing to ask. It is a SEPARATE callable from ``_poc_approver``
+    so a headless run provably never reaches the interactive gate."""
+    return True
+
+
 def _poc_pause(st: store.RunStore, run_id: str, reason: str) -> None:
     """Persist ``paused`` with a pause reason and no delivery (the composed stage's pause path)."""
     st.apply(run_id, lambda _r: {"status": State.PAUSED.value, "pause_reason": reason})
@@ -1117,8 +1141,19 @@ def _integrity_scoped_out(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
     return SimpleNamespace(ok=True, violations=())
 
 
-def _poc_composed_stage(record: dict) -> None:
-    """Compose candidate -> readiness -> delivery for the bare ``engine.run(spec)`` path (#115)."""
+def _poc_composed_stage(
+    record: dict,
+    *,
+    approved_scope: list[str] | None = None,
+    auto_approve_contract: bool = False,
+) -> None:
+    """Compose candidate -> readiness -> delivery for the bare ``engine.run(spec)`` path (#115).
+
+    Both headless answers (#140) are KEYWORD-ONLY and DEFAULTED, so every existing ``stage(record)``
+    call site keeps binding. ``approved_scope`` stands in for the pre-authoring scope gate and
+    ``auto_approve_contract`` for the contract gate; when a headless answer is supplied the matching
+    human gate is never consulted at all (not answered on the human's behalf, simply not reached).
+    """
     from issueforge import config as _config
     from issueforge import workspace
 
@@ -1143,8 +1178,10 @@ def _poc_composed_stage(record: dict) -> None:
 
     # 1b) Pre-authoring human scope gate (#129): the human approves the write scope BEFORE any AI edit,
     #     fetch, or worktree is created. A rejection (None) pauses with NO side effects. Read as a bare
-    #     module-global so the acceptance suite's monkeypatched seam is honored.
-    approved_scope = _poc_scope_approver(stated_files)
+    #     module-global so the acceptance suite's monkeypatched seam is honored. A headless
+    #     ``approved_scope`` (#140) IS the operator's answer, so the gate is skipped, not auto-passed.
+    if approved_scope is None:
+        approved_scope = _poc_scope_approver(stated_files)
     if approved_scope is None:
         _poc_pause(st, run_id, "scope_rejected (pre-authoring scope gate)")
         return
@@ -1214,10 +1251,13 @@ def _poc_composed_stage(record: dict) -> None:
     # 5) Candidate: author -> red proof -> human approval -> contract commit -> implement -> verify.
     #    ``invoke`` / ``_poc_approver`` are read from their module attributes at call time so the
     #    acceptance suite's monkeypatched seams are honored; prove_red/run_baseline stay REAL.
+    #    A headless ``auto_approve_contract`` (#140) supplies the operator's answer up front, so the
+    #    human gate is never consulted; without it the interactive seam runs unchanged.
+    approver = _preapproved_contract if auto_approve_contract else _poc_approver
     candidate = run_candidate(
         record,
         profile=primary_profile,
-        approver=_poc_approver,
+        approver=approver,
         invoke=providers.invoke,
     )
     if candidate.paused:

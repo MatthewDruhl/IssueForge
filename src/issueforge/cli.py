@@ -1,10 +1,22 @@
 """IssueForge command-line entry point."""
 
+import sys
 from pathlib import Path
 
 import typer
 
 app = typer.Typer(help="Turn GitHub issues into human-approved, TDD-built pull requests.")
+
+
+def _isatty() -> bool:
+    """Is a human actually watching this process's stdin? (#140)
+
+    A module-level seam rather than an inline ``sys.stdin.isatty()`` call: under Typer's
+    ``CliRunner`` — which every CLI test uses — stdin is never a tty, so an inline call would make
+    the interactive branch untestable. The DEFAULT reports the process's real stdin.
+    """
+    return sys.stdin.isatty()
+
 
 audit_app = typer.Typer(help="Build-time source-audit gates (provenance completeness).")
 app.add_typer(audit_app, name="audit")
@@ -166,12 +178,45 @@ def repo_list() -> None:
 
 
 @app.command()
-def run(spec: str = typer.Argument(..., help="ALIAS#N of the issue to run.")) -> None:
+def run(
+    spec: str = typer.Argument(..., help="ALIAS#N of the issue to run."),
+    scope: list[str] = typer.Option(
+        None,
+        "--scope",
+        help="Approved write-scope path (repeat per path). Answers the pre-authoring scope gate.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Pre-approve the authored acceptance contract instead of being asked.",
+    ),
+) -> None:
     """Run an issue end-to-end: resolve ALIAS#N, verify it is open, then drive the composed PoC-D
-    default stage (candidate -> readiness -> deliver one PR, landing waiting-for-merge; #115)."""
+    default stage (candidate -> readiness -> deliver one PR, landing waiting-for-merge; #115).
+
+    Two human gates run over stdin. From a terminal they are asked interactively; without a TTY they
+    would hit EOF and auto-reject, so a keyboard-less run must answer BOTH up front with ``--scope``
+    and ``--yes`` (#140). Missing either is a LOUD refusal here, before any run is admitted.
+    """
     from issueforge import engine
 
-    engine.run(spec)
+    approved_scope = list(scope) if scope else None
+    if not _isatty():
+        missing = [
+            flag
+            for flag, given in (("--scope", approved_scope is not None), ("--yes", yes))
+            if not given
+        ]
+        if missing:
+            typer.echo(
+                f"run needs answers to its human gates but stdin is not a terminal; missing "
+                f"{' and '.join(missing)}. Pass --scope <path> (repeat per path) and --yes to run "
+                f"headless, or run it in a terminal to be asked interactively.",
+                err=True,
+            )
+            raise typer.Exit(2)
+
+    engine.run(spec, approved_scope=approved_scope, auto_approve_contract=yes)
 
 
 @app.command()

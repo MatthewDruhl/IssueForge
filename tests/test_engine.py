@@ -114,7 +114,7 @@ def test_run_command_completes_end_to_end_through_the_cli(
     actually ran (a "stage" transition recorded before "completed"), so a CLI that merely writes
     "completed" cannot pass.
     """
-    from issueforge import engine, github, store
+    from issueforge import cli, engine, github, store
 
     _register(make_git_repo)
     monkeypatch.setattr(github, "issue_is_open", lambda *a, **k: True)
@@ -122,6 +122,12 @@ def test_run_command_completes_end_to_end_through_the_cli(
     # engine.run -> default-stage -> completed wiring, so pin the default back to the stub stage the
     # queue/admission mechanics assert on (the composed stage has its own suite: test_poc_integration).
     monkeypatch.setattr(engine, "_poc_composed_stage", engine._default_stage)
+    # #140: a bare `run` is the INTERACTIVE path, and without a TTY it now refuses up front rather
+    # than driving the two human gates into EOF. CliRunner's stdin is never a tty, so pin the seam to
+    # the terminal this test has always implicitly assumed. The subject here is the CLI -> engine ->
+    # stage -> completed wiring, not the gate; the non-TTY refusal has its own committed suite
+    # (tests/test_poc_headless.py). No assertion below is relaxed.
+    monkeypatch.setattr(cli, "_isatty", lambda: True)
 
     result = CliRunner().invoke(app, ["run", "DandD#148"])
     assert result.exit_code == 0, getattr(result, "stderr", result.stdout)

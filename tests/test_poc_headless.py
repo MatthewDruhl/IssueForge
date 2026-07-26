@@ -408,7 +408,6 @@ def test_green_guard_prompt_poisoning_and_approver_spies_are_wired(monkeypatch):
 # =========================================================================== the suite
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#140)")
 def test_headless_cli_run_with_scope_and_yes_delivers_without_any_stdin_prompt(
     tmp_path, monkeypatch
 ):
@@ -444,7 +443,6 @@ def test_headless_cli_run_with_scope_and_yes_delivers_without_any_stdin_prompt(
     assert [call["phase"] for call in handles.invoker.calls] == ["author", "impl"]
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#140)")
 def test_non_tty_run_without_flags_fails_loud_instead_of_silently_rejecting(tmp_path, monkeypatch):
     """Started without a keyboard and without the new flags, the command stops immediately and says
     what to pass, instead of quietly pretending the human said "no" and parking the issue.
@@ -475,7 +473,6 @@ def test_non_tty_run_without_flags_fails_loud_instead_of_silently_rejecting(tmp_
     assert handles.invoker.calls == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#140)")
 def test_interactive_tty_run_without_flags_still_prompts_and_gates(tmp_path, monkeypatch):
     """Run from a real terminal with no flags, nothing changes: IssueForge still asks which files it
     may write and still asks the human to approve the authored contract, and the answers typed at those
@@ -506,7 +503,6 @@ def test_interactive_tty_run_without_flags_still_prompts_and_gates(tmp_path, mon
     assert record["status"] == "waiting-for-merge"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#140)")
 def test_interactive_tty_scope_rejection_still_stops_the_run(tmp_path, monkeypatch):
     """Saying no at the "which files may I write?" question still stops the run dead: no AI is
     launched, nothing is written, no pull request appears.
@@ -534,7 +530,6 @@ def test_interactive_tty_scope_rejection_still_stops_the_run(tmp_path, monkeypat
     assert _open_pr_count(handles.gateways) == 0
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#140)")
 def test_interactive_tty_contract_rejection_still_stops_the_run(tmp_path, monkeypatch):
     """Saying no to the authored contract still stops the run: the test that was written is not
     implemented, and no pull request appears.
@@ -563,7 +558,6 @@ def test_interactive_tty_contract_rejection_still_stops_the_run(tmp_path, monkey
     assert _open_pr_count(handles.gateways) == 0
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#140)")
 def test_engine_run_carries_the_approved_scope_and_contract_approval(tmp_path, monkeypatch):
     """The headless answers are carried by the engine itself, not just handled in the command-line
     layer, so any caller (the CLI, a worker, a future daemon) can drive a run with no keyboard.
@@ -596,7 +590,6 @@ def test_engine_run_carries_the_approved_scope_and_contract_approval(tmp_path, m
     assert sorted(record.get("write_scope") or []) == sorted(scope)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#140)")
 def test_composed_stage_takes_headless_answers_as_optional_keyword_parameters():
     """The headless answers are passed to the run stage as ordinary optional settings, so every existing
     caller that just says "run this record" keeps working exactly as before.
@@ -621,7 +614,6 @@ def test_composed_stage_takes_headless_answers_as_optional_keyword_parameters():
     sig.bind({"run_id": "r"})  # legacy stage(record) call sites keep binding
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#140)")
 def test_non_tty_scope_without_yes_still_fails_loud_at_the_contract_gate(tmp_path, monkeypatch):
     """Supplying only the file list is not enough: the contract-approval question is still unanswered,
     so a keyboard-less run stops and says so rather than approving the contract on the human's behalf.
@@ -646,7 +638,6 @@ def test_non_tty_scope_without_yes_still_fails_loud_at_the_contract_gate(tmp_pat
     assert handles.invoker.calls == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#140)")
 def test_non_tty_yes_without_scope_still_fails_loud_before_admission(tmp_path, monkeypatch):
     """The mirror case: pre-approving the contract without saying which files may be written is not
     enough either. IssueForge never invents a write scope for itself.
@@ -672,7 +663,6 @@ def test_non_tty_yes_without_scope_still_fails_loud_before_admission(tmp_path, m
     assert handles.invoker.calls == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#140)")
 def test_isatty_seam_reports_the_real_stdin_of_the_process_by_default():
     """The "is a human watching?" check has to tell the truth by default. If it were hardcoded, every
     real headless run would either hang on a prompt or bypass the human gates.
