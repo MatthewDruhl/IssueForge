@@ -82,6 +82,9 @@ Deferral here is explicit and labeled, never silent.
   - `make test-fast TEST=<file>` — the implementation loop: one file, parallel, stops on first failure.
     `TEST` is required; the target refuses to run without it.
   - `make test` — full suite, parallel, all failures reported. The final local gate, and what CI runs.
+  - `make test-parked` — runs the parked observability suites (`tests/test_observability.py` and
+    `tests/test_observability_unit.py`). The default run excludes them until `observability.py` is wired
+    into the runtime; naming those files on another target collects nothing, so use this one.
 - **Do not run the full suite while implementing.** Use `make test-fast TEST=<affected file>` during the
   red-green loop; run `make test` once at the final verification gate and let CI be the backstop.
 - Never commit directly to `main`; branch → PR → merge. A `no-main-commit` hook enforces this.

@@ -23,7 +23,9 @@ load-bearing constraints.
 - Python 3.12+, `uv`, `pytest`, `ruff`.
 - **Tests run through the Makefile, never raw `pytest`.** `make test-fast TEST=<file>` (one file, parallel,
   fail-fast) during implementation; `make test` (full suite, parallel) only at the final gate. CI runs
-  `make test`. Do not run the full suite while iterating.
+  `make test`. Do not run the full suite while iterating. `make test-parked` runs the parked observability
+  suites (`tests/test_observability.py`, `tests/test_observability_unit.py`), which the default run excludes
+  until `observability.py` is wired into the runtime.
 
 ## When reviewing
 
