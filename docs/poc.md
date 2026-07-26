@@ -67,5 +67,27 @@ Prerequisites:
   `engine._poc_scope_approver` shows the stated files and reads the human's approved list from stdin;
   that list becomes the persisted `write_scope` the readiness scope predicate enforces. Rejecting (an
   empty line or closed stdin) pauses the run before any fetch, worktree, authoring, push, or PR.
+- A terminal. Both gates read stdin, so `issueforge run` is interactive by default.
+
+### Running it without a terminal (#140)
+
+The two gates read stdin, so launched from a background job, a CI step, or any non-interactive shell
+they would hit EOF and auto-reject — the run would park at `scope_rejected` before a provider ever
+launched. Answer both gates up front instead:
+
+```
+issueforge run DandD#111 \
+  --scope backend/src/ai/__init__.py \
+  --scope backend/src/engine/combat.py \
+  --yes
+```
+
+`--scope` is repeated once per approved path and becomes the persisted `write_scope` verbatim; `--yes`
+pre-approves the authored acceptance contract. Neither is inferred: without a TTY, omitting either flag
+is a loud non-zero refusal naming the missing one, before any run is admitted, rather than a silent
+rejection. From a terminal with no flags the two prompts behave exactly as they always have, and a
+rejection at either one still stops the run. The same answers are available to any programmatic caller
+as `engine.run(spec, approved_scope=[...], auto_approve_contract=True)`. Committed suite:
+`tests/test_poc_headless.py`.
 
 These two automated seams (#129) are what make the real run possible; nothing here executes the live run.
