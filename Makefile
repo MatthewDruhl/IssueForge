@@ -1,4 +1,4 @@
-.PHONY: test-fast test gate fmt
+.PHONY: test-fast test test-parked gate fmt
 
 # Development loop: one file (or -k expression), parallel, stop on first failure.
 # TEST is required — an empty TEST would silently run the whole suite, which the
@@ -10,6 +10,13 @@ test-fast:
 # Full suite, parallel, all failures reported. The pytest portion of the gate.
 test:
 	uv run pytest -n auto --dist worksteal
+
+# The parked observability suites, on demand. They are excluded from the default
+# run by `addopts` in pyproject.toml until observability.py is wired into the
+# runtime; `--override-ini=addopts=` clears that, which naming the files alone
+# cannot do (pytest's --ignore beats an explicitly-named positional path).
+test-parked:
+	uv run pytest -n auto --dist worksteal --override-ini=addopts= tests/test_observability.py tests/test_observability_unit.py
 
 # The FULL CI gate, reproduced locally: green here == green in CI. Mirrors every
 # step in .github/workflows/ci.yml, fast checks first so a formatting slip fails

@@ -750,7 +750,6 @@ def test_the_ci_workflow_still_runs_pytest_directly() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#146)")
 def test_the_park_is_lifted_when_observability_is_wired_into_the_runtime() -> None:
     """Running the tests the normal way skips the observability tests, and nothing else.
 
@@ -784,7 +783,6 @@ def test_the_park_is_lifted_when_observability_is_wired_into_the_runtime() -> No
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#146)")
 def test_the_gate_and_ci_pytest_runs_do_not_undo_the_parking() -> None:
     """The other two ways the suite gets run also skip the parked tests.
 
@@ -805,7 +803,6 @@ def test_the_gate_and_ci_pytest_runs_do_not_undo_the_parking() -> None:
     assert not offenders, "\n".join(offenders)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#146)")
 def test_make_test_parked_runs_exactly_the_parked_tests_on_demand() -> None:
     """`make test-parked` really runs, and runs precisely the parked tests.
 
@@ -844,7 +841,6 @@ def test_make_test_parked_runs_exactly_the_parked_tests_on_demand() -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#146)")
 def test_the_pytest_config_annotates_the_exclusion_itself() -> None:
     """The exclusion carries a note, right next to it, explaining it is temporary.
 
@@ -869,7 +865,6 @@ def test_the_pytest_config_annotates_the_exclusion_itself() -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#146)")
 def test_the_on_demand_target_is_documented_for_humans_and_agents() -> None:
     """Both instruction files that list the make targets explain the new one.
 

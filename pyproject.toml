@@ -26,6 +26,12 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The observability suites are PARKED pending integration, not abandoned (#146):
+# src/issueforge/observability.py has no runtime importer yet, so its ~66s of tests prove
+# nothing about shipped behavior. The code stays; only its test cost is paused. Run them on
+# demand with `make test-parked`. This exclusion MUST be removed in the same PR that wires
+# observability into the runtime.
+addopts = "--ignore=tests/test_observability.py --ignore=tests/test_observability_unit.py"
 
 [tool.ruff]
 line-length = 100
