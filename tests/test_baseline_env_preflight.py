@@ -688,7 +688,6 @@ def test_repo_add_accepts_a_repo_whose_baseline_env_can_load_the_report_log_repo
 # =========================================================================== 2. preflight: REJECT
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#141)")
 def test_repo_add_refuses_a_repo_whose_baseline_env_cannot_load_the_report_log_reporter(tmp_path):
     """Plain English: if you try to onboard a project whose own test environment RAN and turned out to
     lack the report-log plugin, ``issueforge repo add`` stops right there, tells you which plugin is
@@ -802,7 +801,6 @@ def test_repo_add_onboards_a_repo_whose_launcher_fails_before_reaching_pytest(tm
 # =========================================================================== 4. the seam
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#141)")
 def test_the_preflight_probe_is_an_injectable_seam_that_can_be_stubbed_clean(tmp_path, monkeypatch):
     """Plain English: the new environment check can be substituted by callers and tests that do not
     have a live environment.
@@ -829,7 +827,6 @@ def test_the_preflight_probe_is_an_injectable_seam_that_can_be_stubbed_clean(tmp
     assert Registry.load().get("BADENV").path == repo.resolve()
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#141)")
 def test_the_cli_surfaces_the_preflight_seams_own_message_verbatim(tmp_path, monkeypatch):
     """Plain English: whatever the environment check complains about is what you see on screen -- the
     command does not swallow it and print something generic of its own.
@@ -859,7 +856,6 @@ def test_the_cli_surfaces_the_preflight_seams_own_message_verbatim(tmp_path, mon
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#141)")
 def test_the_preflight_seam_runs_after_register_not_before(tmp_path, monkeypatch):
     """Plain English: the environment check happens after the project has been recorded, not before --
     so registration keeps its own rules and the check is a separate, later step.
@@ -900,7 +896,6 @@ def test_the_preflight_seam_runs_after_register_not_before(tmp_path, monkeypatch
 # =========================================================================== 5. diagnostics
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#141)")
 def test_baseline_evidence_carries_the_subprocess_stdout_stderr_and_exit_code(tmp_path):
     """Plain English: when IssueForge runs a project's test command and that command complains, the
     complaint itself is kept -- not thrown away in favour of a one-word label.
@@ -943,7 +938,6 @@ def test_baseline_evidence_carries_the_subprocess_stdout_stderr_and_exit_code(tm
         assert token not in captured_out + captured_err
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#141)")
 def test_usage_error_pause_persists_the_baseline_stdout_stderr_and_exit_code(tmp_path, monkeypatch):
     """Plain English: when a run stops because the project's test command failed to even start
     properly, the saved run folder contains that command's actual output and exit code -- so you can
@@ -1005,7 +999,6 @@ def test_usage_error_pause_persists_the_baseline_stdout_stderr_and_exit_code(tmp
 # =========================================================================== 6. docs
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#141)")
 def test_onboarding_docs_state_the_baseline_env_report_log_requirement():
     """Plain English: the onboarding documentation tells you, in one place, that the environment which
     runs your baseline command needs the report-log plugin.
