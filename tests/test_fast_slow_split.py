@@ -158,7 +158,9 @@ def _build_probe_tree(tmp_path: Path, probe_body: str) -> Path:
     return tree
 
 
-def _run_probe_via(target: str, probe_body: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
+def _run_probe_via(
+    target: str, probe_body: str, tmp_path: Path
+) -> subprocess.CompletedProcess[str]:
     """Run the probe tree through the REAL argv of Makefile ``target`` (derived
     from ``make -n``), preserving every flag (``-m``, ``-n auto``,
     ``--dist worksteal``, any recipe-loaded plugin). ``uv run`` is replaced by the
@@ -172,7 +174,17 @@ def _run_probe_via(target: str, probe_body: str, tmp_path: Path) -> subprocess.C
     tree = _build_probe_tree(tmp_path, probe_body)
     # -rA lists every test's outcome by nodeid, so we can attribute pass/fail/exclusion
     # exactly (xdist omits the "deselected" count from the summary line).
-    argv = [sys.executable, "-m", "pytest", *flags, "-p", "no:cacheprovider", "-rA", "--tb=short", str(tree)]
+    argv = [
+        sys.executable,
+        "-m",
+        "pytest",
+        *flags,
+        "-p",
+        "no:cacheprovider",
+        "-rA",
+        "--tb=short",
+        str(tree),
+    ]
     return subprocess.run(argv, cwd=str(tree), capture_output=True, text=True)
 
 
@@ -217,7 +229,16 @@ def _collect(marker_args: list[str]) -> tuple[int, set[str]]:
     on the real tree under ``marker_args``. The returncode is surfaced so a
     collection error (partial nodeids) cannot masquerade as a clean partition."""
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", *marker_args],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            *marker_args,
+        ],
         cwd=str(_repo_root()),
         capture_output=True,
         text=True,
@@ -298,7 +319,9 @@ def test_slow_marker_is_registered(tmp_path):
         capture_output=True,
         text=True,
     )
-    assert proc.returncode == 0, f"slow not registered under --strict-markers:\n{proc.stdout}\n{proc.stderr}"
+    assert proc.returncode == 0, (
+        f"slow not registered under --strict-markers:\n{proc.stdout}\n{proc.stderr}"
+    )
 
 
 @pytest.mark.xfail(strict=True, reason="PENDING (#147)")
@@ -327,7 +350,9 @@ def test_claude_md_documents_test_quick_as_inner_loop():
     assert m, "CLAUDE.md has no Development section"
     section = m.group(0)
     assert "test-quick" in section, "Development section does not mention test-quick"
-    assert re.search(r"inner[- ]loop", section, re.I), "test-quick not documented as the inner-loop command"
+    assert re.search(r"inner[- ]loop", section, re.I), (
+        "test-quick not documented as the inner-loop command"
+    )
 
 
 @pytest.mark.slow
@@ -360,7 +385,9 @@ def test_fast_ring_excludes_slow_and_every_recorded_slow_test():
     relevant = recorded_slow & all_ids  # ignore stale/removed nodeids
     assert relevant, "no recorded >5s tests are currently collected (unexpected)"
     offenders = relevant & fast_ids
-    assert not offenders, f"recorded-slow tests still in the fast ring (mark them slow): {sorted(offenders)[:5]}"
+    assert not offenders, (
+        f"recorded-slow tests still in the fast ring (mark them slow): {sorted(offenders)[:5]}"
+    )
 
 
 @pytest.mark.slow
@@ -391,7 +418,9 @@ def test_drift_guard_fails_unmarked_slow_and_ignores_marked(tmp_path):
     # Attribution (xdist omits the deselected count, so read per-test outcomes):
     assert _verdict(outcomes, "test_unmarked_slow") == "FAILED", outcomes
     assert _verdict(outcomes, "test_fast_ok") == "PASSED", outcomes
-    assert _verdict(outcomes, "test_marked_slow") is None, f"marked test was not excluded: {outcomes}"
+    assert _verdict(outcomes, "test_marked_slow") is None, (
+        f"marked test was not excluded: {outcomes}"
+    )
     assert re.search(r"slow", out, re.I) and re.search(r"mark", out, re.I), out
 
 
