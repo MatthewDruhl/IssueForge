@@ -701,3 +701,187 @@ def test_isatty_seam_reports_the_real_stdin_of_the_process_by_default():
     assert on_tty.stdout.strip() == "True", (
         f"cli._isatty() must reflect the process's real stdin, got {on_tty.stdout!r}"
     )
+
+
+# --------------------------------------------------------------------------- #164
+# Headless gate-answer hardening: a blank --scope is not an answer, and a
+# both-or-neither guard lives at the top of engine.run so EVERY caller (CLI +
+# worker/daemon, any stage) gets the same loud refusal instead of a silent park.
+# Non-blank scope values persist verbatim (docs/poc.md); only blank/whitespace-only
+# values are dropped. The both-supplied path stays covered (and guards the guard
+# from over-firing) by test_engine_run_carries_the_approved_scope_and_contract_approval.
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#164)")
+def test_non_tty_empty_scope_string_is_refused_not_treated_as_an_answer(tmp_path, monkeypatch):
+    """`--scope ""` is a blank non-answer, refused like a missing --scope, not admitted as a scope.
+
+    plain: passing --scope "" (with --yes) to a keyboard-less run stops with the same loud "missing
+    --scope" refusal as passing no --scope at all, and admits no run.
+
+    technical (contract): with cli._isatty() pinned False, `run DandD#111 --scope "" --yes` exits 2,
+    names --scope in its combined output, persists NO run manifest, and never calls providers.invoke.
+    An impl that keeps [""] as a non-empty list admits the run (exit 0 / a persisted record).
+    """
+    _seed_dandd(tmp_path)
+    handles = _install_headless_seams(monkeypatch)
+    _pin_non_tty(monkeypatch)
+
+    from issueforge.cli import app
+
+    result = _runner().invoke(app, ["run", SPEC, "--scope", "", "--yes"])
+    text = _cli_text(result)
+
+    assert result.exit_code == 2, text
+    assert "--scope" in text, text
+    assert _records() == [], "the fail-loud must happen before any run is admitted"
+    assert handles.invoker.calls == []
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#164)")
+def test_non_tty_whitespace_only_scope_is_refused(tmp_path, monkeypatch):
+    """A whitespace-only --scope (spaces or a tab) strips to empty and is refused like a blank one.
+
+    plain: --scope " \t " (with --yes) on a keyboard-less run refuses identically; no run is admitted.
+
+    technical (contract): with cli._isatty() pinned False, `run DandD#111 --scope " \t " --yes` exits 2,
+    names --scope, persists NO run manifest, and never calls providers.invoke.
+    """
+    _seed_dandd(tmp_path)
+    handles = _install_headless_seams(monkeypatch)
+    _pin_non_tty(monkeypatch)
+
+    from issueforge.cli import app
+
+    result = _runner().invoke(app, ["run", SPEC, "--scope", " \t ", "--yes"])
+    text = _cli_text(result)
+
+    assert result.exit_code == 2, text
+    assert "--scope" in text, text
+    assert _records() == [], "whitespace-only scope must be refused before admission"
+    assert handles.invoker.calls == []
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#164)")
+def test_non_tty_blank_scope_values_are_dropped_and_nonblank_scopes_deliver_verbatim(
+    tmp_path, monkeypatch
+):
+    """Blank values are dropped (not fatal); the real scopes survive verbatim and the run completes.
+
+    plain: `--scope "" --scope " \t " --scope <real> --scope <real> --yes` proceeds using only the two
+    real paths (blanks discarded), and the run actually reaches waiting-for-merge.
+
+    technical (contract): with cli._isatty() pinned False, the run reaches status "waiting-for-merge"
+    and the persisted write_scope equals the two real sentinel paths VERBATIM (the "" and " \t " dropped,
+    not kept, and the real paths not trimmed/reordered away).
+    """
+    _seed_dandd(tmp_path)
+    _install_headless_seams(monkeypatch)
+    _pin_non_tty(monkeypatch)
+    scope = _sentinel_scope()
+
+    from issueforge.cli import app
+
+    argv = ["run", SPEC, "--scope", "", "--scope", " \t "]
+    for path in scope:
+        argv += ["--scope", path]
+    argv += ["--yes"]
+    result = _runner().invoke(app, argv)
+    text = _cli_text(result)
+
+    assert result.exit_code == 0, text
+    records = _records()
+    assert len(records) == 1, records
+    assert records[0].get("status") == "waiting-for-merge", records[0].get("status")
+    assert sorted(records[0].get("write_scope") or []) == sorted(scope), records[0].get(
+        "write_scope"
+    )
+
+
+def _forbidden_issue_open(*_args, **_kwargs):
+    """A github.issue_is_open stand-in that must never be reached: the both-or-neither guard has to
+    win BEFORE engine.run does any registry lookup or issue-open check."""
+    raise AssertionError("issue_open consulted before the both-or-neither guard")
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#164)")
+@pytest.mark.parametrize("scope", [["src/x.py"], []], ids=["nonempty", "empty-list"])
+def test_engine_run_with_scope_only_refuses_before_registry_gate_or_park(
+    tmp_path, monkeypatch, scope
+):
+    """Half-answered is refused at the engine seam, before any work: a scope with no contract approval
+    raises loudly instead of authoring and then silently parking at the contract gate.
+
+    plain: a worker/daemon calling engine.run with only approved_scope (no auto_approve_contract) gets
+    a loud refusal, not a silent contract_rejected park, and it happens before the issue-open check.
+
+    technical (contract): engine.run("DandD#111", approved_scope=<["src/x.py"] or []>,
+    issue_open=<raises if called>) raises ValueError (message names both/neither) with issue_open NEVER
+    consulted and NO run manifest persisted. The empty-list case pins ``approved_scope is not None``
+    semantics (a truthiness guard would let [] through); today the run reaches the contract gate.
+    """
+    _seed_dandd(tmp_path)
+    _install_headless_seams(monkeypatch)
+    gate_calls = _forbid_approvers(monkeypatch)
+
+    from issueforge import engine
+
+    with pytest.raises(ValueError, match=r"(?i)both|neither"):
+        engine.run(SPEC, approved_scope=scope, issue_open=_forbidden_issue_open)
+    assert gate_calls == [], "the refusal must precede any human gate"
+    assert _records() == [], "no half-configured run may be persisted"
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#164)")
+def test_engine_run_with_contract_approval_only_refuses_before_registry_gate_or_park(
+    tmp_path, monkeypatch
+):
+    """Mirror case: pre-approving the contract with no scope is refused at the seam too, before work.
+
+    plain: engine.run with only auto_approve_contract=True (no approved_scope) raises loudly, not a
+    silent scope_rejected pause, and before the issue-open check.
+
+    technical (contract): engine.run("DandD#111", auto_approve_contract=True,
+    issue_open=<raises if called>) raises ValueError (names both/neither) with issue_open NEVER consulted
+    and NO run manifest persisted. Today it reaches the scope gate instead.
+    """
+    _seed_dandd(tmp_path)
+    _install_headless_seams(monkeypatch)
+    gate_calls = _forbid_approvers(monkeypatch)
+
+    from issueforge import engine
+
+    with pytest.raises(ValueError, match=r"(?i)both|neither"):
+        engine.run(SPEC, auto_approve_contract=True, issue_open=_forbidden_issue_open)
+    assert gate_calls == [], "the refusal must precede any human gate"
+    assert _records() == [], "no half-configured run may be persisted"
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#164)")
+def test_engine_run_both_or_neither_guard_holds_for_a_custom_stage_too(tmp_path, monkeypatch):
+    """The guard is engine-wide, not tied to the default composed stage: a caller that injects its own
+    stage still gets the both-or-neither refusal, because the check lives in engine.run itself.
+
+    plain: passing a custom stage plus only one headless answer is still refused loudly.
+
+    technical (contract): engine.run("DandD#111", stage=<custom callable>, approved_scope=["src/x.py"],
+    issue_open=<raises if called>) raises ValueError (names both/neither); the custom stage is never
+    called. A guard placed only inside the default-stage branch would let this half-answer through.
+    """
+    _seed_dandd(tmp_path)
+    _install_headless_seams(monkeypatch)
+
+    from issueforge import engine
+
+    stage_calls: list = []
+
+    def _custom_stage(record, *_args, **_kwargs):
+        stage_calls.append(record)
+        return record
+
+    with pytest.raises(ValueError, match=r"(?i)both|neither"):
+        engine.run(
+            SPEC, stage=_custom_stage, approved_scope=["src/x.py"], issue_open=_forbidden_issue_open
+        )
+    assert stage_calls == [], "a half-configured run must be refused before any stage runs"
+    assert _records() == [], "no half-configured run may be persisted"
