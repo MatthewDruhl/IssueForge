@@ -433,7 +433,6 @@ def test_test_dir_containment_rejects_paths_that_escape_it() -> None:
         assert not _under_test_dir(rejected), rejected
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#143)")
 def test_authoring_prompt_names_where_to_author_when_no_paths_are_declared(
     make_git_repo, isolated_state_home
 ):
@@ -473,7 +472,6 @@ def test_authoring_prompt_names_where_to_author_when_no_paths_are_declared(
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#143)")
 def test_contract_commit_freezes_exactly_the_files_authoring_added(
     make_git_repo, isolated_state_home
 ):
@@ -509,7 +507,6 @@ def test_contract_commit_freezes_exactly_the_files_authoring_added(
     assert _run_git(candidate, "rev-parse", f"{result.contract_commit}^").strip() == base_sha
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#143)")
 def test_approval_gate_shows_the_real_authored_test_diff(make_git_repo, isolated_state_home):
     """The human approving the contract sees a real diff adding the authored test files, instead of
     the blank diff an undeclared-paths run shows today.
@@ -545,7 +542,6 @@ def test_approval_gate_shows_the_real_authored_test_diff(make_git_repo, isolated
     assert result.pause_reason == PAUSE_REASON_REJECTED
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#143)")
 def test_derived_paths_are_the_contract_downstream(make_git_repo, isolated_state_home):
     """The derived contract is the run's contract everywhere after the gate: the implementation
     step is handed the frozen tests' exact content, and the saved run lists exactly those paths.
@@ -578,7 +574,6 @@ def test_derived_paths_are_the_contract_downstream(make_git_repo, isolated_state
     assert sorted(saved["contract_paths"]) == sorted(fakes.written_paths)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#143)")
 def test_authoring_adding_nothing_pauses_with_no_gate_and_no_commit(
     make_git_repo, isolated_state_home
 ):

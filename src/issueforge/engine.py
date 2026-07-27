@@ -854,18 +854,43 @@ def _restore_head_ref(worktree: Path, ref: str) -> None:
     _candidate_git(worktree, "checkout", "-q", ref, check=False)
 
 
+# The repo's test-directory convention, used to direct authoring when the issue declares no paths.
+# No config key exposes a test directory at the authoring point (``.issueforge.toml`` carries only
+# ``baseline`` / ``framework``); the convention lives in ``audit._test_path`` (``tests/test_*``).
+_DEFAULT_CONTRACT_DIR = "tests"
+
+
+def _added_paths(candidate_worktree: Path) -> list[str]:
+    """The files authoring ADDED in the candidate worktree, the real source of the frozen contract on
+    a live run (``github.read_issue_body`` cannot know them; the tests do not exist when the issue
+    body is read). The candidate's HEAD is ``base_sha``, so the untracked (not-yet-committed) files —
+    ``git ls-files --others --exclude-standard`` — ARE the paths added since base: a file the author
+    merely edited or deleted stays tracked and is excluded, and every added file is listed
+    individually (never a bare parent directory)."""
+    out = _candidate_git(candidate_worktree, "ls-files", "--others", "--exclude-standard")
+    return sorted(line.strip() for line in out.splitlines() if line.strip())
+
+
 def _authoring_prompt(
     issue_body: str, contract_paths: list[str], baseline_command: list[str]
 ) -> str:
     """The authoring instruction: the full issue body, the allowed test paths, the baseline command,
     and an explicit may-edit-but-no-git instruction whose prohibitions bind to their OWN operation
-    (each in its own sentence/clause), never a bare keyword list and never a permitted git verb."""
+    (each in its own sentence/clause), never a bare keyword list and never a permitted git verb.
+
+    On a live run ``github.read_issue_body`` cannot know the authored-test paths (the tests do not
+    exist when the body is read), so ``contract_paths`` arrives empty. Rendering an empty list would
+    produce ``...only in these paths: .`` — naming NOWHERE, so a provider that obeys the instruction
+    writes nothing. When no paths are declared, direct the provider at the repo's test directory
+    (``_DEFAULT_CONTRACT_DIR``, the ``tests/`` convention ``audit._test_path`` enforces) so an
+    obedient provider produces files the worktree-derivation step below can then find."""
+    locations = contract_paths or [_DEFAULT_CONTRACT_DIR]
     return (
         "You are authoring pytest acceptance tests for the issue below.\n"
         "ISSUE START\n"
         f"{issue_body}\n"
         "ISSUE END\n"
-        f"Author the failing tests only in these paths: {', '.join(contract_paths)}.\n"
+        f"Author the failing tests only in these paths: {', '.join(locations)}.\n"
         f"After writing them the baseline command is: {' '.join(baseline_command)}.\n"
         "You may edit and modify files in the worktree.\n"
         "You may not run git in any form.\n"
@@ -971,6 +996,15 @@ def run_candidate(
         role="primary",
         timeout=_CANDIDATE_TIMEOUT,
     )
+
+    # 1b) Derive the frozen contract from what authoring ACTUALLY added in the worktree. The record's
+    #     declared ``contract_paths`` is empty on a live run (``github.read_issue_body`` hardcodes
+    #     ``[]``); the added files are the only real source. An empty derived set means the author
+    #     produced no files: pause cleanly with ``no_contract_paths`` BEFORE any staging, approval, or
+    #     commit, instead of staging an empty pathspec and crashing at an empty-index commit.
+    contract_paths = _added_paths(candidate_worktree)
+    if not contract_paths:
+        return _pause_candidate(st, run_id, "no_contract_paths")
 
     # 2) Red proof (reused) BEFORE approval: the authored tests must collect and FAIL for the named
     #    behavior while the baseline stays green. A REFUSED proof pauses cold — no approval, no commit.
