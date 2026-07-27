@@ -92,7 +92,10 @@ def invoke(
     ``profile.rate_limit_retries`` times before reporting the distinct ``RATE_LIMITED`` status.
     Persists exactly one redacted transcript on every terminal path.
     """
-    session_id = session if session is not None else uuid.uuid4().hex
+    # Canonical hyphenated UUID: some provider CLIs reject the dashless
+    # uuid4().hex form as an invalid session id and fail before authoring (#177);
+    # str() gives the 8-4-4-4-12 form they accept.
+    session_id = session if session is not None else str(uuid.uuid4())
     resuming = session is not None
     template = profile.resume if resuming else profile.start
     argv = list(profile.executable) + _render(template, prompt=prompt, session=session_id)

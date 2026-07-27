@@ -1062,7 +1062,6 @@ def test_review_inputs_are_materialized_to_files_under_dest(isolated_state_home)
 # form; the dashless ``.hex`` form fails it. PENDING until the mint is fixed.
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#177)")
 def test_minted_session_id_is_canonical_uuid(fake_provider_script):
     """A fresh provider session gets a standard hyphenated UUID as --session-id.
 
