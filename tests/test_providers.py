@@ -10,8 +10,9 @@ INSIDE its test so a module-top import cannot turn the whole file into a collect
 docstrings: plain behavior first, then the ``technical (contract):`` golden values.
 
 Design decisions resolved with the human before authoring (2026-07-20):
-- **Session identity is an ENGINE-MINTED token.** ``invoke`` mints a fresh ``uuid4().hex`` each time
-  it starts a session (``session=None``), records it on the ``AIResult``, and reuses a supplied id on
+- **Session identity is an ENGINE-MINTED token.** ``invoke`` mints a fresh canonical UUID
+  (``str(uuid.uuid4())``, hyphenated, see #177) each time it starts a session (``session=None``),
+  records it on the ``AIResult``, and reuses a supplied id on
   resume. A review whose recorded ``session_id`` equals the authoring result's is rejected. Fully
   deterministic under the fake provider — no real CLI and no vendor session format is coupled.
 - **Rate-limit detection is a CONFIG MATCHER, retry bound defaults to 2.** A profile declares a
@@ -1058,11 +1059,10 @@ def test_review_inputs_are_materialized_to_files_under_dest(isolated_state_home)
 # S7 deliberately minted the session token as ``uuid4().hex`` (see this file's
 # module docstring). The ``claude`` CLI's ``--session-id`` rejects that dashless
 # 32-char form ("Invalid session ID. Must be a valid UUID."), so live authoring
-# exits returncode 1 before running. This suite pins the canonical hyphenated
-# form; the dashless ``.hex`` form fails it. PENDING until the mint is fixed.
+# exits returncode 1 before running. This test pins the canonical hyphenated
+# form; the dashless ``.hex`` form fails it. Fixed in #177 (str(uuid.uuid4())).
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#177)")
 def test_minted_session_id_is_canonical_uuid(fake_provider_script):
     """A fresh provider session gets a standard hyphenated UUID as --session-id.
 
