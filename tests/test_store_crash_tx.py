@@ -30,6 +30,7 @@ exact golden values under ``technical (contract):``.
 from __future__ import annotations
 
 import json
+import pytest
 
 _TERMINAL = {"completed", "cancelled", "failed"}
 
@@ -368,6 +369,7 @@ def test_reconcile_drops_a_queued_waiter_whose_manifest_is_terminal(isolated_sta
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_recovery_drains_a_long_persistent_fifo_without_recursionerror(
     make_git_repo, isolated_state_home
 ):

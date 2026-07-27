@@ -41,6 +41,8 @@ against a fetched ``.issueforge.toml`` carrying real ``[providers.*]`` + ``[role
 
 from __future__ import annotations
 
+import pytest
+
 import subprocess
 import tempfile
 import tomllib
@@ -347,6 +349,7 @@ def _install_seams(monkeypatch, *, scope_return, impl_mode: str = "fix") -> Simp
 # ``tests/test_poc_operator_providers.py::test_composed_stage_launches_operator_config_primary_profile``.
 
 
+@pytest.mark.slow
 def test_pre_authoring_scope_gate_persists_human_approved_write_scope(tmp_path, monkeypatch):
     """The pre-authoring scope gate is consulted with the issue's stated files BEFORE the first authoring
     invocation, and the human-approved file list (a per-run value the gate returns) becomes the persisted

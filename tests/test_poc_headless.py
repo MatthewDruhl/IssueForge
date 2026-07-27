@@ -289,6 +289,7 @@ def _sole_record() -> dict:
 # system under test, and they double as the regression floor for behavior #140 must NOT change.
 
 
+@pytest.mark.slow
 def test_green_guard_harness_reaches_delivery_today(tmp_path, monkeypatch):
     """The harness in this file can drive a whole run to delivery TODAY, through the REAL human gates.
 
@@ -334,6 +335,7 @@ def test_green_guard_scope_rejection_stops_the_run_today(tmp_path, monkeypatch):
     assert _open_pr_count(handles.gateways) == 0
 
 
+@pytest.mark.slow
 def test_green_guard_contract_rejection_stops_the_run_today(tmp_path, monkeypatch):
     """Rejecting the authored contract stops the run after authoring — the floor T3c must preserve.
 
@@ -408,6 +410,7 @@ def test_green_guard_prompt_poisoning_and_approver_spies_are_wired(monkeypatch):
 # =========================================================================== the suite
 
 
+@pytest.mark.slow
 def test_headless_cli_run_with_scope_and_yes_delivers_without_any_stdin_prompt(
     tmp_path, monkeypatch
 ):
@@ -473,6 +476,7 @@ def test_non_tty_run_without_flags_fails_loud_instead_of_silently_rejecting(tmp_
     assert handles.invoker.calls == []
 
 
+@pytest.mark.slow
 def test_interactive_tty_run_without_flags_still_prompts_and_gates(tmp_path, monkeypatch):
     """Run from a real terminal with no flags, nothing changes: IssueForge still asks which files it
     may write and still asks the human to approve the authored contract, and the answers typed at those
@@ -530,6 +534,7 @@ def test_interactive_tty_scope_rejection_still_stops_the_run(tmp_path, monkeypat
     assert _open_pr_count(handles.gateways) == 0
 
 
+@pytest.mark.slow
 def test_interactive_tty_contract_rejection_still_stops_the_run(tmp_path, monkeypatch):
     """Saying no to the authored contract still stops the run: the test that was written is not
     implemented, and no pull request appears.
@@ -558,6 +563,7 @@ def test_interactive_tty_contract_rejection_still_stops_the_run(tmp_path, monkey
     assert _open_pr_count(handles.gateways) == 0
 
 
+@pytest.mark.slow
 def test_engine_run_carries_the_approved_scope_and_contract_approval(tmp_path, monkeypatch):
     """The headless answers are carried by the engine itself, not just handled in the command-line
     layer, so any caller (the CLI, a worker, a future daemon) can drive a run with no keyboard.

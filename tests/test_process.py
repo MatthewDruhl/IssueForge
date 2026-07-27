@@ -90,6 +90,7 @@ def test_timeout_sets_distinct_flag_enforced_generally(tmp_path, monkeypatch):
     assert r3.timed_out is False
 
 
+@pytest.mark.slow
 def test_timeout_kills_process_group_descendant_does_not_survive(tmp_path, monkeypatch):
     """On timeout the whole process group dies, a spawned descendant does not survive.
 

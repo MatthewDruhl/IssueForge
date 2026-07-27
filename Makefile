@@ -1,4 +1,4 @@
-.PHONY: test-fast test test-parked gate fmt
+.PHONY: test-fast test-quick test test-parked gate fmt
 
 # Development loop: one file (or -k expression), parallel, stop on first failure.
 # TEST is required — an empty TEST would silently run the whole suite, which the
@@ -6,6 +6,13 @@
 test-fast:
 	@test -n "$(TEST)" || { echo "TEST is required, e.g. make test-fast TEST=tests/test_adapters.py"; exit 1; }
 	uv run pytest -n auto --dist worksteal -x $(TEST)
+
+# Inner-loop fast ring: every test EXCEPT those marked `slow`, in parallel. A
+# drift guard (tests/conftest.py) fails any unmarked test that runs past ~5s under
+# this ring, so slow tests can't silently creep back in. `make test` stays the
+# full gate; this is the quick signal while iterating.
+test-quick:
+	uv run pytest -m "not slow" -n auto --dist worksteal
 
 # Full suite, parallel, all failures reported. The pytest portion of the gate.
 test:

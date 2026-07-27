@@ -81,6 +81,10 @@ Deferral here is explicit and labeled, never silent.
   not left to an agent's memory:
   - `make test-fast TEST=<file>` — the implementation loop: one file, parallel, stops on first failure.
     `TEST` is required; the target refuses to run without it.
+  - `make test-quick` — the inner-loop whole-suite command: the fast ring (`-m "not slow"`), every test
+    except those marked `@pytest.mark.slow`, in parallel. A drift guard fails any unmarked test that runs
+    past ~5s under this ring, so slow tests can't creep back in unmarked. Use it for a quick whole-suite
+    signal; `make test` remains the gate.
   - `make test` — full suite, parallel, all failures reported. The final local gate, and what CI runs.
   - `make test-parked` — runs the parked observability suites (`tests/test_observability.py` and
     `tests/test_observability_unit.py`). The default run excludes them until `observability.py` is wired

@@ -32,6 +32,9 @@ testpaths = ["tests"]
 # demand with `make test-parked`. This exclusion MUST be removed in the same PR that wires
 # observability into the runtime.
 addopts = "--ignore=tests/test_observability.py --ignore=tests/test_observability_unit.py"
+markers = [
+    "slow: test recorded (in .test_durations) above the ~5s fast-ring threshold; excluded from `make test-quick`, still run by the full `make test` gate.",
+]
 
 [tool.ruff]
 line-length = 100

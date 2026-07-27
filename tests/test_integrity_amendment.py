@@ -232,6 +232,7 @@ def _manifest_bytes(run_id: str) -> bytes:
 # =============================================================== Group A — amend_contract (§4)
 
 
+@pytest.mark.slow
 def test_amend_happy_path_writes_new_manifest_and_preserves_review_block(tmp_path):
     """A valid amendment (issue-linked reason + the exact real diff + renewed approval) writes a
     genuinely NEW manifest with a different hash and an updated contract_commit, while leaving the
@@ -276,6 +277,7 @@ def test_amend_happy_path_writes_new_manifest_and_preserves_review_block(tmp_pat
 
 
 @pytest.mark.parametrize("reason", [None, "", "cleanup"])
+@pytest.mark.slow
 def test_amend_refused_when_reason_missing(tmp_path, reason):
     """An amendment with no issue-linked reason is refused, even when the diff is the exact real
     diff and the approver would have approved — no new manifest is ever persisted. This covers
@@ -315,6 +317,7 @@ def test_amend_refused_when_reason_missing(tmp_path, reason):
     assert _manifest_bytes(run) == before == original.artifact_path.read_bytes()
 
 
+@pytest.mark.slow
 def test_amend_refused_when_diff_text_does_not_match_real_diff(tmp_path):
     """A candidate ``diff_text`` that does not match the ACTUAL contract_commit..HEAD diff is
     refused — a caller cannot authorize one change while a different change is really staged.
@@ -355,6 +358,7 @@ def test_amend_refused_when_diff_text_does_not_match_real_diff(tmp_path):
     assert _manifest_bytes(run) == before == original.artifact_path.read_bytes()
 
 
+@pytest.mark.slow
 def test_amend_refused_when_approver_returns_false(tmp_path):
     """Rejecting the renewed approval writes nothing: FreezeResult.approved is False and the
     manifest fields are all None, and the original manifest artifact is untouched on disk.
@@ -396,6 +400,7 @@ def test_amend_refused_when_approver_returns_false(tmp_path):
     assert _manifest_bytes(run) == before == original.artifact_path.read_bytes()
 
 
+@pytest.mark.slow
 def test_amend_body_byte_identical_does_not_bypass_exact_diff_check(tmp_path):
     """R6 finding #16: the ORIGINAL test proved nothing (its diff was empty, so it failed only on
     the missing reason). This constructs a REAL boundary change — a decorator line — while the
@@ -453,6 +458,7 @@ def test_amend_body_byte_identical_does_not_bypass_exact_diff_check(tmp_path):
     assert result.manifest["contract_commit"] == new_head
 
 
+@pytest.mark.slow
 def test_amend_approver_receives_the_exact_bytes_subsequently_persisted(tmp_path):
     """R6 finding #17: the renewed-approval callback is not a rubber stamp — it must receive the
     EXACT canonical bytes amend_contract goes on to persist (happy path), and the exact real
@@ -554,6 +560,7 @@ def test_amend_approver_receives_the_exact_bytes_subsequently_persisted(tmp_path
     assert captured2[0] == oracle.artifact_path.read_bytes()  # whole-payload byte-for-byte
 
 
+@pytest.mark.slow
 def test_amend_new_manifest_is_a_genuinely_new_retained_artifact_prior_preserved(tmp_path):
     """R6 finding #18: "writes a new manifest" must be proven on the RETAINED ARTIFACT, not only
     the returned dataclass — and the prior manifest must remain auditable (never clobbered), exactly
@@ -601,6 +608,7 @@ def test_amend_new_manifest_is_a_genuinely_new_retained_artifact_prior_preserved
     assert original.artifact_path.read_bytes() == original_bytes
 
 
+@pytest.mark.slow
 def test_amend_records_a_permanent_audit_event_binding_reason_diff_approval_and_manifest(tmp_path):
     """R6 finding #19: a successful amendment appends exactly one PERMANENT "amend" event to the
     run's append-only event log that binds all four amendment facts together — the issue-linked
@@ -648,6 +656,7 @@ def test_amend_records_a_permanent_audit_event_binding_reason_diff_approval_and_
     assert event.get("manifest_hash") == result.manifest_hash
 
 
+@pytest.mark.slow
 def test_amend_rejects_when_a_real_s9_observability_amendment_has_since_landed(tmp_path):
     """R6 finding #20: the ORIGINAL test hand-mutated a dict field (never a real transition) and
     asserted on a message substring that a stale head_sha alone could also trigger. This drives an
@@ -772,6 +781,7 @@ def test_amend_rejects_when_a_real_s9_observability_amendment_has_since_landed(t
 
 
 @pytest.mark.parametrize("path", ["success", "refusal"])
+@pytest.mark.slow
 def test_amend_contract_never_invokes_the_ai_provider(tmp_path, monkeypatch, path):
     """R7 finding #21: amend_contract's every precondition (reason validation, exact-diff
     verification, renewed approval) is fully deterministic — no AI/provider call on either the
@@ -820,6 +830,7 @@ def test_amend_contract_never_invokes_the_ai_provider(tmp_path, monkeypatch, pat
 # =============================================================== Group B — verify_contract_integrity (§2)
 
 
+@pytest.mark.slow
 def test_verify_contract_integrity_ok_true_for_clean_candidate(tmp_path):
     """A candidate HEAD that exactly matches the frozen contract passes every check: ok is True and
     violations is empty.
@@ -848,6 +859,7 @@ def test_verify_contract_integrity_ok_true_for_clean_candidate(tmp_path):
     assert report.violations == ()
 
 
+@pytest.mark.slow
 def test_verify_contract_integrity_flags_protected_path_diff_by_name(tmp_path):
     """Editing a frozen (protected) contract file at HEAD is caught as a named "protected_path_diff"
     violation naming the changed path — never silently absorbed as "ok".
@@ -882,6 +894,7 @@ def test_verify_contract_integrity_flags_protected_path_diff_by_name(tmp_path):
 
 
 @pytest.mark.parametrize("outcome", ["clean", "violation"])
+@pytest.mark.slow
 def test_verify_contract_integrity_never_invokes_the_ai_provider(tmp_path, monkeypatch, outcome):
     """The static integrity check is fully deterministic: it never calls out to the AI/provider seam,
     on either the clean or the violating path — the harness runs this, never the policed session.
@@ -917,6 +930,7 @@ def test_verify_contract_integrity_never_invokes_the_ai_provider(tmp_path, monke
     assert report.ok is (outcome == "clean")
 
 
+@pytest.mark.slow
 def test_verify_contract_integrity_env_var_branch_in_excluded_sut_is_not_caught(tmp_path):
     """R8 finding #22: the ORIGINAL residual-risk test used a pre-approved branch on an unchanged
     HEAD, which is trivially "ok" for reasons unrelated to the claimed risk. This freezes a manifest
@@ -1158,6 +1172,7 @@ _GATE_SCENARIOS = {
 }
 
 
+@pytest.mark.slow
 def test_engine_refuses_apply_revision_before_any_mutation_on_integrity_violation(tmp_path):
     """REDESIGNED (finding 6): given a run with a frozen manifest and a candidate_worktree PERSISTED
     on the run's OWN state (never on the apply_revision call) whose HEAD violates a predicate,
@@ -1187,6 +1202,7 @@ def test_engine_refuses_apply_revision_before_any_mutation_on_integrity_violatio
     assert not any(e.get("transition") == "revision" for e in events)
 
 
+@pytest.mark.slow
 def test_engine_gate_error_names_the_violated_predicate_precisely(tmp_path):
     """REDESIGNED (finding 6): the raised integrity error names the SPECIFIC violated predicate, not
     a generic failure — a caller resolving the refusal must be able to tell WHICH invariant broke,
@@ -1212,6 +1228,7 @@ def test_engine_gate_error_names_the_violated_predicate_precisely(tmp_path):
     assert "protected_path_diff" in str(excinfo.value)
 
 
+@pytest.mark.slow
 def test_engine_proceeds_to_mutation_when_candidate_is_clean(tmp_path):
     """REDESIGNED (finding 6): a clean candidate (verify ok), with its worktree PERSISTED on the
     run's own state, is NOT blocked by the gate: apply_revision — original signature, no integrity
@@ -1257,6 +1274,7 @@ def test_engine_proceeds_to_mutation_when_candidate_is_clean(tmp_path):
     assert revisions and revisions[-1]["completed"] == ["op-1"]
 
 
+@pytest.mark.slow
 def test_engine_gate_check_itself_never_invokes_the_ai_provider(tmp_path, monkeypatch):
     """REDESIGNED (finding 6): the gate's integrity check, run from inside apply_revision using the
     run's own persisted candidate_worktree, is exactly as deterministic as a direct
@@ -1289,6 +1307,7 @@ def test_engine_gate_check_itself_never_invokes_the_ai_provider(tmp_path, monkey
         engine.apply_revision(run, _plan(), _ExplodingGateway(), approver=_approve_all)
 
 
+@pytest.mark.slow
 def test_engine_gate_check_never_invokes_the_ai_provider_on_clean_path(tmp_path, monkeypatch):
     """Finding 5: the earlier no-AI engine coverage was refusal-only. The gate is exactly as
     deterministic on the CLEAN (proceeding) path as it is on the refusal path — no provider
@@ -1371,6 +1390,7 @@ def test_engine_apply_revision_proceeds_unchanged_with_no_frozen_manifest(tmp_pa
 
 
 @pytest.mark.parametrize("predicate", sorted(_GATE_SCENARIOS))
+@pytest.mark.slow
 def test_engine_gate_blocks_every_predicate(tmp_path, monkeypatch, predicate):
     """R5 finding #24, REDESIGNED per finding 6: the gate must block on EVERY predicate, sourcing
     its integrity context entirely from the run's OWN PERSISTED state — never from a caller-supplied
@@ -1410,6 +1430,7 @@ def test_engine_gate_blocks_every_predicate(tmp_path, monkeypatch, predicate):
 # existing suite (see s13 Phase A contract, findings #7/#9/#11). Each FAILS the branch impl today.
 
 
+@pytest.mark.slow
 def test_engine_gate_runs_from_worktree_persisted_by_real_build_lifecycle(tmp_path):
     """Finding #7: the engine gate is inert in production because NOTHING production-side persists a
     run's ``candidate_worktree`` — only the ``_seed_candidate_worktree`` TEST helper does, so every
@@ -1502,6 +1523,7 @@ def test_engine_gate_runs_from_worktree_persisted_by_real_build_lifecycle(tmp_pa
     assert not any(e.get("transition") == "revision" for e in store.RunStore().replay_events(run2))
 
 
+@pytest.mark.slow
 def test_verify_after_successful_amendment_loads_the_new_manifest(tmp_path):
     """Finding #9: amend writes a content-addressed ``contract-manifest-<hash>.json``, but verify's
     ``_load_frozen_manifest`` always reads the fixed ``contract-manifest.json`` — so an AUTHORIZED
@@ -1650,6 +1672,7 @@ def _real_pin(pins: dict[str, str]):
     return _provision
 
 
+@pytest.mark.slow
 def test_engine_gate_provisions_from_the_amended_manifest_not_the_original(tmp_path):
     """Finding #3: after an approved amendment changes an external pin (M0 platformdirs 4.10.0 ->
     M1 4.9.0), the engine gate must provision under the ACTIVE amended manifest's pins, exactly as
