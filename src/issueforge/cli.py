@@ -295,7 +295,10 @@ def run(
     """
     from issueforge import engine
 
-    approved_scope = list(scope) if scope else None
+    # Drop blank --scope values (a bare "" or whitespace is not an answer, #164); keep
+    # non-blank paths verbatim. If nothing real remains, approved_scope is None and the
+    # missing-flag check below refuses the run, matching the interactive empty-answer reject.
+    approved_scope = [v for v in (scope or []) if v.strip()] or None
     if not _isatty():
         missing = [
             flag
