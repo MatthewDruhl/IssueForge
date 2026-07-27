@@ -268,6 +268,10 @@ def test_recovery_preserves_fifo_a_new_run_does_not_jump_a_pre_existing_waiter(
         store.RunStore().append_event(record["run_id"], {"transition": "stage"})
 
     monkeypatch.setattr(engine, "_default_stage", recording_stage)
+    # #142 gate ruling (2026-07-27, final form): the drain dispatches the module-global composed
+    # stage, so the crash-stranded waiter is promoted through THAT symbol — pin the recording stub on
+    # it too so the waiter is observed (run-new still uses the explicit _default_stage stub below).
+    monkeypatch.setattr(engine, "_poc_composed_stage", recording_stage)
 
     engine.run(
         "DandD#148",
@@ -371,7 +375,7 @@ def test_reconcile_drops_a_queued_waiter_whose_manifest_is_terminal(isolated_sta
 
 @pytest.mark.slow
 def test_recovery_drains_a_long_persistent_fifo_without_recursionerror(
-    make_git_repo, isolated_state_home
+    make_git_repo, isolated_state_home, monkeypatch
 ):
     """A crash-recovery of a very long queue drains iteratively: a 1200-deep FIFO of valid waiters runs to completion on the next admission without a per-waiter recursion frame blowing the stack.
 
@@ -381,6 +385,11 @@ def test_recovery_drains_a_long_persistent_fifo_without_recursionerror(
     read(run-w1199)/read(run-new) all "completed"; read_queue() == {"active":None,"queue":[]}.
     """
     from issueforge import engine, store
+
+    # #142 gate ruling (2026-07-27, final form): drain dispatches the module-global composed stage;
+    # pin it to the no-op stub so the 1200 crash-stranded waiters drain via the stub (they carry no
+    # composed context) exactly as this recursion-depth test intends.
+    monkeypatch.setattr(engine, "_poc_composed_stage", engine._default_stage)
 
     _register(make_git_repo)
     waiters = [f"run-w{i:04d}" for i in range(1200)]

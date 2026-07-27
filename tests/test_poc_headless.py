@@ -328,7 +328,9 @@ def test_green_guard_scope_rejection_stops_the_run_today(tmp_path, monkeypatch):
     engine.run(SPEC)
 
     record = _sole_record()
-    assert record["status"] == "paused", record
+    # #142 contract amendment (sanctioned, issue #142 comment 2026-07-26): scope-gate rejection is
+    # now TERMINAL (failed) + slot-freed, not a resumable paused. The no-side-effect assertions stay.
+    assert record["status"] == "failed", record
     assert "scope" in str(record.get("pause_reason", "")).lower(), record
     assert len(prompts) == 1, prompts
     assert handles.invoker.calls == []
@@ -528,7 +530,9 @@ def test_interactive_tty_scope_rejection_still_stops_the_run(tmp_path, monkeypat
 
     assert len(prompts) == 1, prompts
     record = _sole_record()
-    assert record["status"] == "paused", record
+    # #142 contract amendment (sanctioned, issue #142 comment 2026-07-26): scope-gate rejection is
+    # now TERMINAL (failed) + slot-freed, not a resumable paused. The no-side-effect assertions stay.
+    assert record["status"] == "failed", record
     assert "scope" in str(record.get("pause_reason", "")).lower(), record
     assert handles.invoker.calls == []
     assert _open_pr_count(handles.gateways) == 0

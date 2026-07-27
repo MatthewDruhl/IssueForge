@@ -467,7 +467,7 @@ def test_cancel_a_queued_run_writes_a_terminal_record_and_never_held_the_slot(
 
 
 def test_cancel_the_paused_run_releases_the_slot_and_advances_the_fifo(
-    make_git_repo, isolated_state_home
+    make_git_repo, isolated_state_home, monkeypatch
 ):
     """Cancelling the current paused run releases the worker to the next queued run and writes a terminal record with one cancelled event.
 
@@ -476,6 +476,10 @@ def test_cancel_the_paused_run_releases_the_slot_and_advances_the_fifo(
     auto-advances (runs its stub to "completed"); queue ends {"active":None,"queue":[]}.
     """
     from issueforge import engine
+
+    # #142 gate ruling (2026-07-27, final form): drain dispatches the module-global composed stage;
+    # pin it to the no-op stub so this queue-mechanics test keeps exercising the stub drain path.
+    monkeypatch.setattr(engine, "_poc_composed_stage", engine._default_stage)
 
     _register(make_git_repo)
     _admit_paused(make_git_repo, "run-1")
@@ -541,7 +545,7 @@ def test_pause_blocks_the_worker_and_keeps_the_slot(make_git_repo, isolated_stat
 
 
 def test_park_from_paused_preserves_every_other_field_and_releases_the_worker(
-    make_git_repo, isolated_state_home
+    make_git_repo, isolated_state_home, monkeypatch
 ):
     """Parking a paused run preserves every record field except the status, and releases the worker to the next queued run.
 
@@ -552,6 +556,10 @@ def test_park_from_paused_preserves_every_other_field_and_releases_the_worker(
     queue ends {"active":None,"queue":[]}.
     """
     from issueforge import engine, store
+
+    # #142 gate ruling (2026-07-27, final form): drain dispatches the module-global composed stage;
+    # pin it to the no-op stub so this queue-mechanics test keeps exercising the stub drain path.
+    monkeypatch.setattr(engine, "_poc_composed_stage", engine._default_stage)
 
     _register(make_git_repo)
     _admit_paused(make_git_repo, "run-1")
@@ -579,7 +587,7 @@ def test_park_from_paused_preserves_every_other_field_and_releases_the_worker(
 
 
 def test_a_stage_that_parks_its_running_run_is_honored_not_overwritten(
-    make_git_repo, isolated_state_home
+    make_git_repo, isolated_state_home, monkeypatch
 ):
     """When the active stage parks its own still-running run, the engine honors parked (running -> parked) and does not overwrite it with completed; the FIFO advances.
 
@@ -590,6 +598,10 @@ def test_a_stage_that_parks_its_running_run_is_honored_not_overwritten(
     to "completed"; queue ends {"active":None,"queue":[]}.
     """
     from issueforge import engine
+
+    # #142 gate ruling (2026-07-27, final form): drain dispatches the module-global composed stage;
+    # pin it to the no-op stub so this queue-mechanics test keeps exercising the stub drain path.
+    monkeypatch.setattr(engine, "_poc_composed_stage", engine._default_stage)
 
     _register(make_git_repo)
     _admit_paused(make_git_repo, "run-1")
@@ -630,7 +642,9 @@ def test_releasing_the_slot_dispatches_the_fifo_head_first(
         dispatched.append(record["run_id"])
         store.RunStore().append_event(record["run_id"], {"transition": "stage"})
 
-    monkeypatch.setattr(engine, "_default_stage", recording_stage)
+    # #142 gate ruling (2026-07-27, final form): the drain dispatches the module-global composed
+    # stage, so pin the recording stub on THAT symbol (was _default_stage) to observe FIFO order.
+    monkeypatch.setattr(engine, "_poc_composed_stage", recording_stage)
     engine.cancel("run-1")
 
     assert dispatched == ["run-2", "run-3"]
@@ -860,7 +874,7 @@ def test_kill9_mid_run_then_continue_in_a_fresh_process_resumes_from_persisted_s
 
 
 def test_a_typed_stage_failure_lands_the_run_in_failed_records_the_type_and_advances(
-    make_git_repo, isolated_state_home
+    make_git_repo, isolated_state_home, monkeypatch
 ):
     """A stage failure is a typed result carrying the stage's own failure type; it lands the run in the terminal `failed` state (recording that type, not a shared string), and the worker advances to the next queued run.
 
@@ -873,6 +887,10 @@ def test_a_typed_stage_failure_lands_the_run_in_failed_records_the_type_and_adva
     """
     from issueforge import engine, store
     from issueforge.state import State
+
+    # #142 gate ruling (2026-07-27, final form): drain dispatches the module-global composed stage;
+    # pin it to the no-op stub so the auto-advanced waiter completes via the stub, as this test intends.
+    monkeypatch.setattr(engine, "_poc_composed_stage", engine._default_stage)
 
     _register(make_git_repo)
     assert issubclass(engine.StubStageFailure, engine.StageFailure)

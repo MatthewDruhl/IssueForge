@@ -69,6 +69,15 @@ class StubStageFailure(StageFailure):
     """The stub stage's failure type (``.type == "StubStageFailure"``)."""
 
 
+class ScopeRejected(StageFailure):
+    """The composed stage's failure type when the pre-authoring scope gate REJECTS (#142).
+
+    A run rejected at the pre-authoring scope gate produced no candidate and is not resumable, so it
+    is terminal (``failed``) rather than a resumable ``paused`` — freeing the worker slot and
+    auto-advancing the queue. ``.type == "ScopeRejected"``.
+    """
+
+
 @dataclass
 class StageResult:
     """A typed stage outcome: a target :class:`State` plus an optional typed failure."""
@@ -154,14 +163,20 @@ def _drain_stranded_waiters(s: store.RunStore) -> None:
 def _drain(s: store.RunStore, next_id: str | None) -> None:
     """ITERATIVELY dispatch ``next_id`` and each waiter its release promotes, head-first FIFO.
 
-    Each promoted run emits its ``running`` event, runs the default stage, and finalizes; finalize
-    RETURNS the next promoted run rather than dispatching it, so this drains a queue of any length in
-    one flat loop — no per-waiter recursion frame, so a long persistent FIFO cannot blow the stack.
+    Each promoted run emits its ``running`` event, runs the COMPOSED default stage (#142 decision 2,
+    gate ruling 2026-07-27: a promoted never-started queued run goes through the SAME composed PoC
+    default stage a fresh ``engine.run`` dispatch uses — no admission-time discriminator exists, so
+    the drain has ONE behavior), and finalizes; finalize RETURNS the next promoted run rather than
+    dispatching it, so this drains a queue of any length in one flat loop — no per-waiter recursion
+    frame, so a long persistent FIFO cannot blow the stack. The composed stage is read as a MODULE
+    GLOBAL at dispatch time, so a queue-mechanics / crash-recovery UNIT test that wants the stub on
+    the drain path pins it by monkeypatching ``engine._poc_composed_stage`` to ``_default_stage`` (or
+    a recording stub) — the seam this section's module docstring already documents.
     """
     while next_id is not None:
         s.append_event(next_id, {"transition": RUNNING})
         record = s.read(next_id)
-        result = _execute_stage(s, next_id, _default_stage, record)
+        result = _execute_stage(s, next_id, _poc_composed_stage, record)
         next_id = _finalize(s, next_id, result)
 
 
@@ -327,7 +342,8 @@ def run(
     # Admission is decided INSIDE the store lock: a lock-free check-then-start would admit two.
     with s.locked():
         queue = s.read_queue()
-        if queue.get("active") is None:
+        active_id = queue.get("active")
+        if active_id is None:
             admitted = True
             queue["active"] = run_id
             status = RUNNING
@@ -346,6 +362,10 @@ def run(
 
     s.append_event(run_id, {"transition": QUEUED})
     if not admitted:
+        # #142 decision 3: engine-side feedback when a run lands behind the active worker — name the
+        # active run it waits behind. An immediately-admitted run (above) is silent. cli.py is
+        # untouched, keeping #142 file-disjoint from #152.
+        print(f"queued behind active run {active_id}")
         return s.read(run_id)
 
     s.append_event(run_id, {"transition": RUNNING})
@@ -1193,7 +1213,7 @@ def _poc_composed_stage(
     *,
     approved_scope: list[str] | None = None,
     auto_approve_contract: bool = False,
-) -> None:
+) -> StageResult | None:
     """Compose candidate -> readiness -> delivery for the bare ``engine.run(spec)`` path (#115).
 
     Both headless answers (#140) are KEYWORD-ONLY and DEFAULTED, so every existing ``stage(record)``
@@ -1230,8 +1250,15 @@ def _poc_composed_stage(
     if approved_scope is None:
         approved_scope = _poc_scope_approver(stated_files)
     if approved_scope is None:
-        _poc_pause(st, run_id, "scope_rejected (pre-authoring scope gate)")
-        return
+        # #142 decision 1: a scope-gate rejection produced no candidate and is not resumable, so it
+        # is TERMINAL (``failed``), NOT a resumable ``paused``. Record the scope reason for
+        # diagnosis, then hand ``_finalize`` a typed FAILED StageResult so it performs the guarded
+        # running -> failed transition AND releases + auto-advances the worker slot (a bare
+        # ``_poc_pause`` here is exactly the wedge #142 removes). Every OTHER pause below stays
+        # resumable and keeps the slot.
+        reason = "scope_rejected (pre-authoring scope gate)"
+        st.apply(run_id, lambda _r: {"pause_reason": reason})
+        return StageResult(status=State.FAILED, failure=ScopeRejected(reason))
     write_scope = list(approved_scope)
 
     # 1c) Resolve the primary provider profile from the OPERATOR-level providers config (#135), not the
