@@ -344,7 +344,9 @@ def _drive_composed_to_pause(monkeypatch, isolated_state_home, reason):
         ),
     )
     monkeypatch.setattr(
-        _config, "load_config", lambda p: SimpleNamespace(baseline=["pytest"], acceptance=["pytest"])
+        _config,
+        "load_config",
+        lambda p: SimpleNamespace(baseline=["pytest"], acceptance=["pytest"]),
     )
 
     if reason == "baseline_not_green":
