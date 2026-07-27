@@ -1050,3 +1050,64 @@ def test_review_inputs_are_materialized_to_files_under_dest(isolated_state_home)
     assert set(without_prior) == set(base)  # prior_verdicts omitted when None
     for key, value in base.items():
         assert without_prior[key].read_text(encoding="utf-8") == value
+
+
+# ---------------------------------------------------------------------------
+# #177: a freshly-minted session id must be a canonical (hyphenated) UUID.
+#
+# S7 deliberately minted the session token as ``uuid4().hex`` (see this file's
+# module docstring). The ``claude`` CLI's ``--session-id`` rejects that dashless
+# 32-char form ("Invalid session ID. Must be a valid UUID."), so live authoring
+# exits returncode 1 before running. This suite pins the canonical hyphenated
+# form; the dashless ``.hex`` form fails it. PENDING until the mint is fixed.
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#177)")
+def test_minted_session_id_is_canonical_uuid(fake_provider_script):
+    """A fresh provider session gets a standard hyphenated UUID as --session-id.
+
+    plain: When invoke() starts a new session (session=None), the value it hands
+    the provider after --session-id is a normal hyphenated UUID (like
+    f0f5d7e6-1171-4b4a-84f3-f33c185ebb59) — the form the claude CLI accepts — not
+    the dashless 32-char uuid4().hex form (f0f5d7e611714b4a84f3f33c185ebb59) it
+    rejects with returncode 1.
+
+    technical (contract): invoke(profile, ..., session=None, runner=spy) with the
+    profile's start template ["--session-id", "{session}", ...]. The token the spy
+    captures after "--session-id" satisfies token == str(uuid.UUID(token))
+    (canonical: 36 chars, hyphens at 8-4-4-4-12). The dashless .hex form (32 chars,
+    no hyphens) fails this equality — a bare uuid.UUID(token) parse does NOT catch
+    the bug (it accepts the hex form too), so the round-trip equality is the
+    discriminator.
+    """
+    import uuid
+
+    from issueforge import providers
+
+    profile = _fake_profile(
+        fake_provider_script, ["--session-id", "{session}", "--out", "ready", "{prompt}"]
+    )
+    spy = _spy_runner([_command_result(stdout="ready")])
+
+    result = providers.invoke(
+        profile, "hi", cwd=Path.cwd(), timeout=10, run_id="run-177-session-id", runner=spy
+    )
+
+    # Exactly one launch, exactly one --session-id flag: no decoy-call or
+    # double-flag (--session-id canonical --session-id dashless) dodge.
+    assert len(spy.calls) == 1, spy.calls
+    argv = spy.calls[0]["argv"]
+    assert argv.count("--session-id") == 1, argv
+    token = argv[argv.index("--session-id") + 1]
+    # Canonical hyphenated form is what the claude CLI accepts. uuid.UUID() parses
+    # the dashless hex too, so the round-trip equality (not a bare parse) is the
+    # discriminator; the hyphen/length check makes "hyphenated" explicit.
+    assert token == str(uuid.UUID(token)), f"session id not a canonical UUID: {token!r}"
+    assert token.count("-") == 4 and len(token) == 36, f"not 8-4-4-4-12 form: {token!r}"
+    # Pin the version: S7's contract is uuid4; the fix changes serialization only,
+    # so uuid1/uuid3/uuid5/nil must not sneak through the canonical-form check.
+    parsed = uuid.UUID(token)
+    assert parsed.version == 4 and parsed.variant == uuid.RFC_4122, f"not a uuid4: {token!r}"
+    # The recorded identity must equal the argv token: blocks a fix that
+    # canonicalizes only in _render() while AIResult/transcript keep the dashless id.
+    assert result.session_id == token, (result.session_id, token)
