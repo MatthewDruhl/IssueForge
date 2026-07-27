@@ -168,7 +168,7 @@ def test_run_refuses_an_unregistered_alias(isolated_state_home):
 
 
 def test_concurrent_admission_admits_exactly_one_run_the_other_enqueues(
-    make_git_repo, isolated_state_home
+    make_git_repo, isolated_state_home, monkeypatch
 ):
     """Two runs racing an empty active slot: exactly one is admitted and enters its stage; the other lands queued. Admission is decided inside the store lock (a lock-free check-then-start would admit both).
 
@@ -178,6 +178,12 @@ def test_concurrent_admission_admits_exactly_one_run_the_other_enqueues(
     "queue" holds only the other; no worker raised.
     """
     from issueforge import engine, store
+
+    # #142 gate ruling (2026-07-27, final form): drain dispatches the module-global composed stage, so
+    # the queued racer promoted by the admitted run's finalize would go through it; pin it to the
+    # no-op stub so this concurrent-ADMISSION test drains its racer via the stub (this test asserts
+    # admission exclusivity, not drain behavior).
+    monkeypatch.setattr(engine, "_poc_composed_stage", engine._default_stage)
 
     _register(make_git_repo)
     barrier = threading.Barrier(2)

@@ -403,7 +403,10 @@ def test_scope_rejection_pauses_before_authoring_without_side_effects(tmp_path, 
     result = engine.run(SPEC)
     record = store.RunStore().read(result["run_id"])
 
-    assert record["status"] == "paused"
+    # #142 contract amendment (sanctioned, issue #142 comment 2026-07-26): a scope-gate rejection is
+    # now TERMINAL (failed) + slot-freed, not a resumable paused. Gate-consultation / no-side-effect
+    # assertions below are unchanged.
+    assert record["status"] == "failed"
     assert "scope" in str(record.get("pause_reason", "")).lower()
     assert handles.scope_calls == [
         []

@@ -170,7 +170,6 @@ def _spy_on_composed_stage(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#142)")
 def test_scope_rejection_is_terminal_frees_the_slot_and_auto_advances(
     make_git_repo, isolated_state_home, monkeypatch
 ):
@@ -220,7 +219,6 @@ def test_scope_rejection_is_terminal_frees_the_slot_and_auto_advances(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#142)")
 def test_drain_dispatches_the_exact_composed_stage_for_a_promoted_queued_run(
     make_git_repo, isolated_state_home, monkeypatch
 ):
@@ -259,7 +257,6 @@ def test_drain_dispatches_the_exact_composed_stage_for_a_promoted_queued_run(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#142)")
 def test_engine_run_emits_queued_behind_feedback_only_when_landing_a_run_queued(
     make_git_repo, isolated_state_home, capsys
 ):
