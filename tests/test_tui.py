@@ -94,7 +94,6 @@ import copy
 import hashlib
 from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from issueforge import store
@@ -420,7 +419,6 @@ def test_harness_guard_snapshot_bridge_carries_every_run_stream_and_artifacts():
 # =========================================================================== 1. queue position view
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#152)")
 def test_queue_view_shows_active_and_waiters_with_positions_in_fifo_order():
     """Plain English: the queue view shows which run is running now and which runs
     are waiting behind it, each with its POSITION in line, in admission order — and
@@ -457,7 +455,6 @@ def test_queue_view_shows_active_and_waiters_with_positions_in_fifo_order():
 # =========================================================================== 2. current stage view
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#152)")
 def test_stage_view_derives_active_runs_current_stage_from_its_latest_event():
     """Plain English: the current-stage view tells you what the ACTIVE run is doing
     right now — which run, which issue it is building, and the latest step it reached
@@ -495,7 +492,6 @@ def test_stage_view_derives_active_runs_current_stage_from_its_latest_event():
 # =========================================================================== 3. logs view
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#152)")
 def test_logs_view_renders_active_event_feed_and_persisted_artifacts():
     """Plain English: the logs view is the active run's running feed — its structured
     events in the order they happened AND its persisted log artifacts — for the
@@ -541,7 +537,6 @@ def test_logs_view_renders_active_event_feed_and_persisted_artifacts():
 # =========================================================================== 4. failures view
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#152)")
 def test_failures_view_lists_only_failed_runs_each_with_its_own_failure_type():
     """Plain English: the failures view lists every run that failed, each next to the
     reason IT failed, and nothing that did not fail — and it reads the same every
@@ -580,7 +575,6 @@ def test_failures_view_lists_only_failed_runs_each_with_its_own_failure_type():
 # =========================================================================== read-only invariant
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#152)")
 def test_rendering_and_the_thin_shell_write_nothing_to_the_state_store():
     """Plain English: opening the watch views — and constructing/refreshing the
     Textual shell — never changes anything on disk. Closing the TUI cannot corrupt
@@ -610,7 +604,6 @@ def test_rendering_and_the_thin_shell_write_nothing_to_the_state_store():
 # =========================================================================== shell seams driven
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#152)")
 def test_shell_seams_load_state_render_all_and_app_loader_are_driven():
     """Plain English: the three thin-shell seams actually work end to end — reading
     the store, assembling the four views, and letting the app use an injected reader.
@@ -657,7 +650,6 @@ def test_shell_seams_load_state_render_all_and_app_loader_are_driven():
 # =========================================================================== thin-shell integration
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#152)")
 def test_thin_shell_builds_all_four_views_from_the_store_and_tails_new_events():
     """Plain English: the Textual shell reads the run store, builds all four views
     from the live data, and picks up new events as they are appended (it tails the
@@ -701,7 +693,6 @@ def test_thin_shell_builds_all_four_views_from_the_store_and_tails_new_events():
 # =========================================================================== tui command wires shell
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#152)")
 def test_tui_command_wires_the_views_app_without_a_tty(monkeypatch):
     """Plain English: running ``issueforge tui`` launches the real views app — not
     the old "not implemented" stub — and it does so without needing a terminal in
