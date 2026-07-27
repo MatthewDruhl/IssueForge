@@ -712,7 +712,6 @@ def test_isatty_seam_reports_the_real_stdin_of_the_process_by_default():
 # from over-firing) by test_engine_run_carries_the_approved_scope_and_contract_approval.
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#164)")
 def test_non_tty_empty_scope_string_is_refused_not_treated_as_an_answer(tmp_path, monkeypatch):
     """`--scope ""` is a blank non-answer, refused like a missing --scope, not admitted as a scope.
 
@@ -738,7 +737,6 @@ def test_non_tty_empty_scope_string_is_refused_not_treated_as_an_answer(tmp_path
     assert handles.invoker.calls == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#164)")
 def test_non_tty_whitespace_only_scope_is_refused(tmp_path, monkeypatch):
     """A whitespace-only --scope (spaces or a tab) strips to empty and is refused like a blank one.
 
@@ -762,7 +760,6 @@ def test_non_tty_whitespace_only_scope_is_refused(tmp_path, monkeypatch):
     assert handles.invoker.calls == []
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#164)")
 def test_non_tty_blank_scope_values_are_dropped_and_nonblank_scopes_deliver_verbatim(
     tmp_path, monkeypatch
 ):
@@ -804,7 +801,6 @@ def _forbidden_issue_open(*_args, **_kwargs):
     raise AssertionError("issue_open consulted before the both-or-neither guard")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#164)")
 @pytest.mark.parametrize("scope", [["src/x.py"], []], ids=["nonempty", "empty-list"])
 def test_engine_run_with_scope_only_refuses_before_registry_gate_or_park(
     tmp_path, monkeypatch, scope
@@ -832,7 +828,6 @@ def test_engine_run_with_scope_only_refuses_before_registry_gate_or_park(
     assert _records() == [], "no half-configured run may be persisted"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#164)")
 def test_engine_run_with_contract_approval_only_refuses_before_registry_gate_or_park(
     tmp_path, monkeypatch
 ):
@@ -857,7 +852,6 @@ def test_engine_run_with_contract_approval_only_refuses_before_registry_gate_or_
     assert _records() == [], "no half-configured run may be persisted"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#164)")
 def test_engine_run_both_or_neither_guard_holds_for_a_custom_stage_too(tmp_path, monkeypatch):
     """The guard is engine-wide, not tied to the default composed stage: a caller that injects its own
     stage still gets the both-or-neither refusal, because the check lives in engine.run itself.

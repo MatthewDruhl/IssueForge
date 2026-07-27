@@ -287,6 +287,17 @@ def run(
     stage's two human gates, so any caller (the CLI's ``--scope``/``--yes``, a worker, a future
     daemon) can drive a run with no keyboard. Left at their defaults the run stays interactive.
     """
+    # Both-or-neither headless answers (#164): either BOTH gates are answered up front (headless)
+    # or NEITHER (interactive). Exactly one leaves a gate unanswered, which used to author and then
+    # silently park. Refuse loudly HERE at the shared seam so every caller (CLI, worker, daemon, any
+    # injected stage) is guarded, before any registry lookup, issue-open check, or side effect.
+    scope_given = approved_scope is not None
+    if scope_given != auto_approve_contract:
+        raise ValueError(
+            "engine.run needs BOTH approved_scope and auto_approve_contract to run "
+            "headless, or NEITHER to run interactively; got only "
+            + ("approved_scope" if scope_given else "auto_approve_contract")
+        )
     if issue_open is None:
         issue_open = github.issue_is_open
     if stage is None:
