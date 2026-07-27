@@ -305,6 +305,7 @@ def _frozen_with_symlink(
 # =============================================================== protected_path_diff
 
 
+@pytest.mark.slow
 def test_protected_path_diff_flags_edited_frozen_test_file(tmp_path):
     """Editing a frozen contract test file after freeze — even though it still names the same test —
     is caught by the absolute diff gate.
@@ -327,6 +328,7 @@ def test_protected_path_diff_flags_edited_frozen_test_file(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_protected_path_diff_flags_deleted_frozen_test_file(tmp_path):
     """Deleting a frozen contract file is not an escape hatch — deletion is still a protected-path
     diff, not a clean candidate.
@@ -350,6 +352,7 @@ def test_protected_path_diff_flags_deleted_frozen_test_file(tmp_path):
     assert any(v.predicate == "dep_hash" and v.detail == _NEW_FILE for v in report.violations)
 
 
+@pytest.mark.slow
 def test_protected_path_diff_no_marker_carve_out_for_comment_only_edit(tmp_path):
     """Unlike MARVIN's AST backstop (which allows a comment/whitespace-only edit), the S13 absolute
     diff gate has NO carve-out: any committed byte change to a contract file fails, even a
@@ -372,6 +375,7 @@ def test_protected_path_diff_no_marker_carve_out_for_comment_only_edit(tmp_path)
     )
 
 
+@pytest.mark.slow
 def test_protected_path_diff_fires_identically_regardless_of_how_the_edit_was_written(tmp_path):
     """The check is diff-based against the committed blob — it never inspects HOW the working tree
     got its new content, only what landed in the commit. A change written by directly writing the
@@ -413,6 +417,7 @@ def test_protected_path_diff_fires_identically_regardless_of_how_the_edit_was_wr
     assert ("protected_path_diff", _NEW_FILE) in violation_sets[0]
 
 
+@pytest.mark.slow
 def test_clean_candidate_reports_ok_true_with_no_violations(tmp_path):
     """A candidate whose HEAD is exactly the frozen contract_commit (no contract-path change) passes
     cleanly — the gate is not a permanent block, only a change detector.
@@ -429,6 +434,7 @@ def test_clean_candidate_reports_ok_true_with_no_violations(tmp_path):
 # =============================================================== dep_hash
 
 
+@pytest.mark.slow
 def test_dep_hash_flags_mutated_frozen_dependency_content(tmp_path):
     """A frozen dependency's CONTENT hash is independently recomputed at HEAD and compared against the
     manifest's dep_hashes entry — content drift is caught directly, not only inferred from a path diff.
@@ -457,6 +463,7 @@ def test_dep_hash_flags_mutated_frozen_dependency_content(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_dep_hash_names_only_the_mutated_file_not_every_frozen_dependency(tmp_path):
     """The dep_hash check is PER-FILE — mutating one frozen dependency must not spuriously name a
     sibling frozen dependency whose bytes never changed (a wrong-but-plausible impl that flags the
@@ -481,6 +488,7 @@ def test_dep_hash_names_only_the_mutated_file_not_every_frozen_dependency(tmp_pa
     assert "tests/other.py" not in dep_hash_details
 
 
+@pytest.mark.slow
 def test_dep_hash_flags_symlink_target_mutation_outside_contract_paths(tmp_path):
     """R2: dep_hash proven INDEPENDENT of the diff gate. The two tests above mutate a file already IN
     contract_paths, so a diff-only impl that fabricates dep_hash results would still pass them. Here a
@@ -527,6 +535,7 @@ def test_dep_hash_flags_symlink_target_mutation_outside_contract_paths(tmp_path)
 # =============================================================== external_pin
 
 
+@pytest.mark.slow
 def test_external_pin_flags_re_resolved_dependency_version_delta(tmp_path):
     """A frozen external pin, discovered from the provisioned env at freeze time, is compared at
     verify time against a re-resolution in a REAL, separately-provisioned env — a genuine version
@@ -574,6 +583,7 @@ def test_external_pin_flags_re_resolved_dependency_version_delta(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_external_pin_flags_dependency_no_longer_resolvable_as_missing(tmp_path):
     """R1/R4 finding: a frozen external pin that no longer resolves in the authoritative env at verify
     time is a "missing" pin, using the canonical "<dist> missing" detail — never silently dropped from
@@ -653,6 +663,7 @@ def test_external_pin_flags_newly_required_dependency_as_added(tmp_path):
 # =============================================================== recollection
 
 
+@pytest.mark.slow
 def test_recollection_flags_added_unit_id_that_appears_after_freeze(tmp_path):
     """A brand-new test file added AFTER freeze (never part of the frozen contract boundary, so it
     trips no protected_path_diff/dep_hash) still changes the collected-id set — recollection is its
@@ -680,6 +691,7 @@ def test_recollection_flags_added_unit_id_that_appears_after_freeze(tmp_path):
     assert not any(v.predicate == "protected_path_diff" for v in report.violations)
 
 
+@pytest.mark.slow
 def test_recollection_flags_removed_unit_id_that_disappears_after_freeze(tmp_path):
     """An id present at freeze time that vanishes from the recollected set at HEAD is also caught —
     the check is exact set equality, not "the set only grows". Because every frozen test file is
@@ -705,6 +717,7 @@ def test_recollection_flags_removed_unit_id_that_disappears_after_freeze(tmp_pat
     )
 
 
+@pytest.mark.slow
 def test_recollection_no_violation_when_recollected_set_is_identical(tmp_path):
     """R2/finding #5: the identical-set control MUST advance HEAD — an unrelated, NON-CONTRACT
     implementation file is committed so HEAD genuinely differs from contract_commit — and independently
@@ -738,6 +751,7 @@ def test_recollection_no_violation_when_recollected_set_is_identical(tmp_path):
 # =============================================================== ancestry
 
 
+@pytest.mark.slow
 def test_ancestry_flags_history_rewrite_that_orphans_contract_commit(tmp_path):
     """A rebase/amend that rewrites history so the frozen contract_commit is no longer reachable from
     HEAD is caught by an independent git ancestry check — verified against ``git merge-base
@@ -767,6 +781,7 @@ def test_ancestry_flags_history_rewrite_that_orphans_contract_commit(tmp_path):
     assert any(v.predicate == "ancestry" and v.detail == contract_commit for v in report.violations)
 
 
+@pytest.mark.slow
 def test_ancestry_no_violation_when_contract_commit_still_ancestor_of_head(tmp_path):
     """A normal forward commit on top of the frozen contract_commit (the ordinary implementation-work
     case) never fires ancestry — the check only fires on a history REWRITE, not on HEAD simply moving
@@ -794,6 +809,7 @@ def test_ancestry_no_violation_when_contract_commit_still_ancestor_of_head(tmp_p
 # =============================================================== every violated predicate collected
 
 
+@pytest.mark.slow
 def test_all_violated_predicates_collected_not_only_the_first_one_found(tmp_path):
     """The report collects EVERY predicate that fired in one pass, never stopping at the first
     violation found — a single candidate commit that simultaneously edits a frozen dependency AND adds
@@ -825,6 +841,7 @@ def test_all_violated_predicates_collected_not_only_the_first_one_found(tmp_path
 # =============================================================== unforgeable (finding #7)
 
 
+@pytest.mark.slow
 def test_verify_ignores_forged_candidate_side_manifest_claiming_intact(tmp_path):
     """R3 finding #7: verify loads the HARNESS-RETAINED manifest (the store's own
     ``contract-manifest.json`` under the run dir) — never anything a candidate committed inside its
@@ -859,6 +876,7 @@ def test_verify_ignores_forged_candidate_side_manifest_claiming_intact(tmp_path)
 # =============================================================== ast_backstop integration (finding #8)
 
 
+@pytest.mark.slow
 def test_ast_backstop_flags_weakened_pending_acceptance_test_through_verify(tmp_path):
     """Finding #8: proves verify_contract_integrity actually RUNS the AST backstop
     (``issueforge.integrity.classify_acceptance_change``) over the final committed diff of a contract
@@ -935,6 +953,7 @@ def _is_integrity_verdict_event(event: dict) -> bool:
     )
 
 
+@pytest.mark.slow
 def test_permanent_verdict_persists_exact_violation_and_commit_binding(tmp_path):
     """R7 finding #25: every integrity verdict is PERMANENT — inspect the persisted run event stream
     (``store.RunStore().replay_events``, the same append-only mechanism ``freeze_contract`` itself uses
@@ -1016,6 +1035,7 @@ def test_permanent_verdict_persists_exact_violation_and_commit_binding(tmp_path)
 # =============================================================== dirty-tree (finding #1)
 
 
+@pytest.mark.slow
 def test_verify_flags_uncommitted_assertion_weakening_in_frozen_test(tmp_path):
     """Finding #1: ``protected_path_diff`` diffs committed(contract_commit) vs committed(HEAD), so an
     UNCOMMITTED edit to a frozen test file is invisible to it, and ``recollection`` only set-compares
@@ -1060,6 +1080,7 @@ def test_verify_flags_uncommitted_assertion_weakening_in_frozen_test(tmp_path):
 # =============================================================== boundary addition (finding #2)
 
 
+@pytest.mark.slow
 def test_verify_flags_new_higher_precedence_config_added_after_freeze(tmp_path):
     """Finding #2: there is no full-closure recompute at HEAD. A brand-new committed tests/conftest.py
     carrying an autouse fixture that alters runtime outcomes does NOT change the collected-id set and
@@ -1103,6 +1124,7 @@ def test_verify_flags_new_higher_precedence_config_added_after_freeze(tmp_path):
 # =============================================================== tracked bytecode (finding #12)
 
 
+@pytest.mark.slow
 def test_dirty_refusal_does_not_exempt_tracked_bytecode(tmp_path):
     """Finding #12: ``_is_cache_noise`` exempts ``.pyc``/``__pycache__`` members UNCONDITIONALLY, even
     when TRACKED (committed via ``git add -A``). A sourceless bytecode artifact that is TRACKED is not
@@ -1192,6 +1214,7 @@ def test_dirty_refusal_does_not_exempt_tracked_bytecode(tmp_path):
 # =============================================================== gate provisioner (finding #8)
 
 
+@pytest.mark.slow
 def test_engine_gate_resolves_deps_in_provisioned_authoritative_env_not_host(tmp_path, monkeypatch):
     """Finding #8: the engine's integrity gate provisions its collection under ``_gate_provisioner``
     (engine.py:481), which returns ``interpreter=sys.executable`` — the HOST. External pins must be
@@ -1332,6 +1355,7 @@ def test_dirty_refusal_does_not_exempt_tracked_bytecode_when_source_present(tmp_
     )
 
 
+@pytest.mark.slow
 def test_verify_flags_declared_dependency_version_drift_in_env_defining_file(tmp_path):
     """Finding #2: the external-pin gate installs the FROZEN versions into its venv and then re-resolves
     them, so the check is tautological — a candidate that changes a DECLARED dependency version is never

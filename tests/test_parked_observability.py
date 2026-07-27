@@ -582,6 +582,7 @@ def documents_the_on_demand_target(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_the_make_driven_collection_reports_real_node_ids() -> None:
     """Driving the real `make test` in collect-only mode really does report tests.
 
@@ -599,6 +600,7 @@ def test_the_make_driven_collection_reports_real_node_ids() -> None:
     )
 
 
+@pytest.mark.slow
 def test_the_node_id_parser_keeps_ids_that_contain_whitespace() -> None:
     """A parametrized node ID is not a whitespace-free token, and must survive parsing.
 
@@ -750,6 +752,7 @@ def test_the_ci_workflow_still_runs_pytest_directly() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_the_park_is_lifted_when_observability_is_wired_into_the_runtime() -> None:
     """Running the tests the normal way skips the observability tests, and nothing else.
 
@@ -783,6 +786,7 @@ def test_the_park_is_lifted_when_observability_is_wired_into_the_runtime() -> No
     )
 
 
+@pytest.mark.slow
 def test_the_gate_and_ci_pytest_runs_do_not_undo_the_parking() -> None:
     """The other two ways the suite gets run also skip the parked tests.
 

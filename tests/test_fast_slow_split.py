@@ -292,7 +292,6 @@ def test_full_gate_does_not_apply_the_drift_guard(tmp_path):
 # =========================================================================== #
 # Pending contract — red at HEAD, green once #147 lands                       #
 # =========================================================================== #
-@pytest.mark.xfail(strict=True, reason="PENDING (#147)")
 def test_slow_marker_is_registered(tmp_path):
     """`slow` is a registered marker: a ``@pytest.mark.slow`` probe collects clean
     under ``--strict-markers`` against the repo's config. An unregistered marker
@@ -324,7 +323,6 @@ def test_slow_marker_is_registered(tmp_path):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#147)")
 def test_make_test_quick_runs_the_fast_ring():
     """`make test-quick` exists and the command it executes selects exactly
     ``not slow`` in parallel with worksteal — checked on the real argv, so
@@ -341,7 +339,6 @@ def test_make_test_quick_runs_the_fast_ring():
     assert _flag_value(flags, "--dist") == "worksteal", flags
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#147)")
 def test_claude_md_documents_test_quick_as_inner_loop():
     """CLAUDE.md's Development section names ``test-quick`` as the inner-loop
     command — anchored to that section, not any occurrence in the file."""
@@ -356,7 +353,6 @@ def test_claude_md_documents_test_quick_as_inner_loop():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason="PENDING (#147)")
 def test_fast_ring_excludes_slow_and_every_recorded_slow_test():
     """The fast ring partitions the suite (every not-slow test, no slow one; the
     full run still holds the slow tests), AND every test whose RECORDED duration
@@ -391,7 +387,6 @@ def test_fast_ring_excludes_slow_and_every_recorded_slow_test():
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason="PENDING (#147)")
 def test_drift_guard_fails_unmarked_slow_and_ignores_marked(tmp_path):
     """Through the real fast-ring argv (``make -n test-quick``, xdist and all): an
     UNMARKED over-threshold test is reported FAILED with a message to mark it
@@ -425,7 +420,6 @@ def test_drift_guard_fails_unmarked_slow_and_ignores_marked(tmp_path):
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason="PENDING (#147)")
 def test_drift_guard_counts_setup_phase_duration(tmp_path):
     """The guard measures TOTAL duration, not just the call phase: an unmarked test
     whose slowness is in FIXTURE SETUP is failed too, while a fast unmarked control

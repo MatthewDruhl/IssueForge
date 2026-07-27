@@ -502,6 +502,7 @@ def test_provision_environment_delegates_to_the_provisioner_seam(tmp_path):
 
 
 # ===== #58 defect #10 =====
+@pytest.mark.slow
 def test_authoritative_run_network_is_denied_at_os_level(tmp_path):
     """The authoritative baseline RUN executes with OS-level network denial (a container with
     ``--network none``), enforced by the executor — not merely recorded on the handle, NOT fakeable
@@ -938,6 +939,7 @@ def _s12_discover_prov(repo, pins):
 # --------------------------------------------------------------------- fixture-closure provenance
 
 
+@pytest.mark.slow
 def test_discover_includes_conftest_transitive_deps_helpers_bypass(tmp_path):
     """A conftest that imports a fixture helper puts the helper INSIDE the boundary (the edit-only-
     helpers bypass is closed).
@@ -1048,6 +1050,7 @@ def test_discover_includes_config_and_pytest_plugin_modules_transitively(tmp_pat
     assert {"plug.py", "plug_util.py"} <= set(closure.fixture_closure)
 
 
+@pytest.mark.slow
 def test_discover_protects_dynamically_imported_collection_dep(tmp_path):
     """A conftest that dynamically ``importlib.import_module``s a module at collection protects it —
     discovery observes REAL collection deps, not AST-only.
@@ -1071,6 +1074,7 @@ def test_discover_protects_dynamically_imported_collection_dep(tmp_path):
 # ------------------------------------------------------------------- external identity + fail-closed
 
 
+@pytest.mark.slow
 def test_discover_pins_external_identity_not_module_name(tmp_path):
     """An external import is pinned by its DISTRIBUTION identity + version, not its module name.
 
@@ -1090,6 +1094,7 @@ def test_discover_pins_external_identity_not_module_name(tmp_path):
     assert all(dist != "markdown_it" for dist, _ in closure.external)
 
 
+@pytest.mark.slow
 def test_discover_pins_external_transitive_deps_exactly_no_extras(tmp_path):
     """An external dist plus the second distribution it pulls into collection are BOTH pinned at their
     EXACT provisioned versions, and NO unrelated installed distribution is pinned.
@@ -1115,6 +1120,7 @@ def test_discover_pins_external_transitive_deps_exactly_no_extras(tmp_path):
     assert all(dist != "wcwidth" for dist, _ in closure.external)
 
 
+@pytest.mark.slow
 def test_discover_external_pin_is_version_sensitive(tmp_path):
     """The same external import provisioned under two distribution versions yields two distinct pins.
 
@@ -1142,6 +1148,7 @@ def test_discover_external_pin_is_version_sensitive(tmp_path):
     "module, expect_raise",
     [("pathlib", False), ("nonexistent_pkg_xyz", True)],
 )
+@pytest.mark.slow
 def test_discover_stdlib_is_exempt_unowned_thirdparty_fails_closed(tmp_path, module, expect_raise):
     """A stdlib import needs no pin; an import owned by no repo file, no stdlib, and no installed
     distribution fails the discovery CLOSED, naming it.
@@ -1203,6 +1210,7 @@ def test_discover_fails_closed_on_unresolvable_across_every_provenance_route(tmp
 # ------------------------------------------------------------------- test-body provenance tagging
 
 
+@pytest.mark.slow
 def test_discover_tags_test_body_import_distinct_from_fixture_and_excludes_decoys(tmp_path):
     """A production module imported in a TEST BODY is a candidate SUT, reported SEPARATELY from a
     fixture-reached helper; an unimported repo module is in NO set.
@@ -1234,6 +1242,7 @@ def test_discover_tags_test_body_import_distinct_from_fixture_and_excludes_decoy
     assert "app/unused.py" not in everything
 
 
+@pytest.mark.slow
 def test_discover_fixture_provenance_wins_on_collision(tmp_path):
     """A path reached BOTH via a test body and via conftest is classified as fixture_closure
     (protected), never test_body_imports.
@@ -1254,6 +1263,7 @@ def test_discover_fixture_provenance_wins_on_collision(tmp_path):
     assert "tests/shared.py" not in closure.test_body_imports
 
 
+@pytest.mark.slow
 def test_discover_follows_test_body_import_transitively(tmp_path):
     """A test-body import chain protects EVERY module on the chain.
 
@@ -1272,6 +1282,7 @@ def test_discover_follows_test_body_import_transitively(tmp_path):
     assert {"app/calc.py", "app/math_core.py"} <= set(closure.test_body_imports)
 
 
+@pytest.mark.slow
 def test_discover_shadowing_is_not_an_escape_same_module(tmp_path):
     """An import plus a later same-name LOCAL rebinding in the same module (the MARVIN bug form) still
     keeps the real import inside the boundary.
@@ -1298,6 +1309,7 @@ def test_discover_shadowing_is_not_an_escape_same_module(tmp_path):
 # ------------------------------------------------------------------- adapter-supplied, not shrinkable
 
 
+@pytest.mark.slow
 def test_discover_is_adapter_supplied_never_configured_or_shrinkable(tmp_path):
     """Discovery computes from real imports; its signature takes only ``collection`` and a narrower
     configured contract-path list cannot shrink the fixture closure.
@@ -1329,6 +1341,7 @@ def test_discover_is_adapter_supplied_never_configured_or_shrinkable(tmp_path):
     assert "tests/helpers.py" in closure.fixture_closure
 
 
+@pytest.mark.slow
 def test_discover_test_files_is_exact_sorted_dedup_set(tmp_path):
     """``test_files`` equals the COMPLETE collected test-module set, sorted and duplicate-free.
 
@@ -1351,6 +1364,7 @@ def test_discover_test_files_is_exact_sorted_dedup_set(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_discover_namespace_package_pins_owning_distribution_only(tmp_path):
     """For a module whose shared namespace maps to several distributions, discovery pins ONLY the
     distribution that actually PROVIDES the imported module, not every namespace sibling.
@@ -1381,6 +1395,7 @@ def test_discover_namespace_package_pins_owning_distribution_only(tmp_path):
     assert all(dist != "sphinxcontrib-devhelp" for dist, _ in closure.external)
 
 
+@pytest.mark.slow
 def test_discover_all_tuples_sorted_dedup_deterministic(tmp_path):
     """Every ContractClosure tuple is sorted, duplicate-free, and identical across two runs.
 
@@ -1428,6 +1443,7 @@ def _s12_discover_cmd(repo, command):
     return adapter.discover_contract_dependencies(adapter.canonical_collect(invocation))
 
 
+@pytest.mark.slow
 def test_discover_closure_uses_configured_collection_command_not_bare_pytest(tmp_path):
     """R2 (Codex gap): the discovered CLOSURE is computed from the CONFIGURED collection command, not a
     hardcoded ``-m pytest``. A baseline that path-filters collection to ``tests`` must NOT pull a

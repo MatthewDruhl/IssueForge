@@ -18,6 +18,8 @@ touches no IssueForge code, so it lives at module top.
 
 from __future__ import annotations
 
+import pytest
+
 import json
 import os
 import shutil
@@ -619,6 +621,7 @@ def test_candidate_env_mutations_cannot_change_the_authoritative_result(tmp_path
     assert ev.status is BaselineStatus.GREEN
 
 
+@pytest.mark.slow
 def test_default_provisioner_uses_a_separate_interpreter_under_an_owned_root(tmp_path):
     """The DEFAULT provisioning path builds a SEPARATE authoritative interpreter under an
     IssueForge-owned root (network off) — not the host interpreter, not the target's environment.

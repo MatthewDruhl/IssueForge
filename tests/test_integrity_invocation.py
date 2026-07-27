@@ -227,6 +227,7 @@ def test_validate_invocation_accepts_clean_manifest_command(tmp_path):
     adapter.validate_invocation(_invocation(repo, ["pytest", "tests/"]))
 
 
+@pytest.mark.slow
 def test_verify_contract_integrity_supplies_frozen_manifest_command_not_head(tmp_path):
     """(Finding #11) The FROZEN manifest command drives ``validate_invocation`` through ``verify``,
     never a live re-read of candidate HEAD's ``.issueforge.toml`` — proven observably via a spy on
@@ -286,6 +287,7 @@ def test_verify_contract_integrity_supplies_frozen_manifest_command_not_head(tmp
     assert ("pytest", "-x", "tests/") not in supplied_commands
 
 
+@pytest.mark.slow
 def test_verify_contract_integrity_detects_wrapper_drift_as_invocation_violation(tmp_path):
     """(Finding #10) A wrapper script referenced by the FROZEN command that drifts at HEAD (after
     the freeze) is caught by re-running ``validate_invocation`` through ``verify`` — never proven
@@ -353,6 +355,7 @@ def test_verify_contract_integrity_detects_wrapper_drift_as_invocation_violation
     )
 
 
+@pytest.mark.slow
 def test_verify_contract_integrity_detects_custom_config_drift_as_invocation_violation(tmp_path):
     """(Finding #2, confirmation round) A custom config file REFERENCED by the frozen command via
     ``-c`` that is OTHERWISE UNPROTECTED (not a member of ``contract_paths`` on its own — it holds
@@ -560,6 +563,7 @@ def test_validate_invocation_rejects_rerun_plugin_but_allows_disable_form(tmp_pa
     adapter.validate_invocation(_invocation(repo, ["pytest", "tests/", "-p", "no:randomly"]))
 
 
+@pytest.mark.slow
 def test_prohibited_mode_via_verify_contract_integrity_surfaces_as_invocation_violation(tmp_path):
     """A prohibited pytest mode that made it into a FROZEN manifest (freeze_contract itself does
     not gate on validate_invocation — it composes the command straight from the committed toml)
@@ -944,6 +948,7 @@ def test_validate_invocation_rejects_dangerous_addopts_via_clustered_c_flag(tmp_
     assert excinfo.value.token == "addopts:-x"
 
 
+@pytest.mark.slow
 def test_verify_detects_attached_c_config_drift_as_invocation_violation(tmp_path):
     """A config referenced by the frozen command via the ATTACHED ``-c<cfg>`` spelling that drifts at
     HEAD must fire an ``invocation`` violation, exactly like the split ``-c <cfg>`` form. The attached
@@ -1026,6 +1031,7 @@ def test_validate_invocation_rejects_dangerous_addopts_in_native_toml_config(
     assert excinfo.value.token == "addopts:-x"
 
 
+@pytest.mark.slow
 def test_freeze_selects_pytest_toml_and_verify_catches_its_dangerous_addopts(tmp_path):
     """End-to-end #5: a repo whose only pytest config is ``pytest.toml`` with ``addopts = ["-x"]`` — a
     file the provisioned pytest applies — must be SELECTED as the frozen config and its dangerous mode

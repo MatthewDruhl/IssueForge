@@ -7,6 +7,8 @@ composition guarantees the outcome-level acceptance suite does not pin.
 
 from __future__ import annotations
 
+import pytest
+
 from test_poc_integration import (
     CONTRACT_PATH,
     EXPECTED_SLUG,
@@ -18,6 +20,7 @@ from test_poc_integration import (
 )
 
 
+@pytest.mark.slow
 def test_delivered_record_preserves_the_exact_issue_body(tmp_path, monkeypatch):
     """The delivered ``waiting-for-merge`` record carries the EXACT issue body under ``issue_body``.
 
