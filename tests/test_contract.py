@@ -132,6 +132,7 @@ def _scenario(
     base_files: dict[str, str] | None = None,
     remove_from_candidate: tuple[str, ...] = (),
     base_local_red_head: bool = False,
+    config: str = _CONFIG,
 ) -> SimpleNamespace:
     """Build a REAL two-commit repo: a frozen base checkout at ``base_sha`` and a candidate worktree.
 
@@ -150,7 +151,7 @@ def _scenario(
     repo = root / name
     repo.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
-    (repo / ".issueforge.toml").write_text(_CONFIG)
+    (repo / ".issueforge.toml").write_text(config)
     _write(repo, base_files)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "base")
@@ -704,6 +705,34 @@ def test_prove_red_uses_committed_baseline_command_for_subdir_layout(tmp_path):
     rp = _prove(_mk_run(), scen, targeted_ids=(_SUBDIR_NEW_ID,))
     assert rp.accepted is True
     assert rp.reason == "behavioral_red"
+
+
+def test_enforced_invalid_committed_baseline_fails_closed_not_bare_root(tmp_path):
+    """A real committed tree whose committed ``.issueforge.toml`` has NO valid baseline FAILS CLOSED
+    — prove_red rejects ``baseline_command_missing`` and never falls back to a bare-root pytest.
+
+    Since #189 prove_red sources its suite/collection command from the COMMITTED baseline
+    (``verify._committed_baseline`` -> ``(enforced, command)``). A ``(True, None)`` — a committed git
+    tree with a missing/malformed/empty committed baseline — MUST pause, exactly like
+    ``verify.establish_green_baseline`` (verify.py) and its guard
+    ``test_missing_or_malformed_committed_baseline_config_pauses_not_defaults``. Defaulting to the
+    bare-root ``_BASELINE`` here would run unscoped collection+suites and could ACCEPT a red proof: a
+    false green. Only the NOT-a-git-tree seam context (``(False, None)``) may default.
+
+    technical (contract): the committed ``.issueforge.toml`` carries only ``framework = "pytest"`` (no
+    ``baseline`` key) so ``_committed_baseline`` returns ``(True, None)``; the candidate would author a
+    genuine red. prove_red -> rejected, reason ``baseline_command_missing``, run paused — the base
+    suite is never run bare-root and no red is accepted.
+    """
+    scen = _scenario(
+        tmp_path,
+        "enforced-invalid-baseline",
+        candidate_files={"tests/test_new.py": "def test_new():\n    assert 1 == 2\n"},
+        config='framework = "pytest"\n',
+    )
+    run = _mk_run()
+    rp = _prove(run, scen, targeted_ids=(_NEW_ID,))
+    _assert_rejected(run, rp, "baseline_command_missing")
 
 
 def test_base_id_disappeared_is_hard_failure(tmp_path):
