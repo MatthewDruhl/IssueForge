@@ -181,6 +181,73 @@ def _scenario(
     )
 
 
+# --- #189: committed-baseline-command scenario (subdir test layout) -------------------------------
+# A repo whose COMMITTED baseline scopes pytest to a subdirectory (``pkg/tests``) via an OPTION
+# (``-o testpaths=pkg/tests``, no positional path), with a deliberately collection-broken module at
+# the REPO ROOT. A bare-root ``python -m pytest`` (the current hardcoded ``_BASELINE``) collects the
+# broken root file and COLLECTION_ERRORs (exit 2), while the committed command scopes past it via
+# ``testpaths`` and is GREEN. Using an ``-o testpaths`` OPTION (not a trailing path arg) forces a fix
+# to use the FULL committed command: a wrong fix that merely appends a positional path to the bare
+# ``_BASELINE`` finds no path to append, stays bare-root, and still COLLECTION_ERRORs. This root-
+# broken file stands in for DandD's real repo-root collection failure (its test modules ImportError
+# when collected from the root instead of backend/).
+_SUBDIR_CONFIG = 'baseline = ["-m", "pytest", "-o", "testpaths=pkg/tests"]\nframework = "pytest"\n'
+# The BROKEN bare-root command left DIRTY in the working-tree ``.issueforge.toml`` AFTER the base is
+# committed: it drops the ``-o testpaths`` scoping, so a fix that reads the filesystem config (not
+# the committed git object) runs bare-root and COLLECTION_ERRORs on ``test_root_broken.py``.
+_SUBDIR_BROKEN_CONFIG = 'baseline = ["-m", "pytest"]\nframework = "pytest"\n'
+_SUBDIR_BASE_FILES = {
+    "pkg/tests/test_base.py": (
+        "def test_base_a():\n    assert True\n\n\ndef test_base_b():\n    assert True\n"
+    ),
+    "test_root_broken.py": "import _if_nonexistent_module_\n",
+}
+_SUBDIR_NEW_ID = "pkg/tests/test_new.py::test_new"
+
+
+def _subdir_scenario(root: Path, name: str, *, candidate_files: dict[str, str]) -> SimpleNamespace:
+    """Like ``_scenario``, but the committed ``.issueforge.toml`` baseline scopes pytest to a
+    SUBDIRECTORY via ``-o testpaths=pkg/tests`` and a collection-broken module sits at the REPO ROOT
+    — so a bare-root pytest COLLECTION_ERRORs while the committed command scopes past it and runs
+    green.
+
+    Committed-PROVENANCE trap: after the base is committed (so the git OBJECT holds the good
+    ``-o testpaths`` baseline), the WORKING-TREE ``.issueforge.toml`` is overwritten with the BROKEN
+    bare-root command and left DIRTY (uncommitted) in BOTH the candidate worktree and the copied base
+    checkout. A fix that reads the filesystem config gets the broken bare command (COLLECTION_ERRORs,
+    test FAILS); only a fix that reads the committed git object (``verify._committed_baseline`` ->
+    ``git show HEAD:.issueforge.toml``) gets the good command and passes."""
+    repo = root / name
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    (repo / ".issueforge.toml").write_text(_SUBDIR_CONFIG)
+    _write(repo, _SUBDIR_BASE_FILES)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "remote", "add", "origin", "git@github.com:Owner/IssueForge.git")
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    _git(repo, "update-ref", "refs/remotes/origin/main", base_sha)
+    base_checkout = root / f"{name}-base"
+    shutil.copytree(repo, base_checkout)
+    _write(repo, candidate_files)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "candidate")
+    candidate_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    # Committed-provenance trap: the git OBJECT at each worktree's HEAD retains the good
+    # ``-o testpaths`` baseline (candidate committed BEFORE this overwrite; base_checkout's HEAD is
+    # the base commit). Now poison the working-tree filesystem config in BOTH worktrees and leave it
+    # dirty, so only a fix reading the committed git object recovers the good, scoped command.
+    (repo / ".issueforge.toml").write_text(_SUBDIR_BROKEN_CONFIG)
+    (base_checkout / ".issueforge.toml").write_text(_SUBDIR_BROKEN_CONFIG)
+    return SimpleNamespace(
+        base_checkout=base_checkout,
+        candidate_worktree=repo,
+        base_sha=base_sha,
+        candidate_sha=candidate_sha,
+    )
+
+
 def _provisioner():
     """A host-side provisioner seam: the host interpreter + an ALLOWLIST env, no network denial.
 
@@ -599,6 +666,45 @@ def test_untrustworthy_candidate_report_is_no_candidate_evidence_not_baseline_no
     run = _mk_run()
     rp = _prove(run, scen, targeted_ids=(_NEW_ID,))
     _assert_rejected(run, rp, "no_candidate_evidence")
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#189)")
+def test_prove_red_uses_committed_baseline_command_for_subdir_layout(tmp_path):
+    """prove_red proves the CANDIDATE red for a repo whose tests live in a subdirectory, using the
+    repo's COMMITTED baseline command instead of a bare pytest from the worktree root.
+
+    A repo keeps its tests under ``pkg/tests`` and its committed ``.issueforge.toml`` scopes the
+    baseline via ``-o testpaths=pkg/tests`` (an OPTION, no positional path). A stray module at the
+    repo ROOT fails to import, so a bare-root ``python -m pytest`` blows up in collection while the
+    committed ``-o testpaths=pkg/tests`` command runs clean and green. The WORKING-TREE config is
+    poisoned to a bare-root command and left dirty, so only a fix that reads the COMMITTED git object
+    recovers the good command. When the candidate adds a genuinely-red test under ``pkg/tests``,
+    prove_red must reach the CANDIDATE red proof, not stall on a false "the base is broken".
+
+    technical (contract): committed baseline ``["-m", "pytest", "-o", "testpaths=pkg/tests"]`` (the
+    dirty filesystem config holds the broken bare ``["-m", "pytest"]``); base suite
+    ``pkg/tests/test_base.py`` (``test_base_a``/``test_base_b``, both green) plus a root
+    ``test_root_broken.py`` importing a nonexistent module; candidate adds
+    ``pkg/tests/test_new.py::test_new`` (``assert 1 == 2``), targeted id
+    ``pkg/tests/test_new.py::test_new``. On CURRENT code prove_red._run_suite runs the hardcoded bare
+    ``_BASELINE`` (``["-m", "pytest", "-p", "pytest_reportlog"]``) from the base checkout ROOT, which
+    collects ``test_root_broken.py`` and COLLECTION_ERRORs (exit 2); the base evidence is not GREEN,
+    so prove_red rejects ``baseline_not_green`` at STEP 2 and this test FAILS today (xfails). The
+    #189 fix sources the suite command from the committed baseline (``verify._committed_baseline``),
+    scoping via ``testpaths`` past the root-broken file: the base runs GREEN and prove_red reaches
+    ``behavioral_red`` -> accepted True. Because the command is applied via an ``-o`` option (not a
+    trailing path), a wrong fix that merely appends a positional path to ``_BASELINE`` finds none and
+    stays bare-root (still FAILS), and a fix reading the DIRTY filesystem config gets the bare command
+    (also FAILS) — only the committed git object yields the scoped, green command.
+    """
+    scen = _subdir_scenario(
+        tmp_path,
+        "subdir-baseline",
+        candidate_files={"pkg/tests/test_new.py": "def test_new():\n    assert 1 == 2\n"},
+    )
+    rp = _prove(_mk_run(), scen, targeted_ids=(_SUBDIR_NEW_ID,))
+    assert rp.accepted is True
+    assert rp.reason == "behavioral_red"
 
 
 def test_base_id_disappeared_is_hard_failure(tmp_path):
