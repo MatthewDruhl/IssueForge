@@ -1,5 +1,9 @@
 # PRD: IssueForge v1 — human-gated TDD issue runner
 
+## End Goal
+
+A developer hands IssueForge one GitHub issue and gets back one green, human-mergeable PR: the engine shapes the issue, freezes a human-approved red acceptance contract, implements without weakening it, opens the PR, waits for the human merge, and closes out idempotently. All AI work runs on subscription-authenticated CLIs, all safety contracts are enforced deterministically by the engine, and the whole loop runs without a MARVIN checkout.
+
 ## Problem Statement
 
 Turning an existing GitHub issue into merged code currently requires an AI session to remember and coordinate issue shaping, test-first development, integrity checks, reviews, Git operations, approvals, recovery, and cleanup. This is inefficient and fragile: context can be lost, test contracts can be weakened, failures can strand work, and repeated manual steps differ between repositories.
@@ -10,9 +14,21 @@ IssueForge is a Python workflow engine with CLI and Textual TUI interfaces. It p
 
 The engine, the run store, the Git and GitHub layers, and the **verification adapter interface** are repository-agnostic. Semantic test integrity is not: freezing a contract requires stable test identity, an execution-phase distinction, and a dependency closure, none of which a generic argument-array command can supply. Those capabilities are therefore supplied by a per-framework **verification adapter**, and **version one ships a pytest adapter only** (see US-1 and Out of Scope).
 
+## Milestones
+
+Milestones render as Phases for stakeholders (marvin#811); GitHub and tooling keep `milestone`. Work before the milestone convention (stages S1-S13, phases 1-3: registration, run store/queue, contract machinery) shipped un-milestoned and is recorded here, not retro-tagged.
+
+Story annotations below name the milestone that **completes the story's demo**; thinner slices of many stories already demo at M1 (PoC depth). Partial story splits (US-na/US-nb) are carved when `/agile` plans the increment that needs them, not up front.
+
+- **M1: Walking skeleton** (renders as Phase 1 — Walking skeleton). Goal, re-scoped 2026-07-28: one real `issueforge run DandD#111` reaches `waiting-for-merge` with a live PR, against authenticated Claude and real GitHub. Shipped: PoC-A/B/C/D (#112, #113, #114, #115) and the live-run ladder fixes (#183, #189). Open: #193 (blocker: `engine._collect_ids` bare-root pytest seam), #144 (readiness epic: the live re-attempt), #131 (providers.invoke results unchecked), #184 (test suite leaks into the real state root the live run uses). S14-S16 (#20/#21/#22) moved to M2 as robustness successors, 2026-07-28.
+- **M2: Full loop + TUI** (renders as Phase 2). S14-S19 (#20-#25), S23 TUI (#27); adopted by the 2026-07-28 orphan sweep: #105 (S13 integrity-enforcement remediation), #126 (wire real contract-integrity end-to-end), #130 (CLI-reaches-composed-stage test), #194 (S18 tracer `issueforge complete`).
+- **M3: v1 completion** (renders as Phase 3). S21 (#26), S22 (#15), S24 (#28); adopted: #187 (dashboard/ outside every structural gate, paired with S24).
+
+**Milestone log.** 2026-07-28: orphan sweep dispositioned all 46 unmilestoned open issues — 37 closed with the `deferred` label (see Out of Scope), 6 adopted into milestones as listed above, #123 executed by this migration, epics #1/#150 confirmed intentionally milestone-less.
+
 ## User Stories
 
-### US-1: Register an existing local repository
+### US-1: Register an existing local repository — [M1]
 
 **As a** developer, **I want** to register a friendly repository alias, **so that** IssueForge can safely resolve issues to verified local clones.
 
@@ -23,7 +39,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 - [ ] IssueForge never clones or automatically registers a repository.
 - [ ] Registration resolves a verification adapter for the repository and **rejects a repository whose test framework has no installed adapter**, naming the unsupported framework. Version one ships a pytest adapter only, so a non-pytest repository is refused **at registration**, not after a run has already been shaped and worktreed.
 
-### US-2: Queue and resume issue runs
+### US-2: Queue and resume issue runs — [M2]
 
 **As a** developer, **I want** persistent issue runs, **so that** terminal closure and pauses do not lose work.
 
@@ -33,7 +49,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 - [ ] A paused run blocks the worker until explicitly resumed, cancelled, or parked.
 - [ ] Parking preserves exact run state and releases the worker to the next queued issue.
 
-### US-3: Shape an issue into buildable work
+### US-3: Shape an issue into buildable work — [M3]
 
 **As a** developer, **I want** vague or oversized issues shaped before coding, **so that** generated tests have an approved observable contract.
 
@@ -46,7 +62,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 - [ ] **A human approves the buildability contract — including the implementation write scope — before contract authoring begins.** That scope governs the **implementation commit range only** (the commits after the frozen contract commit). The approved implementation write scope enforced at PR readiness (US-6) is exactly this approved scope; it is never derived from the resulting diff, because a scope derived from the diff would approve itself.
 - [ ] **Expanding the approved implementation write scope during implementation requires new human authorization** and preserves the prior approval in the audit trail. An implementation that writes outside the approved scope without that authorization pauses the run.
 
-### US-4: Establish an isolated green baseline
+### US-4: Establish an isolated green baseline — [M1]
 
 **As a** developer, **I want** every run based on fresh, isolated, green code, **so that** new failures are attributable to the issue.
 
@@ -56,7 +72,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 - [ ] Dirty normal checkouts are allowed only when isolation is proven.
 - [ ] A failed fetch, unprovable isolation, or red baseline pauses before AI changes files.
 
-### US-5: Approve a meaningful red acceptance contract
+### US-5: Approve a meaningful red acceptance contract — [M1]
 
 **As a** developer, **I want** to approve exact tests that fail for the missing behavior, **so that** implementation follows genuine TDD.
 
@@ -68,7 +84,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 - [ ] Human approval freezes the exact test commit, file hashes, collected identifiers, dependent fixtures/configuration, command, red evidence, **and the approved implementation write scope carried forward from the buildability contract (US-3)**. The **frozen contract set** (the test files and the discovered dependency closure below) and the **implementation write scope** are **disjoint**: a path is a protected contract input or a permitted implementation target, never approved as both, and a path proposed as both fails the freeze for the human to resolve (see D5).
 - [ ] The frozen dependency set is **discovered by the verification adapter, not declared by configuration**: it covers the test modules, every fixture provider and configuration file on the collection path, plugins, and their **transitive** dependencies, **and it records the immutable identity and pinned version of every external plugin and package in that closure, not only in-repository files**. A user-supplied path list may add to the protected boundary but can never shrink it.
 
-### US-6: Implement without weakening the contract
+### US-6: Implement without weakening the contract — [M2]
 
 **As a** developer, **I want** AI implementation constrained by the approved tests, **so that** green means the approved behavior was delivered.
 
@@ -83,7 +99,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 - [ ] Logging is required when changed code crosses an HTTP, database, subprocess, filesystem, queue, third-party service, or AI boundary.
 - [ ] Required logging follows the target project's logger, levels, formats, and correlation conventions and excludes contract-listed sensitive fields.
 
-### US-7: Deliver one green PR
+### US-7: Deliver one green PR — [M2]
 
 **As a** developer, **I want** one reviewable PR containing the approved tests and implementation, **so that** main never receives intentionally pending tests.
 
@@ -93,7 +109,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 - [ ] IssueForge never merges the PR and waits for human review and merge.
 - [ ] Attached watch mode and later `continue` both observe the same persisted `waiting-for-merge` state.
 
-### US-8: Close and clean verified merged work
+### US-8: Close and clean verified merged work — [M2]
 
 **As a** developer, **I want** merged work closed automatically, **so that** branches, worktrees, issues, and run state do not remain stale.
 
@@ -103,7 +119,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 - [ ] Proven-safe local/remote branches and clean worktrees are removed; dirty or unverifiable state is preserved and reported.
 - [ ] Repeated closeout is idempotent and produces the same completed state without duplicate comments or failures.
 
-### US-9: Operate through CLI and TUI
+### US-9: Operate through CLI and TUI — [M2]
 
 **As a** developer, **I want** terminal-native control and visibility, **so that** I can run IssueForge directly or interactively.
 
@@ -114,7 +130,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 - [ ] IssueForge defines two AI **roles**, never two vendors: the **primary AI** authors and implements, and the **secondary AI** independently reviews. Each role binds to a provider profile whose executable, start, resume, and authentication commands are **configuration variables**. No provider name is hardcoded anywhere in the engine.
 - [ ] **If no secondary provider is configured, the review role falls back to the primary provider in a brand-new session**, never the authoring session. Independence comes from session and role separation; a different vendor is a strengthening, not a requirement. The role, the provider, and the session identity are recorded on every AI result, and a review whose session identity equals the authoring session's is rejected.
 
-### US-10: Retain a safe audit trail
+### US-10: Retain a safe audit trail — [M3]
 
 **As a** developer, **I want** recoverable and privacy-conscious run evidence, **so that** decisions can be audited without retaining unlimited sensitive data.
 
@@ -124,7 +140,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 - [ ] Authentication tokens, credential files, environment-variable values, detected secrets, and hidden model reasoning are never retained.
 - [ ] Retention is configurable and `issueforge purge` removes eligible artifacts without damaging active runs or permanent manifests.
 
-### US-11: Preserve proven MARVIN safeguards
+### US-11: Preserve proven MARVIN safeguards — [M3]
 
 **As a** maintainer, **I want** IssueForge stages derived from MARVIN's lessons and tested scripts, **so that** simplification does not discard failure-driven safeguards or duplicate working code.
 
@@ -186,6 +202,7 @@ The engine, the run store, the Git and GitHub layers, and the **verification ada
 
 ## Out of Scope
 
+- **Deferred (in scope, later — the pointer line):** work set aside until a demo gate needs it is closed with the `deferred` label, never copied into a document; GitHub stores the text and the label query is the live index. Query: `gh issue list --state closed --label deferred --limit 200` (37 issues as of 2026-07-28: post-v1 hardening, deferred-v2 gates, CI infra, enhancements). `/agile` re-checks this list at every milestone boundary.
 - Draft-PR lifecycle: deferred until the single-green-PR engine is hardened; it will become an additional GitHub event surface without changing core state.
 - Concurrent issues: file-conflict scheduling within one repository and multi-repository workers are deferred until single-run recovery and safety are proven.
 - Additional provider profiles (other subscription CLIs, local models): the provider interface and the primary/secondary role split ship in version one, and a second provider is a configuration entry rather than new engine code. Version one is validated against a single default provider profile.
