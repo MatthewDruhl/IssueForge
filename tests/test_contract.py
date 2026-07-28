@@ -668,7 +668,6 @@ def test_untrustworthy_candidate_report_is_no_candidate_evidence_not_baseline_no
     _assert_rejected(run, rp, "no_candidate_evidence")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#189)")
 def test_prove_red_uses_committed_baseline_command_for_subdir_layout(tmp_path):
     """prove_red proves the CANDIDATE red for a repo whose tests live in a subdirectory, using the
     repo's COMMITTED baseline command instead of a bare pytest from the worktree root.
