@@ -544,6 +544,64 @@ def test_base_suite_red_at_bound_sha_is_refused(tmp_path):
     _assert_rejected(run, rp, "baseline_not_green")
 
 
+@pytest.mark.xfail(strict=True, reason="PENDING (#183)")
+@pytest.mark.parametrize(
+    "keep_nodes",
+    [False, True],
+    ids=["empty-report", "truncated-report-with-nodes"],
+)
+def test_untrustworthy_candidate_report_is_no_candidate_evidence_not_baseline_not_green(
+    tmp_path, monkeypatch, keep_nodes
+):
+    """An UNTRUSTWORTHY candidate report at step 6 is its OWN reason, never a false ``baseline_not_green``.
+
+    ``report_present`` (not an empty node set) is the deciding signal: a candidate ``_run_suite`` whose
+    report is not trustworthy (``report_present`` False) must classify as ``no_candidate_evidence`` and
+    never launder an infra failure into a false ``baseline_not_green`` on a base that is green at the
+    bound sha (observed live on two ``issueforge run DandD#111`` runs, baseline 841 passed on a manual
+    re-run). Both untrustworthy shapes reject the same way:
+
+    - ``empty-report``: ``report_present`` False with ZERO nodes (the observed empty report-log).
+    - ``truncated-report-with-nodes``: ``report_present`` False while records DID parse (a truncated or
+      non-terminated report — ``report_present = bool(text) and well_formed`` at verify.py:302). This
+      case fails any implementation that keys on ``not candidate_evidence.nodes`` instead of
+      ``report_present``, forcing the fix to read the trustworthiness signal.
+
+    technical (contract): base green at ``base_sha``; the candidate ``_run_suite`` returns an Evidence
+    with ``report_present=False`` (nodes zeroed for ``empty-report``, kept real for
+    ``truncated-report-with-nodes``). prove_red -> rejected, reason ``no_candidate_evidence`` (NOT
+    ``baseline_not_green``); run paused; a ``red_proof`` rejected event carries the reason. The negative
+    control (a genuine red base with a trustworthy report still -> ``baseline_not_green``) is guarded by
+    ``test_every_base_id_runs_at_candidate_second_break_is_caught``.
+    """
+    from dataclasses import replace
+
+    from issueforge import contract
+
+    scen = _scenario(
+        tmp_path,
+        "untrustworthy-candidate-report",
+        candidate_files={"tests/test_new.py": "def test_new():\n    assert 1 == 2\n"},
+    )
+    real_run_suite = contract._run_suite
+
+    def _untrustworthy_candidate_run_suite(adapter, worktree, provisioner):
+        evidence = real_run_suite(adapter, worktree, provisioner)
+        if Path(worktree) != Path(scen.candidate_worktree):
+            return evidence
+        if keep_nodes:
+            # A truncated / non-terminated report: records parsed, but not trustworthy evidence.
+            return replace(evidence, report_present=False)
+        # The observed empty report-log: no records at all.
+        return replace(evidence, nodes=(), report_present=False)
+
+    monkeypatch.setattr(contract, "_run_suite", _untrustworthy_candidate_run_suite)
+
+    run = _mk_run()
+    rp = _prove(run, scen, targeted_ids=(_NEW_ID,))
+    _assert_rejected(run, rp, "no_candidate_evidence")
+
+
 def test_base_id_disappeared_is_hard_failure(tmp_path):
     """A preexisting base id that DISAPPEARED at the candidate is a hard failure, not a green baseline.
 
