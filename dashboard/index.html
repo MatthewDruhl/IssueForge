@@ -1,0 +1,421 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>IssueForge</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f9; --line: #d8dce2; --ink: #16181d; --dim: #6b7280;
+    --ok: #157f3d; --warn: #9a6700; --bad: #b42318; --live: #1f6feb; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1115; --panel: #171a21; --line: #2b303a; --ink: #e6e8ec; --dim: #9aa3b2;
+            --ok: #3fb950; --warn: #d29922; --bad: #f85149; --live: #58a6ff; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, sans-serif; }
+  header { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
+           padding: 10px 16px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 5; }
+  header h1 { font-size: 15px; margin: 0; letter-spacing: .02em; }
+  .meta { color: var(--dim); font: 12px/1.4 var(--mono); }
+  main { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(420px, 1.4fr); gap: 14px; padding: 14px; align-items: start; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 14px; }
+  section > h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim);
+                 margin: 0; padding: 9px 12px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+  .body { padding: 10px 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 600; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  th, td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: color-mix(in srgb, var(--live) 10%, transparent); }
+  tbody tr[aria-selected="true"] { background: color-mix(in srgb, var(--live) 18%, transparent); }
+  code, .mono { font-family: var(--mono); font-size: 12px; }
+  button, select, input { font: inherit; color: var(--ink); background: var(--bg);
+                          border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--live); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  .row:last-child { margin-bottom: 0; }
+  .grow { flex: 1; min-width: 90px; }
+  .pill { display: inline-block; padding: 0 6px; border-radius: 10px; font-size: 11px;
+          font-family: var(--mono); border: 1px solid currentColor; }
+  .s-ok, .s-succeeded, .s-merged { color: var(--ok); }
+  .s-running, .s-active { color: var(--live); }
+  .s-failed, .s-bad { color: var(--bad); }
+  .s-paused, .s-parked, .s-queued, .s-warn { color: var(--warn); }
+  .s-idle { color: var(--dim); }
+  pre { margin: 0; padding: 9px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+        font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word;
+        max-height: 320px; overflow: auto; }
+  .tabs { display: flex; gap: 2px; flex-wrap: wrap; padding: 8px 12px 0; }
+  .tabs button { border-radius: 6px 6px 0 0; border-bottom-color: transparent; background: transparent; font-size: 12px; }
+  .tabs button[aria-selected="true"] { background: var(--bg); border-color: var(--line); border-bottom-color: var(--bg); }
+  .todo { color: var(--dim); font-size: 12px; padding: 10px; border: 1px dashed var(--line); border-radius: 6px; }
+  .todo b { color: var(--warn); font-weight: 600; }
+  .empty { color: var(--dim); font-size: 12px; padding: 4px 0; }
+  a { color: var(--live); }
+</style>
+
+<header>
+  <h1>IssueForge</h1>
+  <span class="meta" id="hdr-state"></span>
+  <span class="meta" id="hdr-claude"></span>
+  <span class="grow"></span>
+  <label class="meta"><input type="checkbox" id="auto" checked> auto-refresh</label>
+  <button id="refresh">Refresh</button>
+</header>
+
+<main>
+  <div>
+    <section>
+      <h2>Queue <span class="meta" id="queue-count"></span></h2>
+      <div class="body" id="queue"></div>
+    </section>
+
+    <section>
+      <h2>Runs</h2>
+      <div class="body" id="runs"></div>
+    </section>
+
+    <section>
+      <h2>Repos</h2>
+      <div class="body" id="repos"></div>
+    </section>
+
+    <section>
+      <h2>Start a run</h2>
+      <div class="body">
+        <div class="row">
+          <input id="run-target" class="grow" placeholder="ALIAS#123" size="14">
+          <input id="run-scope" class="grow" placeholder="scope paths, comma-separated">
+        </div>
+        <div class="row">
+          <label class="meta"><input type="checkbox" id="run-yes">
+            <b>--yes</b>: pre-approve the authored acceptance contract, sight unseen</label>
+          <span class="grow"></span>
+          <button id="run-go" disabled>Run</button>
+        </div>
+        <p class="meta">A dashboard run has no terminal, so both human gates must be answered here:
+        the scope paths above, and <code>--yes</code>. Without both, the run is refused before it is
+        admitted. To read the contract before approving it, run
+        <code>uv run issueforge run ALIAS#N</code> in a terminal instead.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Skill bridge <span class="meta">MARVIN, until the stage ships</span></h2>
+      <div class="body">
+        <div class="row">
+          <select id="skill">
+            <option>/spec-up</option><option>/spec-dev</option><option>/spec-wave</option>
+            <option>/tdd</option><option>/commit</option><option>/merged</option><option>/code-review</option>
+          </select>
+          <input id="skill-arg" class="grow" placeholder="issue number / args">
+        </div>
+        <div class="row">
+          <input id="skill-cwd" class="grow" placeholder="working dir (default: IssueForge repo)">
+        </div>
+        <div class="row">
+          <code id="skill-preview" class="grow"></code>
+          <button id="skill-copy">Copy</button>
+          <button id="skill-run">Run headless</button>
+        </div>
+        <p class="meta">Copy pastes the slash command into an interactive Claude Code session, which keeps the
+        human gates. Run headless drives <code>claude -p</code> in the background: no gates, use for read-only
+        skills or when you have already decided.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>Checks</h2>
+      <div class="body">
+        <div class="row" id="checks"></div>
+        <div class="row" id="makes"></div>
+        <pre id="cli-out" hidden></pre>
+      </div>
+    </section>
+  </div>
+
+  <div>
+    <section>
+      <h2>Run detail <span class="meta" id="detail-id">no run selected</span></h2>
+      <div class="tabs" id="tabs"></div>
+      <div class="body" id="view"></div>
+    </section>
+
+    <section>
+      <h2>Jobs <span class="meta" id="job-count"></span></h2>
+      <div class="body" id="jobs"></div>
+      <div class="body" id="job-log-wrap" hidden>
+        <div class="row">
+          <span class="mono grow" id="job-cmd"></span>
+          <button id="job-stop">Stop</button>
+        </div>
+        <pre id="job-log"></pre>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const cls = s => "s-" + String(s ?? "idle").toLowerCase().replace(/[^a-z]+/g, "-");
+const pill = s => `<span class="pill ${cls(s)}">${esc(s ?? "—")}</span>`;
+
+let STATE = { runs: [], jobs: [], queue: {}, repos: [] };
+let selectedRun = null, selectedJob = null, jobOffset = 0, tab = "stage";
+
+async function api(path, body) {
+  const opts = body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {};
+  const r = await fetch(path, opts);
+  return r.json();
+}
+
+// --- the eight views (US-9.2). Each returns HTML for the selected run's detail. ---
+const VIEWS = [
+  ["stage",    "Stage",    d => field(d, "stage") ],
+  ["queue",    "Queue",    () => queuePosition() ],
+  ["logs",     "Logs",     d => events(d) ],
+  ["diffs",    "Diffs",    () => todo("S16 one-green-PR does not persist a diff artifact yet", 22) ],
+  ["approvals","Approvals",d => gateEvents(d) ],
+  ["failures", "Failures", d => failures(d) ],
+  ["pr",       "PR status",d => prStatus(d) ],
+  ["cleanup",  "Cleanup",  () => todo("S19 branch/worktree cleanup emits no warnings yet", 25) ],
+];
+
+const todo = (why, issue) =>
+  `<div class="todo"><b>Not built yet.</b> ${esc(why)} —
+   <a href="https://github.com/MatthewDruhl/IssueForge/issues/${issue}" target="_blank">#${issue}</a>.
+   This panel renders as soon as the stage emits the events.</div>`;
+
+function field(d, key) {
+  const m = d.manifest || {};
+  const rows = ["run_id", "status", "stage", "repo", "slug", "issue_number", "branch", "updated_at"]
+    .filter(k => m[k] != null)
+    .map(k => `<tr><th>${k}</th><td class="mono">${k === "status" || k === "stage" ? pill(m[k]) : esc(m[k])}</td></tr>`);
+  return rows.length ? `<table>${rows.join("")}</table>` : `<p class="empty">No manifest for this run.</p>`;
+}
+
+function queuePosition() {
+  const q = STATE.queue || {};
+  const list = q.queue || [];
+  const at = list.findIndex(e => (e.run_id || e) === selectedRun);
+  if (q.active === selectedRun) return `<p>${pill("active")} This run holds the single slot.</p>`;
+  if (at >= 0) return `<p>${pill("queued")} Position <b>${at + 1}</b> of ${list.length}.</p>`;
+  return `<p class="empty">This run is not in the admission queue.</p>`;
+}
+
+function events(d) {
+  const ev = d.events || [];
+  if (!ev.length) return `<p class="empty">No events recorded.</p>`;
+  const lines = ev.map(e => {
+    const t = e.ts || e.timestamp || "";
+    const kind = e.event || e.type || e.kind || "";
+    const rest = { ...e };
+    delete rest.ts; delete rest.timestamp; delete rest.event; delete rest.type; delete rest.kind;
+    const tail = Object.keys(rest).length ? "  " + JSON.stringify(rest) : "";
+    return `${t}  ${kind}${tail}`;
+  });
+  const arts = (d.artifacts || []).length
+    ? `<p class="meta">artifacts: ${d.artifacts.map(esc).join(", ")}</p>` : "";
+  return `<pre>${esc(lines.join("\n"))}</pre>${arts}`;
+}
+
+const matchEvents = (d, re) => (d.events || []).filter(e => re.test(JSON.stringify(e)));
+
+function gateEvents(d) {
+  const hits = matchEvents(d, /approv|gate|human/i);
+  if (!hits.length) return `<p class="empty">No approval events on this run.</p>` + todo("gate events are emitted per-stage as S14–S21 land", 20);
+  return `<pre>${esc(hits.map(e => JSON.stringify(e)).join("\n"))}</pre>`;
+}
+
+function failures(d) {
+  const status = (d.manifest || {}).status || "";
+  const hits = matchEvents(d, /fail|error|abort|red/i);
+  const head = /fail|error/i.test(status) ? `<p>${pill(status)}</p>` : "";
+  if (!hits.length) return head + `<p class="empty">No failure events on this run.</p>`;
+  return head + `<pre>${esc(hits.map(e => JSON.stringify(e)).join("\n"))}</pre>`;
+}
+
+function prStatus(d) {
+  const m = d.manifest || {};
+  if (!m.pr_url) return `<p class="empty">No PR opened for this run yet.</p>` +
+    todo("S16 opens the PR; live PR state (checks, review, mergeability) is not mirrored into the run store", 22);
+  return `<p><a href="${esc(m.pr_url)}" target="_blank">${esc(m.pr_url)}</a> ${pill(m.status)}</p>` +
+    todo("live check/review/mergeable state is not mirrored into the run store", 22);
+}
+
+// --- rendering --------------------------------------------------------------
+
+function renderTabs() {
+  $("tabs").innerHTML = VIEWS.map(([k, label]) =>
+    `<button data-tab="${k}" aria-selected="${k === tab}">${label}</button>`).join("");
+}
+
+async function renderDetail() {
+  renderTabs();
+  if (!selectedRun) { $("view").innerHTML = `<p class="empty">Pick a run to see its eight views.</p>`; return; }
+  const d = await api("/api/run/" + encodeURIComponent(selectedRun));
+  $("view").innerHTML = (VIEWS.find(v => v[0] === tab) || VIEWS[0])[2](d);
+}
+
+function renderQueue() {
+  const q = STATE.queue || {};
+  const list = q.queue || [];
+  $("queue-count").textContent = `${list.length} waiting`;
+  const active = q.active
+    ? `<p>${pill("active")} <code>${esc(q.active)}</code></p>`
+    : `<p class="empty">Slot is free.</p>`;
+  const rows = list.map((e, i) => {
+    const id = e.run_id || e;
+    return `<tr data-run="${esc(id)}"><td>${i + 1}</td><td class="mono">${esc(id)}</td>
+      <td>${btn("pause", id)} ${btn("park", id)} ${btn("cancel", id)}
+        <input class="reorder-to" type="number" min="0" max="${list.length - 1}" value="${i}" style="width:4.5em">
+        ${btn("reorder", id)}</td></tr>`;
+  });
+  $("queue").innerHTML = active + (rows.length
+    ? `<table><tbody>${rows.join("")}</tbody></table>`
+    : `<p class="empty">Queue is empty.</p>`)
+    + (q.error ? `<p class="meta s-bad">${esc(q.error)}</p>` : "");
+}
+
+const btn = (action, id) => `<button class="cli" data-action="${action}" data-arg="${esc(id)}">${action}</button>`;
+
+function renderRuns() {
+  const rows = STATE.runs.map(r => `
+    <tr data-run="${esc(r.run_id || r.dir)}" aria-selected="${(r.run_id || r.dir) === selectedRun}">
+      <td class="mono">${esc(r.slug || r.repo || "—")}${r.issue_number ? "#" + esc(r.issue_number) : ""}</td>
+      <td>${pill(r.status)}</td><td class="mono">${esc(r.stage || "—")}</td>
+      <td class="mono">${esc((r.updated_at || "").slice(0, 16))}</td>
+    </tr>`);
+  $("runs").innerHTML = rows.length
+    ? `<table><thead><tr><th>Issue</th><th>Status</th><th>Stage</th><th>Updated</th></tr></thead><tbody>${rows.join("")}</tbody></table>`
+    : `<p class="empty">No runs yet. Start one above.</p>`;
+}
+
+function renderRepos() {
+  const rows = STATE.repos.map(r =>
+    `<tr><td class="mono">${esc(r.alias)}</td><td class="mono">${esc(r.slug || "—")}</td>
+     <td class="mono">${esc(r.default_branch || "—")}</td></tr>`);
+  $("repos").innerHTML = rows.length
+    ? `<table><thead><tr><th>Alias</th><th>Slug</th><th>Default</th></tr></thead><tbody>${rows.join("")}</tbody></table>`
+    : `<p class="empty">No repos registered. <code>issueforge repo add</code></p>`;
+}
+
+function renderJobs() {
+  const jobs = STATE.jobs || [];
+  $("job-count").textContent = jobs.length ? `${jobs.filter(j => j.status === "running").length} running` : "";
+  $("jobs").innerHTML = jobs.length
+    ? `<table><tbody>${jobs.map(j => `
+        <tr data-job="${esc(j.id)}" aria-selected="${j.id === selectedJob}">
+          <td>${pill(j.status)}</td><td class="mono">${esc(j.label)}</td>
+          <td class="mono">${j.rc == null ? "" : "rc " + j.rc}</td></tr>`).join("")}</tbody></table>`
+    : `<p class="empty">No jobs this session.</p>`;
+}
+
+async function refresh() {
+  STATE = await api("/api/state");
+  $("hdr-state").textContent = "state: " + STATE.state_root;
+  $("hdr-claude").innerHTML = STATE.claude
+    ? "claude: " + esc(STATE.claude)
+    : `<span class="s-bad">claude CLI not found — skill bridge disabled</span>`;
+  $("skill-run").disabled = !STATE.claude;
+  renderQueue(); renderRuns(); renderRepos(); renderJobs();
+  if (selectedJob) await tailJob();
+  await renderDetail();
+}
+
+async function tailJob() {
+  const d = await api(`/api/job/${encodeURIComponent(selectedJob)}?offset=${jobOffset}`);
+  if (d.error) return;
+  $("job-log-wrap").hidden = false;
+  $("job-cmd").textContent = d.cmd;
+  if (d.chunk) { $("job-log").textContent += d.chunk; $("job-log").scrollTop = $("job-log").scrollHeight; }
+  jobOffset = d.offset;
+  $("job-stop").disabled = d.status !== "running";
+}
+
+function showCli(res) {
+  const out = $("cli-out");
+  out.hidden = false;
+  out.textContent = `$ ${res.cmd || ""}\n${res.out || res.error || ""}`.trim();
+}
+
+// --- wiring -----------------------------------------------------------------
+
+const CHECKS = ["config-check", "provider-check", "audit-check", "lint-boundary", "repo-list", "queue", "version"];
+$("checks").innerHTML = CHECKS.map(a => `<button class="cli" data-action="${a}">${a}</button>`).join("");
+$("makes").innerHTML = ["test-quick", "test", "gate"]
+  .map(t => `<button class="make" data-target="${t}">make ${t}</button>`).join("");
+
+document.addEventListener("click", async ev => {
+  const t = ev.target;
+
+  if (t.matches("button.cli")) {
+    t.disabled = true;
+    const args = t.dataset.arg ? [t.dataset.arg] : [];
+    // `reorder` is the one two-argument action: run id, then target index.
+    if (t.dataset.action === "reorder") args.push(t.closest("tr").querySelector(".reorder-to").value);
+    showCli(await api("/api/cli", { action: t.dataset.action, args }));
+    t.disabled = false;
+    return refresh();
+  }
+  if (t.matches("button.make")) {
+    const j = await api("/api/launch", { kind: "make", target: t.dataset.target });
+    if (!j.error) { selectedJob = j.id; jobOffset = 0; $("job-log").textContent = ""; }
+    else showCli(j);
+    return refresh();
+  }
+  if (t.matches("[data-tab]")) { tab = t.dataset.tab; return renderDetail(); }
+
+  const runRow = t.closest("[data-run]");
+  if (runRow && !t.matches("button")) { selectedRun = runRow.dataset.run; renderRuns(); renderQueue(); return renderDetail(); }
+
+  const jobRow = t.closest("[data-job]");
+  if (jobRow) { selectedJob = jobRow.dataset.job; jobOffset = 0; $("job-log").textContent = ""; renderJobs(); return tailJob(); }
+});
+
+$("refresh").onclick = refresh;
+$("job-stop").onclick = async () => { await api(`/api/job/${selectedJob}/stop`, {}); refresh(); };
+
+// Both gates or nothing: a headless run without --scope and --yes is refused by the CLI (#140/#164).
+const syncRunGate = () => {
+  $("run-go").disabled = !($("run-yes").checked && $("run-target").value.trim() && $("run-scope").value.trim());
+};
+["run-yes", "run-target", "run-scope"].forEach(id => { $(id).oninput = $(id).onchange = syncRunGate; });
+syncRunGate();
+
+$("run-go").onclick = async () => {
+  const scope = $("run-scope").value.split(",").map(s => s.trim()).filter(Boolean);
+  const res = await api("/api/launch", {
+    kind: "run", arg: $("run-target").value.trim(), scope, yes: $("run-yes").checked,
+  });
+  if (res.error) showCli(res); else { selectedJob = res.id; jobOffset = 0; $("job-log").textContent = ""; }
+  refresh();
+};
+
+const skillCmd = () => `${$("skill").value} ${$("skill-arg").value.trim()}`.trim();
+const syncPreview = () => { $("skill-preview").textContent = skillCmd(); };
+$("skill").onchange = syncPreview;
+$("skill-arg").oninput = syncPreview;
+syncPreview();
+
+$("skill-copy").onclick = async () => {
+  await navigator.clipboard.writeText(skillCmd());
+  $("skill-copy").textContent = "Copied";
+  setTimeout(() => ($("skill-copy").textContent = "Copy"), 1200);
+};
+$("skill-run").onclick = async () => {
+  const res = await api("/api/launch", {
+    kind: "skill", skill: $("skill").value, arg: $("skill-arg").value.trim(), cwd: $("skill-cwd").value.trim(),
+  });
+  if (res.error) showCli(res); else { selectedJob = res.id; jobOffset = 0; $("job-log").textContent = ""; }
+  refresh();
+};
+
+setInterval(() => { if ($("auto").checked) refresh(); }, 3000);
+refresh();
+</script>

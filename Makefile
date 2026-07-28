@@ -1,4 +1,8 @@
-.PHONY: test-fast test-quick test test-parked gate fmt
+.PHONY: test-fast test-quick test test-parked gate fmt dashboard
+
+# Local read/act surface over the run store, on loopback. See dashboard/server.py.
+dashboard:
+	uv run python dashboard/server.py
 
 # Development loop: one file (or -k expression), parallel, stop on first failure.
 # TEST is required — an empty TEST would silently run the whole suite, which the
