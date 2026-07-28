@@ -1,0 +1,332 @@
+<title>IssueForge Pipeline Map</title>
+<style>
+:root{
+  --bg:#F6F4EF; --panel:#FFFFFF; --ink:#2A2723; --muted:#6E675D; --line:#DED9CF;
+  --accent:#D97E2E; --accent-ink:#9A5518; --wired:#3E9B6C; --blocker:#C4504A;
+  --gate:#8A6FB8; --defer:#7B8494; --chipbg:#F0EDE6; --rail:#CFC9BD;
+  --code-bg:#F0EDE6;
+  --sk-specup:#2A9D8F; --sk-specdev:#4E63B8; --sk-merged:#7A8B3A; --sk-specwave:#B54A8F; --sk-other:#8A857C;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#15171C; --panel:#1D2026; --ink:#E6E3DC; --muted:#9A968E; --line:#31353D;
+  --accent:#E0913F; --accent-ink:#E8A85F; --wired:#4FAE7D; --blocker:#D4645E;
+  --gate:#A48BD0; --defer:#8B93A3; --chipbg:#262A31; --rail:#3A3F48;
+  --code-bg:#262A31;
+  --sk-specup:#3DB8A8; --sk-specdev:#7488DB; --sk-merged:#9CB055; --sk-specwave:#D06BA9; --sk-other:#9A958C;
+}}
+:root[data-theme="dark"]{
+  --bg:#15171C; --panel:#1D2026; --ink:#E6E3DC; --muted:#9A968E; --line:#31353D;
+  --accent:#E0913F; --accent-ink:#E8A85F; --wired:#4FAE7D; --blocker:#D4645E;
+  --gate:#A48BD0; --defer:#8B93A3; --chipbg:#262A31; --rail:#3A3F48;
+  --code-bg:#262A31;
+  --sk-specup:#3DB8A8; --sk-specdev:#7488DB; --sk-merged:#9CB055; --sk-specwave:#D06BA9; --sk-other:#9A958C;
+}
+:root[data-theme="light"]{
+  --bg:#F6F4EF; --panel:#FFFFFF; --ink:#2A2723; --muted:#6E675D; --line:#DED9CF;
+  --accent:#D97E2E; --accent-ink:#9A5518; --wired:#3E9B6C; --blocker:#C4504A;
+  --gate:#8A6FB8; --defer:#7B8494; --chipbg:#F0EDE6; --rail:#CFC9BD;
+  --code-bg:#F0EDE6;
+  --sk-specup:#2A9D8F; --sk-specdev:#4E63B8; --sk-merged:#7A8B3A; --sk-specwave:#B54A8F; --sk-other:#8A857C;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:0 0 4rem}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+header{padding:2rem 2rem 1.2rem;border-bottom:1px solid var(--line)}
+header h1{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:1.5rem;margin:0;letter-spacing:-.02em;text-wrap:balance}
+header h1 .amp{color:var(--accent)}
+.prov{color:var(--muted);font-size:.8rem;margin-top:.4rem;font-family:ui-monospace,"SF Mono",Menlo,monospace}
+.legend{display:flex;gap:1.1rem;flex-wrap:wrap;margin-top:.9rem;font-size:.78rem;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:.35rem}
+.dot{width:.6rem;height:.6rem;border-radius:50%;display:inline-block}
+.diam{width:.55rem;height:.55rem;display:inline-block;transform:rotate(45deg)}
+main{max-width:1200px;margin:0 auto;padding:0 2rem}
+h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:2.2rem 0 .8rem;font-weight:600}
+/* rail */
+.railwrap{overflow-x:auto;padding:1.4rem 0 .4rem}
+.rail{display:flex;align-items:stretch;gap:0;min-width:980px}
+.stage{position:relative;flex:1;min-width:120px;padding:0 .45rem;cursor:pointer;background:none;border:none;text-align:left;color:var(--ink);font:inherit}
+.stage .node{height:.55rem;border-radius:.3rem;background:var(--rail);margin-bottom:.55rem;position:relative}
+.stage[data-status="wired"] .node{background:var(--wired)}
+.stage[data-status="poc"] .node{background:var(--accent)}
+.stage[data-status="notwired"] .node{background:transparent;border:1.5px dashed var(--defer)}
+.stage .gatemark{position:absolute;top:-0.42rem;width:.8rem;height:.8rem;background:var(--gate);transform:rotate(45deg);border-radius:.12rem}
+.stage .blockmark{position:absolute;top:-0.5rem;right:.2rem;width:.95rem;height:.95rem;border-radius:50%;background:var(--blocker);color:#fff;font-size:.62rem;line-height:.95rem;text-align:center;font-weight:700;transform:none;animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{50%{box-shadow:0 0 0 6px rgba(196,80,74,.18)}}
+@media (prefers-reduced-motion: reduce){.stage .blockmark{animation:none}}
+.stage .num{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.68rem;color:var(--muted)}
+.stage .name{font-size:.82rem;font-weight:600;line-height:1.25;margin:.1rem 0}
+.stage .cnt{font-size:.72rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.stage.active .name{color:var(--accent-ink)}
+.stage.active .node{outline:2px solid var(--accent);outline-offset:2px}
+.stage:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:.3rem}
+.skstripe{display:flex;gap:2px;height:.28rem;margin:.35rem 0 .2rem}
+.skstripe span{flex:1;border-radius:.14rem}
+.skbadge{display:inline-block;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.7rem;color:#fff;border-radius:.3rem;padding:.08rem .45rem;margin:.1rem .25rem .1rem 0}
+.sklegend{display:flex;gap:1rem;flex-wrap:wrap;font-size:.78rem;color:var(--muted);margin-top:.5rem}
+.sklegend .skbadge{margin:0}
+/* detail */
+#detail{background:var(--panel);border:1px solid var(--line);border-radius:.55rem;padding:1.3rem 1.5rem;margin-top:.8rem}
+#detail h3{margin:.1rem 0 .2rem;font-size:1.05rem}
+#detail .status{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700}
+.status.wired{color:var(--wired)} .status.poc{color:var(--accent-ink)} .status.notwired{color:var(--defer)}
+#detail p.desc{color:var(--muted);margin:.4rem 0 .9rem;max-width:68ch}
+.cols{display:grid;grid-template-columns:1.3fr 1fr;gap:1.4rem}
+@media (max-width:820px){.cols{grid-template-columns:1fr}}
+.klabel{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:.9rem 0 .35rem;font-weight:600}
+.ptr{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.78rem;background:var(--code-bg);border-radius:.35rem;padding:.4rem .6rem;margin:.25rem 0;overflow-x:auto;white-space:nowrap}
+.ptr b{color:var(--accent-ink);font-weight:600}
+.pause{display:inline-block;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.72rem;background:var(--chipbg);border-radius:.3rem;padding:.1rem .45rem;margin:.12rem .2rem .12rem 0;color:var(--muted)}
+ul.gates{margin:.2rem 0;padding-left:1.1rem}
+ul.gates li{margin:.25rem 0;font-size:.85rem}
+.gate-tag{color:var(--gate);font-weight:700}
+/* issues */
+.iss{display:flex;gap:.5rem;align-items:baseline;padding:.4rem 0;border-top:1px solid var(--line);font-size:.84rem}
+.iss:first-of-type{border-top:none}
+.iss a{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.78rem;color:var(--accent-ink);text-decoration:none;white-space:nowrap}
+.iss a:hover{text-decoration:underline}
+.iss .t{flex:1}
+.tag{font-size:.66rem;border-radius:.3rem;padding:.06rem .4rem;white-space:nowrap;font-weight:600}
+.tag.v1{background:var(--accent);color:#fff}
+.tag.blocker{background:var(--blocker);color:#fff}
+.tag.m1{background:var(--wired);color:#fff}.tag.m2{background:var(--gate);color:#fff}.tag.m3{background:var(--defer);color:#fff}
+.tag.postv1{background:var(--chipbg);color:var(--muted)}
+.tag.v2{background:var(--chipbg);color:var(--muted);border:1px dashed var(--defer)}
+/* strips */
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.6rem}
+.pcard{background:var(--panel);border:1px solid var(--line);border-radius:.5rem;padding:.7rem .85rem;font-size:.8rem}
+.pcard .ph{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.7rem;color:var(--muted)}
+.pcard .st{font-weight:600;margin:.15rem 0}
+.pcard .done{color:var(--wired)} .pcard .part{color:var(--accent-ink)} .pcard .open{color:var(--defer)}
+.pcard .who{color:var(--muted);font-size:.74rem}
+/* cross-cutting */
+.xgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:.8rem}
+.xcard{background:var(--panel);border:1px solid var(--line);border-radius:.55rem;padding:1rem 1.2rem}
+.xcard h3{margin:0 0 .2rem;font-size:.92rem}
+.xcard p{color:var(--muted);font-size:.8rem;margin:.2rem 0 .6rem;max-width:60ch}
+/* filter */
+#filter{width:100%;max-width:420px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:.45rem;padding:.5rem .7rem;font:inherit;font-size:.85rem;margin-top:.4rem}
+#filter:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.hide{display:none !important}
+footer{max-width:1200px;margin:2.5rem auto 0;padding:0 2rem;color:var(--muted);font-size:.75rem}
+</style>
+
+<header>
+  <h1>IssueForge <span class="amp">&mdash;</span> run-pipeline map</h1>
+  <div class="prov">snapshot 2026-07-28 &middot; main @ 76f1807 (post-#189) &middot; 57 open issues &middot; engine.py 1418 / contract.py 2563 lines</div>
+  <div class="legend">
+    <span><span class="dot" style="background:var(--wired)"></span>wired &amp; exercised live</span>
+    <span><span class="dot" style="background:var(--accent)"></span>PoC seam (works, full slice still open)</span>
+    <span><span class="dot" style="border:1.5px dashed var(--defer);background:none"></span>not wired yet</span>
+    <span><span class="diam" style="background:var(--gate)"></span>human gate</span>
+    <span><span class="dot" style="background:var(--blocker)"></span>current live-run blocker</span>
+  </div>
+  <div class="sklegend" id="sklegend"><span style="color:var(--muted)">stripe = MARVIN skill this stage absorbs:</span></div>
+  <input id="filter" type="search" placeholder="Filter issues / pointers / pause reasons&hellip;" aria-label="Filter">
+</header>
+
+<main>
+  <h2>Pipeline &mdash; issueforge run alias#N &rarr; waiting-for-merge</h2>
+  <div class="railwrap"><div class="rail" id="rail"></div></div>
+  <section id="detail" aria-live="polite"></section>
+
+  <h2>Build phases (S1&ndash;S25) &amp; product milestones</h2>
+  <div class="strip" id="phases"></div>
+
+  <h2>Cross-cutting &mdash; surfaces, structure, hardening pool</h2>
+  <div class="xgrid" id="xcut"></div>
+</main>
+
+<footer>
+  Grounded in the tree at main@76f1807: every pointer names a real function (inventoried 2026-07-28). This is a snapshot &mdash; the honest next step is a drift-gate that validates pointers in CI, same as the rdv-expenses map. Sibling: the loopback dashboard (dashboard/server.py) shows live RUN state; this page maps the CODE and the remaining work.
+</footer>
+
+<script>
+const REPO = "https://github.com/MatthewDruhl/IssueForge/issues/";
+const SKILLS = {
+  specwave:{label:"/spec-wave", v:"--sk-specwave", note:"wave orchestration, one-slot-at-a-time queueing, batched dispatch"},
+  specup:{label:"/spec-up", v:"--sk-specup", note:"issue contract + PENDING acceptance-suite authoring + human suite gate"},
+  specdev:{label:"/spec-dev", v:"--sk-specdev", note:"plan gate, TDD implementer, weaken-check, cross-review, push-landed proof"},
+  merged:{label:"/merged", v:"--sk-merged", note:"post-merge verify, closeout, cleanup (merged_runner)"},
+  other:{label:"dispatch / wave-status", v:"--sk-other", note:"run logging, status views"}
+};
+const DATA = {
+ stages:[
+  {id:"admission", num:"0", name:"Resolve & admission", status:"wired",
+   skills:["specwave","other"],
+   enh:"Replaces /spec-wave's hand-orchestrated fan-out and /dispatch's run logging: a real FIFO queue with a single active slot, crash-safe reconcile, and an event stream — the session no longer babysits wave order.",
+   desc:"Both-or-neither headless guard, registry resolve, open-issue check, store reconcile, single-slot FIFO admission inside the store lock.",
+   ptrs:["engine.run() — engine.py:274","headless both-or-neither guard — engine.py:294 (#164)","github.issue_is_open — engine.py:301/325","store.RunStore().reconcile() — store.py:208 (#48)","admission under s.locked() — engine.py:354 (#142)"],
+   gates:[], pauses:["queued (FIFO)"],
+   produces:"runs/<id>/manifest.json + queue.json entry + queued/running events",
+   issues:[
+    {n:184,t:"Test suite writes into the real $ISSUEFORGE_STATE_HOME (leaks registry entries + worktrees)",tag:"v1"},
+    {n:185,t:"No repo remove — deregistering means hand-editing registry.json",tag:"v1"},
+    {n:67,t:"Durable dispatch claim/lease (crash-during-recovery stranding)",tag:"postv1"}]},
+  {id:"scope", num:"1", name:"Issue read + scope gate", status:"wired",
+   skills:["specup","specdev"],
+   enh:"Absorbs /spec-up Step 0 (readiness/footprint gates on the issue) and /spec-dev's plan-approval checkpoint: the human approves the write scope BEFORE any AI edit, as a typed engine gate instead of skill prose.",
+   desc:"Reads the issue body, then the FIRST human gate: approve the write scope before any AI edit. Provider profile resolved from operator-level config.",
+   ptrs:["_poc_composed_stage() — engine.py:1222 (#115)","github.read_issue_body — github.py:38","human scope approver — engine.py:1178 (#129)","operator providers.toml — paths.providers_config engine.py:1283 (#135)"],
+   gates:["GATE 1 — approve write scope (reject → typed FAILED, slot released)"],
+   pauses:["scope_rejected","no_contract_paths","missing provider config"],
+   produces:"approved write scope + resolved provider profile",
+   issues:[
+    {n:130,t:"No test proves the CLI path reaches the composed stage",tag:"v1"},
+    {n:139,t:"Strengthen #135 missing-operator-config test (no fetch/worktree side effect)",tag:"v1"},
+    {n:134,t:"Composed-stage config/roles pause + scope-entry portability",tag:"postv1"},
+    {n:138,t:"Operator-config load error handling (malformed TOML)",tag:"postv1"},
+    {n:182,t:"Engine-level scope normalization + verbatim-test precision",tag:"postv1"}]},
+  {id:"baseline", num:"2", name:"Fetch + worktree + baseline green", status:"wired",
+   skills:["specdev","specwave"],
+   enh:"Hardens what the agent-contract + spec-wave's live-clean precondition do by convention: isolated worktree and a baseline-green proof are engine-enforced preconditions, not prompt instructions an agent can drift past.",
+   desc:"Fresh base sha, detached isolated worktree under the state root, committed .issueforge.toml read from the FETCHED base, baseline must be green before any AI edit. #189 (today) made the committed baseline command the only command that runs.",
+   ptrs:["workspace.fetch_default_sha — workspace.py:122","workspace.create_isolated_worktree — workspace.py:214","config.load_config(worktree) — config.py:60","verify.run_baseline — verify.py:223","committed-command seams — contract.py (#189, PR #192)"],
+   gates:[], pauses:["baseline_not_green (diagnostics persisted)"],
+   produces:"base_sha + isolated worktree + green baseline verdict",
+   issues:[
+    {n:95,t:"Provisioned-env discovery tests: hermetic local wheels, not live PyPI",tag:"v1"},
+    {n:168,t:"Baseline-preflight + rollback robustness",tag:"postv1"},
+    {n:69,t:"Bare-console-script baselines escape network denial",tag:"postv1"},
+    {n:70,t:"Denied-network executor mounts host site-packages",tag:"postv1"}]},
+  {id:"candidate", num:"3", name:"Candidate: author → red proof → implement", status:"wired", blocker:true,
+   skills:["specup","specdev"],
+   enh:"The core /spec-up → /spec-dev arc, mechanized: authoring PENDING tests = /spec-up Step 4; prove_red = the 'xfail fires for the right reason' + buildability checks made deterministic; the contract human gate = /spec-up's batched suite approval; engine-owned freeze + implement = /spec-dev's TDD build under a contract the implementer cannot edit.",
+   desc:"Provider authors failing tests; prove_red self-refuses unless the added ids collect and fail on a green base; SECOND human gate approves the contract; the ENGINE freezes it; provider implements; authoritative re-verify; engine lands a separate impl commit. LIVE BLOCKER (today's ladder rung): engine._collect_ids is the 4th bare-root pytest seam #189 didn't cover → missing_targeted_id on subdir-layout repos like DandD's backend/ (#193).",
+   ptrs:["run_candidate() — engine.py:990 (#114)","providers.invoke — providers.py:76","contract.prove_red — contract.py:466 (S10 #16)","contract freeze (engine-owned) — engine.py:1073","BLOCKER: engine._collect_ids — engine.py:836 (bare '-m pytest' at :843, #193)","authoritative verify — engine.py:1096"],
+   gates:["GATE 2 — approve the authored contract (diff + red evidence); --yes preapproves"],
+   pauses:["red_proof_rejected","rejected_by_approver","verification_not_green","missing_targeted_id"],
+   produces:"frozen contract commit + separate impl commit → candidate_sha",
+   issues:[
+    {n:193,t:"engine._collect_ids bare repo-root pytest (4th seam) → missing_targeted_id — TODAY'S LADDER RUNG",tag:"blocker"},
+    {n:20,t:"S14 — implement under the frozen contract; two engine-owned repair budgets",tag:"m1"},
+    {n:131,t:"run_candidate discards providers.invoke results without checking InvocationStatus",tag:"v1"},
+    {n:126,t:"run_candidate doesn't produce the integrity manifest issue_readiness loads",tag:"v1"},
+    {n:124,t:"Failure-stage attribution + delivery-verification robustness",tag:"v1"},
+    {n:79,t:"prove_red checkout-binding + author_tests store threading hardening",tag:"postv1"},
+    {n:83,t:"prove_red HEAD-resolve TOCTOU (concurrency)",tag:"postv1"},
+    {n:165,t:"Observability park: un-parking blocked by its own acceptance guard",tag:"postv1"}]},
+  {id:"readiness", num:"4", name:"Readiness gate", status:"poc",
+   skills:["specdev"],
+   enh:"/spec-dev's verification stack as one ordered conjunction: acceptance + baseline green (full-suite gate), contract integrity (check_acceptance_integrity weaken-check), scope. S15 adds the independent code review — the Codex cross-review gate — as an engine predicate.",
+   desc:"Ordered conjunction over the candidate: candidate_sha → acceptance → baseline → contract_integrity → scope; first failure short-circuits not_ready. Integrity is SCOPED OUT for M1 (pass-through injected) — the real S13 gate currently runs only on the separate apply_revision path.",
+   ptrs:["verify.issue_readiness — verify.py:720 (#112)","called from engine.py:1359","integrity scoped out — engine.py:1217 (#126)","real gate: engine.apply_revision — engine.py:646 → contract.verify_contract_integrity — contract.py:2272 (S13 #19)"],
+   gates:[], pauses:["not_ready:<predicate>"],
+   produces:"record['readiness'] verdict",
+   issues:[
+    {n:21,t:"S15 — full readiness gate: impl write scope, independent code review, human override",tag:"m1"},
+    {n:126,t:"Wire integrity manifest into the run loop (currently pass-through)",tag:"v1"},
+    {n:105,t:"S13 remediation round 2 — Codex NO-SHIP/6 on PR #104",tag:"v1"},
+    {n:121,t:"PoC-B readiness hardening",tag:"postv1"},
+    {n:106,t:"S13: tracked-.pyc dirty-tree exemption — forged bytecode bypass",tag:"postv1"},
+    {n:107,t:"S13: env_hashes misses an env-defining file ADDED at HEAD",tag:"postv1"}]},
+  {id:"delivery", num:"5", name:"Deliver ONE PR", status:"poc",
+   skills:["specdev"],
+   enh:"/spec-dev Step 6 made deterministic: push verified at origin (the check_push_landed.py lesson, #782) is the origin_sha==candidate_sha predicate; PR opened through a write gateway that structurally cannot merge.",
+   desc:"Branch forced at candidate_sha; ordered, each step gated on the prior: readiness → push → origin sha must equal candidate sha → open PR via the write gateway against the registered default branch. Never merges.",
+   ptrs:["github.deliver_pr — github.py:247 (#113)","called from engine.py:1402","GhWriteGateway — github.py:311","branch at candidate_sha — engine.py:1371"],
+   gates:[], pauses:["delivery failures surface as typed results"],
+   produces:"record['pr'] = {number, url, status: waiting-for-merge}",
+   issues:[
+    {n:22,t:"S16 — one green PR: pushed only after the gate, verified at origin, never merged",tag:"m1"},
+    {n:122,t:"PoC-C delivery idempotency hardening",tag:"postv1"},
+    {n:120,t:"PoC-A engine-candidate hardening",tag:"postv1"}]},
+  {id:"postmerge", num:"6", name:"Post-merge: verify / closeout / cleanup", status:"notwired",
+   skills:["merged"],
+   enh:"Will absorb /merged (marvin's merged_runner): S17 delivery verification = verify-before-acting, S18 closeout = issue close + run-record flip, S19 safe cleanup = branch/worktree deletion with flag-don't-force semantics. Today that still runs on the marvin side.",
+   desc:"Terminal waiting-for-merge releases the slot and advances the FIFO; the human merges in the browser. S17–S19 (delivery verification, closeout, safe cleanup) are NOT wired into the composed stage yet — this is M2's core.",
+   ptrs:["terminal transition — engine.py:1407","_finalize releases slot — engine.py:224","(S17–S19: no code yet — M2)"],
+   gates:["(human merges the PR — permanent non-goal to automate)"],
+   pauses:["waiting-for-merge (terminal)"],
+   produces:"released slot; next queued run drains",
+   issues:[
+    {n:23,t:"S17 — delivery verification: exact merge-commit + head-sha binding",tag:"m2"},
+    {n:24,t:"S18 — closeout: comment, close the EXACT run issue, update parent epic; idempotent",tag:"m2"},
+    {n:25,t:"S19 — safe cleanup: branches and worktrees (independent stage result)",tag:"m2"}]}
+ ],
+ phases:[
+  {ph:"Phase 0–1", st:"done", stcls:"done", who:"S1–S8: seams, store, queue, worktree/baseline, providers, observability — all shipped"},
+  {ph:"Phase 2–3", st:"done", stcls:"done", who:"S9–S13: shaping, red proof, freeze, integrity — shipped (S13 remediation open: #105)"},
+  {ph:"Phase 4", st:"partial", stcls:"part", who:"S14–S16 behave via PoC seams (#114/#112/#113/#115); full slices #20 #21 #22 open (M1). S17–S19 not wired (M2: #23 #24 #25)"},
+  {ph:"Phase 5", st:"open", stcls:"open", who:"S21 #26, S22 #15, S23 TUI #27, S24 wheel invariant #28 (M2/M3)"},
+  {ph:"M1 walking skeleton", st:"3 open / 6 closed", stcls:"part", who:"ends at the first real green PR produced by the engine"},
+  {ph:"M2 full loop + TUI", st:"4 open / 1 closed", stcls:"open", who:"#23 #24 #25 #27"},
+  {ph:"M3 v1 completion", st:"3 open", stcls:"open", who:"#26 #15 #28 · then v2: DV1 #29, DV2 #30"}
+ ],
+ xcut:[
+  {h:"MARVIN skill lineage", p:"IssueForge IS the marvin build harness extracted into an engine: what the skills enforce as prose + validators + memory, the engine enforces as typed gates. /spec-up's suite authoring + human gate live in stage 3's author→prove_red→approve arc; /spec-dev's plan gate, TDD build, weaken-check, cross-review, and push-landed proof span stages 1–5; /spec-wave's queueing is stage 0; /merged's verify/closeout/cleanup becomes stage 6 (not wired yet — marvin's merged_runner still does it). Until stage 6 lands, runs hand off to the marvin skills at waiting-for-merge.",
+   issues:[{n:157,t:"Structural guards in BOTH pipelines (IssueForge surface now, MARVIN skills interim)",tag:"v1"},{n:123,t:"Living-PRD convention from /agile — align the two pipelines' backlog format",tag:"v1"}]},
+  {h:"Operator surfaces", p:"CLI (cli.py:392 — run/queue/pause/park/cancel/continue/reorder/repo/audit/lint/config/provider/tui) is canonical. TUI stub (tui.py:175) → #27 owns the eight-view parity. The loopback dashboard (dashboard/server.py:349, :8787) is a dev tool over the run store — and sits outside every structural gate.",
+   issues:[{n:27,t:"S23 — TUI + CLI/TUI parity, all eight views",tag:"m2"},{n:187,t:"dashboard/ unlinted, uncollected, invisible to the S24 wheel invariant",tag:"v1"},{n:28,t:"S24 — self-contained boundary as a permanent CI invariant",tag:"m3"}]},
+  {h:"Structure & decoupling (epic #150)", p:"contract.py at 2563 lines with an engine/contract/verify import cycle; the live-run ladder keeps finding bare-root pytest seams (#189 fixed three, #193 is the fourth) precisely because invocation logic is scattered.",
+   issues:[{n:150,t:"Epic: test-suite speed + internal decoupling",tag:"v1"},{n:149,t:"Split contract.py, break the import cycle",tag:"postv1"},{n:148,t:"Share frozen-contract fixtures across the five slow test files",tag:"v1"},{n:156,t:"Boundary linter: ban in-function imports + module size ceiling",tag:"v1"},{n:157,t:"Structural guards in both pipelines (IssueForge + MARVIN skills)",tag:"v1"},{n:91,t:"boundary lint misses positional open() mode",tag:"postv1"}]},
+  {h:"CI & process", p:"The gates job runs ~14 min; shards are unbalanced; a hook should block raw full-suite pytest locally. Living-PRD migration pending.",
+   issues:[{n:108,t:"Speed up the ~14-min gates job (uv cache + split real-venv tests)",tag:"v1"},{n:111,t:"Rebalance pytest shards from CI-measured durations",tag:"v1"},{n:101,t:"Hook: block raw full-suite pytest",tag:"postv1"},{n:123,t:"Adopt the living-PRD convention (docs/prd.md → /agile format)",tag:"v1"},{n:1,t:"PRD: human-gated TDD issue runner (root epic)",tag:"v1"}]},
+  {h:"Deferred hardening pool (post-v1)", p:"Codex build-gate robustness findings, filed not scheduled — batch after the demo milestone.",
+   issues:[{n:73,t:"S9 adversarial buildability gaps",tag:"postv1"},{n:76,t:"S20 deferred robustness",tag:"postv1"},{n:87,t:"S11 remove_scratch defense-in-depth",tag:"postv1"},{n:43,t:"S3 runtime logging seam",tag:"postv1"},{n:42,t:"S3 mandatory adapter probe at registration",tag:"postv1"},{n:153,t:"harness-flags guard vs Make recursion / composite actions",tag:"postv1"},{n:29,t:"DV1 — blocking mutation / anti-tautology gate",tag:"v2"},{n:30,t:"DV2 — invariant lens for shaping",tag:"v2"}]}
+ ]
+};
+
+const TAGL={v1:"v1",blocker:"BLOCKER",m1:"M1",m2:"M2",m3:"M3",postv1:"post-v1",v2:"v2"};
+const rail=document.getElementById("rail"), detail=document.getElementById("detail");
+
+function issueRow(i){return `<div class="iss" data-f="${i.n} ${i.t.toLowerCase()}"><a href="${REPO}${i.n}" target="_blank" rel="noopener">#${i.n}</a><span class="t">${i.t}</span><span class="tag ${i.tag}">${TAGL[i.tag]}</span></div>`}
+
+DATA.stages.forEach((s,ix)=>{
+  const b=document.createElement("button");
+  b.className="stage"; b.dataset.status=s.status; b.dataset.id=s.id;
+  b.innerHTML=`<div class="node">${s.gates.length&&s.status!=="notwired"?'<span class="gatemark" style="left:38%"></span>':""}${s.blocker?'<span class="blockmark">!</span>':""}</div>
+    <div class="skstripe">${(s.skills||[]).map(k=>`<span style="background:var(${SKILLS[k].v})" title="${SKILLS[k].label}"></span>`).join("")}</div>
+    <div class="num">stage ${s.num}</div><div class="name">${s.name}</div>
+    <div class="cnt">${s.issues.length} open issue${s.issues.length===1?"":"s"}</div>`;
+  b.addEventListener("click",()=>select(s.id,true));
+  rail.appendChild(b);
+});
+
+function select(id,push){
+  const s=DATA.stages.find(x=>x.id===id); if(!s)return;
+  document.querySelectorAll(".stage").forEach(el=>el.classList.toggle("active",el.dataset.id===id));
+  const stl={wired:"wired & exercised live",poc:"PoC seam — behavior works, full slice open",notwired:"not wired yet"}[s.status];
+  detail.innerHTML=`
+    <span class="status ${s.status}">${stl}</span>
+    <h3>Stage ${s.num} — ${s.name}</h3>
+    <div>${(s.skills||[]).map(k=>`<span class="skbadge" style="background:var(${SKILLS[k].v})">${SKILLS[k].label}</span>`).join("")}</div>
+    ${s.enh?`<p class="desc" style="border-left:3px solid var(${SKILLS[(s.skills||["other"])[0]].v});padding-left:.7rem"><b>What it enhances:</b> ${s.enh}</p>`:""}
+    <p class="desc">${s.desc}</p>
+    <div class="cols"><div>
+      <div class="klabel">Code pointers</div>
+      ${s.ptrs.map(p=>{const m=p.split(" — ");return `<div class="ptr" data-f="${p.toLowerCase()}"><b>${m[0]}</b>${m[1]?" — "+m[1]:""}</div>`}).join("")}
+      ${s.gates.length?`<div class="klabel">Human gates</div><ul class="gates">${s.gates.map(g=>`<li><span class="gate-tag">◆</span> ${g}</li>`).join("")}</ul>`:""}
+      <div class="klabel">Pause / terminal reasons</div>
+      ${s.pauses.map(p=>`<span class="pause" data-f="${p}">${p}</span>`).join("")}
+      <div class="klabel">Produces</div><div style="font-size:.84rem">${s.produces}</div>
+    </div><div>
+      <div class="klabel">Open work on this stage</div>
+      ${s.issues.map(issueRow).join("")||'<div style="color:var(--muted);font-size:.84rem">none</div>'}
+    </div></div>`;
+  if(push) history.replaceState(null,"","#stage="+id);
+  applyFilter();
+}
+
+document.getElementById("phases").innerHTML=DATA.phases.map(p=>
+ `<div class="pcard"><div class="ph">${p.ph}</div><div class="st ${p.stcls}">${p.st}</div><div class="who">${p.who}</div></div>`).join("");
+
+document.getElementById("xcut").innerHTML=DATA.xcut.map(x=>
+ `<div class="xcard"><h3>${x.h}</h3><p>${x.p}</p>${x.issues.map(issueRow).join("")}</div>`).join("");
+
+const leg=document.getElementById("sklegend");
+Object.values(SKILLS).forEach(sk=>{
+  leg.insertAdjacentHTML("beforeend",`<span><span class="skbadge" style="background:var(${sk.v})">${sk.label}</span> ${sk.note}</span>`);
+});
+
+const filter=document.getElementById("filter");
+function applyFilter(){
+  const q=filter.value.trim().toLowerCase();
+  document.querySelectorAll("[data-f]").forEach(el=>{
+    el.classList.toggle("hide", q!=="" && !el.dataset.f.includes(q));
+  });
+}
+filter.addEventListener("input",applyFilter);
+
+const h=location.hash.match(/#stage=([a-z]+)/);
+select(h?h[1]:"candidate",false);
+</script>
