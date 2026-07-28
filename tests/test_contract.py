@@ -132,7 +132,6 @@ def _scenario(
     base_files: dict[str, str] | None = None,
     remove_from_candidate: tuple[str, ...] = (),
     base_local_red_head: bool = False,
-    config: str = _CONFIG,
 ) -> SimpleNamespace:
     """Build a REAL two-commit repo: a frozen base checkout at ``base_sha`` and a candidate worktree.
 
@@ -151,7 +150,7 @@ def _scenario(
     repo = root / name
     repo.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
-    (repo / ".issueforge.toml").write_text(config)
+    (repo / ".issueforge.toml").write_text(_CONFIG)
     _write(repo, base_files)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "base")
@@ -707,6 +706,42 @@ def test_prove_red_uses_committed_baseline_command_for_subdir_layout(tmp_path):
     assert rp.reason == "behavioral_red"
 
 
+# A committed ``.issueforge.toml`` with NO ``baseline`` key: ``_committed_baseline`` -> ``(True, None)``
+# (an enforced committed tree with no valid committed baseline).
+_NO_BASELINE_CONFIG = 'framework = "pytest"\n'
+
+
+def _invalid_baseline_scenario(
+    root: Path, name: str, *, candidate_files: dict[str, str]
+) -> SimpleNamespace:
+    """A REAL two-commit repo whose COMMITTED ``.issueforge.toml`` carries NO ``baseline`` key, so
+    ``verify._committed_baseline`` returns ``(True, None)``. Dedicated helper (modeled on
+    ``_subdir_scenario``, inline git) so no SHARED acceptance helper is modified."""
+    repo = root / name
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    (repo / ".issueforge.toml").write_text(_NO_BASELINE_CONFIG)
+    _write(repo, _BASE_FILES)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "remote", "add", "origin", "git@github.com:Owner/IssueForge.git")
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    _git(repo, "update-ref", "refs/remotes/origin/main", base_sha)
+    base_checkout = root / f"{name}-base"
+    shutil.copytree(repo, base_checkout)
+    _write(repo, candidate_files)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "candidate")
+    candidate_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    return SimpleNamespace(
+        base_checkout=base_checkout,
+        candidate_worktree=repo,
+        base_sha=base_sha,
+        candidate_sha=candidate_sha,
+    )
+
+
 def test_enforced_invalid_committed_baseline_fails_closed_not_bare_root(tmp_path):
     """A real committed tree whose committed ``.issueforge.toml`` has NO valid baseline FAILS CLOSED
     — prove_red rejects ``baseline_command_missing`` and never falls back to a bare-root pytest.
@@ -724,11 +759,10 @@ def test_enforced_invalid_committed_baseline_fails_closed_not_bare_root(tmp_path
     genuine red. prove_red -> rejected, reason ``baseline_command_missing``, run paused — the base
     suite is never run bare-root and no red is accepted.
     """
-    scen = _scenario(
+    scen = _invalid_baseline_scenario(
         tmp_path,
         "enforced-invalid-baseline",
         candidate_files={"tests/test_new.py": "def test_new():\n    assert 1 == 2\n"},
-        config='framework = "pytest"\n',
     )
     run = _mk_run()
     rp = _prove(run, scen, targeted_ids=(_NEW_ID,))
