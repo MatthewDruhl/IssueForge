@@ -50,6 +50,21 @@ _SUBDIR_NEW_ID = "pkg/tests/test_new.py::test_new"
 # plus the force-loaded report-log reporter.
 _GOLDEN_COMMAND = ["-m", "pytest", "-o", "testpaths=pkg/tests", "-p", "pytest_reportlog"]
 
+# --- import-divergence variant (revised Test 2; amendment logged on #193) ------------------------
+# The committed baseline ALSO carries ``-o pythonpath=pkg/src`` and the candidate's new test imports
+# ``mylib`` from there. Bare-root collection cannot resolve ``mylib`` (no committed pythonpath), so
+# ``pkg/tests/test_new.py`` COLLECTION-ERRORs and its id is ABSENT from a bare-root collect — unlike
+# a plain sibling test, whose id current pytest still emits past a root-broken module. Under the
+# committed command the id collects and fails at CALL phase (``assert mylib.X == 2`` vs ``X = 1``).
+_IMPORTDIV_CONFIG = (
+    'baseline = ["-m", "pytest", "-o", "testpaths=pkg/tests", "-o", "pythonpath=pkg/src"]\n'
+    'framework = "pytest"\n'
+)
+_IMPORTDIV_BASE_FILES = {**_SUBDIR_BASE_FILES, "pkg/src/mylib.py": "X = 1\n"}
+_IMPORTDIV_NEW_FILE = {
+    "pkg/tests/test_new.py": "import mylib\n\n\ndef test_new():\n    assert mylib.X == 2\n"
+}
+
 # --- invalid committed-baseline forms (Test 3) ---------------------------------------------------
 # Four committed ``.issueforge.toml`` shapes for which ``verify._committed_baseline`` -> (True, None)
 # on a real committed git tree (verified against verify.py:507).
@@ -93,17 +108,25 @@ def _add_origin(repo: Path, sha: str) -> None:
     _git(repo, "update-ref", "refs/remotes/origin/main", sha)
 
 
-def _subdir_scenario(root: Path, name: str, *, candidate_files: dict[str, str]) -> SimpleNamespace:
+def _subdir_scenario(
+    root: Path,
+    name: str,
+    *,
+    candidate_files: dict[str, str],
+    config: str = _SUBDIR_CONFIG,
+    base_files: dict[str, str] | None = None,
+) -> SimpleNamespace:
     """A REAL two-commit repo whose committed baseline scopes pytest to ``pkg/tests`` via an
     ``-o testpaths`` option while a collection-broken module sits at the repo ROOT; after the base is
     committed (so the git OBJECT holds the good baseline) the working-tree ``.issueforge.toml`` is
     poisoned to the bare-root command and left DIRTY in BOTH the candidate and the copied base
-    checkout. Dedicated local copy of test_contract.py::_subdir_scenario."""
+    checkout. Dedicated local copy of test_contract.py::_subdir_scenario. ``config``/``base_files``
+    default to the Test 1 shape; the import-divergence variant (Test 2) overrides both."""
     repo = root / name
     repo.mkdir(parents=True)
     _init_repo_with_origin(repo)
-    (repo / ".issueforge.toml").write_text(_SUBDIR_CONFIG)
-    _write(repo, _SUBDIR_BASE_FILES)
+    (repo / ".issueforge.toml").write_text(config)
+    _write(repo, _SUBDIR_BASE_FILES if base_files is None else base_files)
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "base")
     base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -282,6 +305,56 @@ def test_added_node_ids_runs_committed_command_on_both_worktrees(tmp_path, monke
     assert set(seen_worktrees) == recorded_worktrees, (
         "contract._committed_command was not called for each collected worktree"
     )
+
+
+# =============================================================== Test 2: the live failure ends
+
+
+@pytest.mark.xfail(strict=True, reason="PENDING (#193)")
+def test_prove_red_accepts_engine_computed_targeted_ids_on_subdir_layout(tmp_path):
+    """The live ``missing_targeted_id`` failure ends: ``prove_red`` accepts the ENGINE-computed
+    targeted ids on a subdir layout whose committed baseline carries a pythonpath the new test needs
+    to even collect (the import-divergence fixture; contract amendment logged on #193).
+
+    technical (contract): committed baseline ``["-m", "pytest", "-o", "testpaths=pkg/tests", "-o",
+    "pythonpath=pkg/src"]`` with ``pkg/src/mylib.py`` (``X = 1``) committed at base, root-broken
+    ``test_root_broken.py`` at the repo root, working-tree config poisoned DIRTY in both worktrees;
+    the candidate adds ``pkg/tests/test_new.py`` = ``import mylib`` + ``assert mylib.X == 2``.
+    Bare-root collection cannot resolve ``mylib`` so the new id is ABSENT from a bare-root collect;
+    the committed command collects it and it fails at CALL phase. Real adapter, real prove_red, host
+    provisioner: ``contract.prove_red(run_id, targeted_ids=engine._added_node_ids(candidate_worktree,
+    base_sha, adapter), base_checkout=..., candidate_worktree=..., base_sha=..., adapter=...,
+    provisioner=...)`` -> ``accepted is True`` and ``reason == "behavioral_red"`` — never
+    ``"missing_targeted_id"``. Today ``_added_node_ids`` -> ``()`` on this fixture and prove_red
+    rejects ``missing_targeted_id`` (the run-acfe49b557fd live rejection), so this test fails.
+    """
+    from issueforge import contract, engine
+
+    scen = _subdir_scenario(
+        tmp_path,
+        "t2",
+        candidate_files=_IMPORTDIV_NEW_FILE,
+        config=_IMPORTDIV_CONFIG,
+        base_files=_IMPORTDIV_BASE_FILES,
+    )
+    adapter = _adapter()
+    run_id = _mk_run("run-193-t2")
+
+    targeted = engine._added_node_ids(scen.candidate_worktree, scen.base_sha, adapter)
+    rp = contract.prove_red(
+        run_id,
+        targeted_ids=targeted,
+        base_checkout=scen.base_checkout,
+        candidate_worktree=scen.candidate_worktree,
+        base_sha=scen.base_sha,
+        adapter=adapter,
+        provisioner=_provisioner(),
+    )
+
+    assert rp.accepted is True, (
+        f"prove_red rejected with reason {rp.reason!r} (targeted={targeted!r})"
+    )
+    assert rp.reason == "behavioral_red"
 
 
 # =============================================================== Test 3: fail-closed on invalid baseline
