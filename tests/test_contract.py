@@ -544,7 +544,6 @@ def test_base_suite_red_at_bound_sha_is_refused(tmp_path):
     _assert_rejected(run, rp, "baseline_not_green")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#183)")
 @pytest.mark.parametrize(
     "keep_nodes",
     [False, True],
