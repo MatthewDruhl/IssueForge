@@ -668,7 +668,6 @@ def test_untrustworthy_candidate_report_is_no_candidate_evidence_not_baseline_no
     _assert_rejected(run, rp, "no_candidate_evidence")
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#189)")
 def test_prove_red_uses_committed_baseline_command_for_subdir_layout(tmp_path):
     """prove_red proves the CANDIDATE red for a repo whose tests live in a subdirectory, using the
     repo's COMMITTED baseline command instead of a bare pytest from the worktree root.
@@ -705,6 +704,69 @@ def test_prove_red_uses_committed_baseline_command_for_subdir_layout(tmp_path):
     rp = _prove(_mk_run(), scen, targeted_ids=(_SUBDIR_NEW_ID,))
     assert rp.accepted is True
     assert rp.reason == "behavioral_red"
+
+
+# A committed ``.issueforge.toml`` with NO ``baseline`` key: ``_committed_baseline`` -> ``(True, None)``
+# (an enforced committed tree with no valid committed baseline).
+_NO_BASELINE_CONFIG = 'framework = "pytest"\n'
+
+
+def _invalid_baseline_scenario(
+    root: Path, name: str, *, candidate_files: dict[str, str]
+) -> SimpleNamespace:
+    """A REAL two-commit repo whose COMMITTED ``.issueforge.toml`` carries NO ``baseline`` key, so
+    ``verify._committed_baseline`` returns ``(True, None)``. Dedicated helper (modeled on
+    ``_subdir_scenario``, inline git) so no SHARED acceptance helper is modified."""
+    repo = root / name
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    (repo / ".issueforge.toml").write_text(_NO_BASELINE_CONFIG)
+    _write(repo, _BASE_FILES)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "remote", "add", "origin", "git@github.com:Owner/IssueForge.git")
+    _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    _git(repo, "update-ref", "refs/remotes/origin/main", base_sha)
+    base_checkout = root / f"{name}-base"
+    shutil.copytree(repo, base_checkout)
+    _write(repo, candidate_files)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "candidate")
+    candidate_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    return SimpleNamespace(
+        base_checkout=base_checkout,
+        candidate_worktree=repo,
+        base_sha=base_sha,
+        candidate_sha=candidate_sha,
+    )
+
+
+def test_enforced_invalid_committed_baseline_fails_closed_not_bare_root(tmp_path):
+    """A real committed tree whose committed ``.issueforge.toml`` has NO valid baseline FAILS CLOSED
+    — prove_red rejects ``baseline_command_missing`` and never falls back to a bare-root pytest.
+
+    Since #189 prove_red sources its suite/collection command from the COMMITTED baseline
+    (``verify._committed_baseline`` -> ``(enforced, command)``). A ``(True, None)`` — a committed git
+    tree with a missing/malformed/empty committed baseline — MUST pause, exactly like
+    ``verify.establish_green_baseline`` (verify.py) and its guard
+    ``test_missing_or_malformed_committed_baseline_config_pauses_not_defaults``. Defaulting to the
+    bare-root ``_BASELINE`` here would run unscoped collection+suites and could ACCEPT a red proof: a
+    false green. Only the NOT-a-git-tree seam context (``(False, None)``) may default.
+
+    technical (contract): the committed ``.issueforge.toml`` carries only ``framework = "pytest"`` (no
+    ``baseline`` key) so ``_committed_baseline`` returns ``(True, None)``; the candidate would author a
+    genuine red. prove_red -> rejected, reason ``baseline_command_missing``, run paused — the base
+    suite is never run bare-root and no red is accepted.
+    """
+    scen = _invalid_baseline_scenario(
+        tmp_path,
+        "enforced-invalid-baseline",
+        candidate_files={"tests/test_new.py": "def test_new():\n    assert 1 == 2\n"},
+    )
+    run = _mk_run()
+    rp = _prove(run, scen, targeted_ids=(_NEW_ID,))
+    _assert_rejected(run, rp, "baseline_command_missing")
 
 
 def test_base_id_disappeared_is_hard_failure(tmp_path):

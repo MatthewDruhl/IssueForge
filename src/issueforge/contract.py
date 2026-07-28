@@ -127,6 +127,28 @@ def _checkout_detached(repo: Path, sha: str) -> None:
 # --------------------------------------------------------------------------- pytest seam reads
 
 
+def _committed_command(worktree: Path) -> list[str]:
+    """The suite/collection command sourced from the target's COMMITTED baseline (#189).
+
+    Reads ``verify._committed_baseline`` — the ``git show HEAD:.issueforge.toml`` git OBJECT, never
+    the working-tree file (a post-checkout-mutated or symlinked config must not substitute a command)
+    — then appends the force-loaded report-log reporter, exactly as ``_BASELINE`` does. A subdir
+    layout committing ``-o testpaths=pkg/tests`` thus scopes past a root-broken module.
+
+    Fail-closed on the ``enforced`` flag (mirrors ``verify.establish_green_baseline``): a real
+    committed tree with a MISSING/malformed/empty committed baseline (``enforced`` True, command None)
+    must NEVER fall back to bare-root and risk a false green — it raises (``prove_red`` guards this
+    upfront and rejects; the raise is defense for any other caller). Only a NOT-a-git-tree seam
+    context (``enforced`` False) defaults to the legacy ``_BASELINE``, so the seam unit tests work.
+    """
+    enforced, command = _verify._committed_baseline(worktree)
+    if command is not None:
+        return [*command, "-p", "pytest_reportlog"]
+    if enforced:
+        raise ValueError(f"enforced committed baseline is missing or invalid in {worktree}")
+    return list(_BASELINE)
+
+
 def _provision(adapter: object, worktree: Path, provisioner: object) -> object:
     return adapter.provision_environment(worktree, None, provisioner=provisioner)
 
@@ -135,7 +157,7 @@ def _invocation(worktree: Path, handle: object) -> SimpleNamespace:
     return SimpleNamespace(
         worktree=Path(worktree),
         interpreter=handle.interpreter,
-        command=["-m", "pytest"],
+        command=_committed_command(Path(worktree)),
         env=getattr(handle, "env", None),
     )
 
@@ -151,7 +173,9 @@ def _raw_collect_output(adapter: object, worktree: Path, provisioner: object) ->
     import error vs a syntax/config error (a distinction the frozen id set alone cannot carry)."""
     handle = _provision(adapter, worktree, provisioner)
     argv = [
-        *process.build_launch_argv(handle.interpreter, ["-m", "pytest"], env=handle.env),
+        *process.build_launch_argv(
+            handle.interpreter, _committed_command(Path(worktree)), env=handle.env
+        ),
         "--collect-only",
         "-q",
     ]
@@ -164,7 +188,9 @@ def _raw_collect_output(adapter: object, worktree: Path, provisioner: object) ->
 def _run_suite(adapter: object, worktree: Path, provisioner: object) -> object:
     """Provision, run the whole suite with a report-log, and classify — returning the real
     ``Evidence`` (its per-phase ``NodeRecord``s drive base-green + call-phase discrimination)."""
-    return _verify.run_baseline(worktree, list(_BASELINE), adapter=adapter, provisioner=provisioner)
+    return _verify.run_baseline(
+        worktree, _committed_command(Path(worktree)), adapter=adapter, provisioner=provisioner
+    )
 
 
 # --------------------------------------------------------------------------- node inspection
@@ -464,6 +490,16 @@ def prove_red(
     # (2) The base suite must be GREEN at the bound sha — run it at the checked-out origin sha,
     # never the base checkout's local HEAD.
     _checkout_detached(base_checkout, base_sha)
+
+    # Fail closed on an enforced-but-invalid committed baseline: a real committed tree whose
+    # ``.issueforge.toml`` baseline is missing/malformed/empty must NEVER fall back to bare-root and
+    # risk a false green (mirrors ``verify.establish_green_baseline``'s pause). Checked at the BOUND
+    # sha, before any suite/collection runs, for BOTH worktrees the seams execute against.
+    for wt in (base_checkout, candidate_worktree):
+        enforced, command = _verify._committed_baseline(wt)
+        if enforced and command is None:
+            return _reject(st, run_id, "baseline_command_missing", base_sha, ())
+
     base_collection = _collect(adapter, base_checkout, provisioner)
     base_ids = tuple(getattr(base_collection, "ids", ()) or ())
     base_evidence = _run_suite(adapter, base_checkout, provisioner)
