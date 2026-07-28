@@ -501,6 +501,11 @@ def prove_red(
     candidate_evidence = _run_suite(adapter, candidate_worktree, provisioner)
     by_node = _by_node(candidate_evidence.nodes)
 
+    # An untrustworthy candidate report-log (no report present) is its own reason, not a false
+    # baseline_not_green on a base that is green at the bound sha.
+    if not candidate_evidence.report_present:
+        return _reject(st, run_id, "no_candidate_evidence", base_sha, ())
+
     # (6) EVERY base id must still be green when run at the candidate.
     if any(not _node_passed(bid, by_node) for bid in base_ids):
         return _reject(st, run_id, "baseline_not_green", base_sha, ())
