@@ -864,7 +864,6 @@ def test_kill9_leaves_a_running_crash_orphan_on_disk(make_git_repo, isolated_sta
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason="PENDING (#206)")
 def test_continue_refuses_a_crash_orphan_loudly_without_fabricating_completed(
     make_git_repo, isolated_state_home, tmp_path
 ):
