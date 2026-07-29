@@ -156,7 +156,6 @@ def _persisted_proof(run_id: str) -> dict:
 # ------------------------------------------------------------------- Test 1: authoring prompt
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#203)")
 def test_authoring_prompt_forbids_passing_tests():
     """The authoring prompt must tell the author, from its own template, that every test fails first
     and that passing tests are not included in the frozen contract.
@@ -184,7 +183,6 @@ def test_authoring_prompt_forbids_passing_tests():
 # ------------------------------------------------------------------- Tests 2-3: not_red diagnostics
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#203)")
 def test_not_red_rejection_names_offender_and_real_added_set(tmp_path):
     """A ``not_red`` rejection must name the offending (passing) node id and carry the real added set.
 
@@ -211,7 +209,6 @@ def test_not_red_rejection_names_offender_and_real_added_set(tmp_path):
     assert set(rp.added_ids) == {red, ok}
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#203)")
 def test_persisted_red_proof_payload_carries_diagnostics(tmp_path):
     """The persisted ``red_proof`` manifest payload carries the offender and the real added set.
 
@@ -240,7 +237,6 @@ def test_persisted_red_proof_payload_carries_diagnostics(tmp_path):
 # ------------------------------------------------------------------- Test 4: missing_targeted_id
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#203)")
 def test_missing_targeted_id_records_added_and_keeps_offending_empty(tmp_path):
     """A ``missing_targeted_id`` rejection records the real added set and keeps ``offending_ids`` empty.
 
@@ -267,7 +263,6 @@ def test_missing_targeted_id_records_added_and_keeps_offending_empty(tmp_path):
 # ------------------------------------------------------------------- Test 5: accept path
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#203)")
 def test_accept_path_carries_empty_offending_ids(tmp_path):
     """An accepted proof carries an empty ``offending_ids`` in memory and ``[]`` in the persisted payload.
 
@@ -296,7 +291,6 @@ def test_accept_path_carries_empty_offending_ids(tmp_path):
     "case",
     ["baseline_not_green", "empty_parametrize", "no_candidate_evidence", "xpass", "setup_error"],
 )
-@pytest.mark.xfail(strict=True, reason="PENDING (#203)")
 def test_post_added_rejections_record_real_added_set(tmp_path, monkeypatch, case):
     """Every distinct rejection issued AFTER the added set is computed records the real added set;
     the two classification siblings also name their offender.
