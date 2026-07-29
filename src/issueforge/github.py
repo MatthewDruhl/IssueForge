@@ -257,7 +257,10 @@ def deliver_pr(record: dict, *, gateway: Any, store: Any) -> dict:
     if isinstance(existing, dict) and existing.get("status") == _PR_WAITING:
         return existing
 
-    repo = record["repo"]
+    # The gh gateway needs an (owner, name) pair (its _slug reads repo[0]/repo[1]); take it from the
+    # issue_ref, NOT record["repo"] — that field stays the registry alias string for the run's lifetime
+    # (#207). issue_ref is (owner, name, number); _slug ignores the trailing number.
+    repo = record["issue"][:2]
     branch = record["candidate_branch"]
     candidate_sha = record["candidate_sha"]
     checkout = record["registered_checkout"]

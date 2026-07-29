@@ -76,7 +76,6 @@ def test_full_run_delivers_and_targets_correct_repo(tmp_path, monkeypatch):
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, reason="PENDING (#207)")
 def test_repo_field_stays_alias_string(tmp_path, monkeypatch):
     """After delivery the persisted ``repo`` is STILL the registry alias string, never converted to an
     ``[owner, name]`` list; owner/name is preserved in ``issue``.
