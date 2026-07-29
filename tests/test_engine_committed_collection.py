@@ -257,7 +257,6 @@ class _PoisonAdapter:
 # =============================================================== Test 1: committed-command sourcing
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#193)")
 def test_added_node_ids_runs_committed_command_on_both_worktrees(tmp_path, monkeypatch):
     """The engine's targeted-id computation collects with the target's COMMITTED baseline command on
     a subdir-layout repo, verified command-for-command on BOTH worktrees (the throwaway detached base
@@ -310,7 +309,6 @@ def test_added_node_ids_runs_committed_command_on_both_worktrees(tmp_path, monke
 # =============================================================== Test 2: the live failure ends
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#193)")
 def test_prove_red_accepts_engine_computed_targeted_ids_on_subdir_layout(tmp_path):
     """The live ``missing_targeted_id`` failure ends: ``prove_red`` accepts the ENGINE-computed
     targeted ids on a subdir layout whose committed baseline carries a pythonpath the new test needs
@@ -360,7 +358,6 @@ def test_prove_red_accepts_engine_computed_targeted_ids_on_subdir_layout(tmp_pat
 # =============================================================== Test 3: fail-closed on invalid baseline
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#193)")
 @pytest.mark.parametrize("form", list(_INVALID_CONFIGS))
 def test_added_node_ids_fails_closed_on_invalid_committed_baseline(tmp_path, form):
     """Targeted-id computation FAILS CLOSED on every invalid committed-baseline form, raising rather
@@ -424,7 +421,6 @@ def _authoring_invoke(candidate_worktree: Path):
     return _invoke
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#193)")
 def test_run_candidate_pauses_baseline_command_missing_at_engine_boundary(tmp_path):
     """``run_candidate`` pauses with pause_reason ``baseline_command_missing`` at the engine boundary,
     BEFORE ``prove_red``, when the committed baseline is invalid — instead of computing bare-root
