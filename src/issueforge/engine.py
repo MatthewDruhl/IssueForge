@@ -835,12 +835,15 @@ def _candidate_head(worktree: Path) -> str:
 
 def _collect_ids(adapter: object, worktree: Path) -> tuple[str, ...]:
     """The adapter's authoritative ``--collect-only`` node-id set for ``worktree`` (the same real seam
-    ``contract._collect`` uses): provision the environment, then ``canonical_collect``."""
+    ``contract._collect`` uses): provision the environment, then ``canonical_collect`` under the
+    target's COMMITTED baseline command (``contract._committed_command``), so a subdir layout scopes
+    past a root-broken module and an enforced-invalid committed baseline raises rather than falling
+    back to bare-root."""
     handle = adapter.provision_environment(Path(worktree), None)
     invocation = SimpleNamespace(
         worktree=Path(worktree),
         interpreter=handle.interpreter,
-        command=["-m", "pytest"],
+        command=contract._committed_command(Path(worktree)),
         env=getattr(handle, "env", None),
     )
     collection = adapter.canonical_collect(invocation)
@@ -1039,7 +1042,10 @@ def run_candidate(
 
     # 2) Red proof (reused) BEFORE approval: the authored tests must collect and FAIL for the named
     #    behavior while the baseline stays green. A REFUSED proof pauses cold — no approval, no commit.
-    targeted_ids = _added_node_ids(candidate_worktree, base_sha, adapter)
+    try:
+        targeted_ids = _added_node_ids(candidate_worktree, base_sha, adapter)
+    except ValueError:
+        return _pause_candidate(st, run_id, "baseline_command_missing")
     # ``prove_red``'s real seam ``_checkout_detached``-es the registered base checkout to run the base
     # suite at the bound sha, changing its HEAD attachment. Capture the checkout's exact attachment
     # and restore it in a ``finally`` so the registered normal checkout is left byte-for-byte
