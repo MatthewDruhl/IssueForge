@@ -808,23 +808,13 @@ def test_continue_never_lets_github_facts_overwrite_any_gate_artifact_and_still_
 # ---------------------------------------------------------------------------
 
 
-def test_kill9_mid_run_then_continue_in_a_fresh_process_resumes_from_persisted_state(
-    make_git_repo, isolated_state_home, tmp_path
-):
-    """Killing the worker process (kill -9) mid-run loses nothing: a separate process `continue`s the run from its persisted state, the event stream replays intact, and recorded transitions are not duplicated.
-
-    technical (contract): a child process starts run-crash with a stage that writes a "ready" marker
-    then blocks forever; the parent SIGKILLs it once the marker appears. On disk run-crash has a
-    manifest and an events stream whose transitions begin ["queued","running"]. A SECOND, fresh
-    process then runs engine.continue_run("run-crash"); afterward store.read("run-crash")["status"]
-    == "completed", replay_events parses every physical line without error, and the transition stream
-    is exactly ["queued","running","completed"] — the pre-crash queued/running events are NOT
-    duplicated (continue re-derived state, it did not restart from scratch).
-    """
-    from issueforge import store
-
+def _make_kill9_crash_orphan(make_git_repo, tmp_path, run_id="run-crash"):
+    """Produce a GENUINE crash-orphan: start ``run_id`` in a child process on a stage that writes a
+    marker then blocks forever, SIGKILL the child once the marker appears, and return. On disk the run
+    is left ``status == "running"`` with transitions ``["queued","running"]`` and no live worker — the
+    exact state a killed relaunch leaves (issue #206, run-08adc2c10315)."""
     _register(make_git_repo)
-    ready = tmp_path / "ready.marker"
+    ready = tmp_path / f"{run_id}.ready.marker"
     blocking_child = textwrap.dedent(
         f"""
         import signal
@@ -832,7 +822,7 @@ def test_kill9_mid_run_then_continue_in_a_fresh_process_resumes_from_persisted_s
             open({str(ready)!r}, "w").write("ready")
             signal.pause()
         engine.run("DandD#148", issue_open=lambda s, n: True,
-                   new_run_id=lambda: "run-crash", stage=stage)
+                   new_run_id=lambda: {run_id!r}, stage=stage)
         """
     )
     proc = subprocess.Popen(
@@ -846,26 +836,60 @@ def test_kill9_mid_run_then_continue_in_a_fresh_process_resumes_from_persisted_s
         assert ready.exists(), "child never reached the blocking stage"
         proc.send_signal(signal.SIGKILL)
         proc.wait(timeout=10)
-
-        assert _transitions("run-crash")[:2] == ["queued", "running"]
-
-        resumed = _child(
-            os.environ["ISSUEFORGE_STATE_HOME"],
-            """
-            engine.continue_run("run-crash")
-            print(store.RunStore().read("run-crash")["status"])
-            """,
-        )
-        assert resumed.returncode == 0, resumed.stderr
-        assert resumed.stdout.strip() == "completed"
-        assert _status("run-crash") == "completed"
-        # A clean replay proves no torn/malformed middle line; the sequence proves no duplicates.
-        assert store.RunStore().replay_events("run-crash")
-        assert _transitions("run-crash") == ["queued", "running", "completed"]
     finally:
         if proc.poll() is None:
             proc.send_signal(signal.SIGKILL)
             proc.wait(timeout=10)
+    return run_id
+
+
+@pytest.mark.slow
+def test_kill9_leaves_a_running_crash_orphan_on_disk(make_git_repo, isolated_state_home, tmp_path):
+    """UNMARKED-of-the-bug green guard: a SIGKILL mid-stage really leaves a crash-orphan on disk —
+    ``status == "running"`` with transitions ``["queued","running"]`` and a clean event replay. Proves
+    the subprocess fixture the PENDING contract below depends on actually builds, so an ``xfail`` there
+    cannot silently mask a broken kill harness. True today and after the #206 fix (the fix changes
+    ``continue``, not how a crash leaves the run).
+
+    technical (contract): after ``_make_kill9_crash_orphan`` the run has ``status == "running"``,
+    ``_transitions == ["queued","running"]``, and ``replay_events`` parses every physical line.
+    """
+    from issueforge import store
+
+    run_id = _make_kill9_crash_orphan(make_git_repo, tmp_path)
+
+    assert _status(run_id) == "running"
+    assert _transitions(run_id) == ["queued", "running"]
+    assert store.RunStore().replay_events(run_id)  # clean replay, no torn/malformed line
+
+
+@pytest.mark.slow
+@pytest.mark.xfail(strict=True, reason="PENDING (#206)")
+def test_continue_refuses_a_crash_orphan_loudly_without_fabricating_completed(
+    make_git_repo, isolated_state_home, tmp_path
+):
+    """`continue` on a crash-orphaned run (status ``running``, no resumable stage state) REFUSES LOUDLY
+    instead of stamping a false ``completed``: it raises ``engine.IllegalTransition`` and leaves the
+    record byte-untouched (the same halt idiom as a reconcile ``DivergenceError``). The no-op
+    ``_resume_stage`` never runs on the crash-orphan path.
+
+    technical (contract): given the ``_make_kill9_crash_orphan`` run (status ``running``, transitions
+    ``["queued","running"]``), ``engine.continue_run(run_id)`` raises ``engine.IllegalTransition``; the
+    status is STILL ``"running"`` (never ``"completed"``), the transition stream is STILL
+    ``["queued","running"]`` (no event appended), and ``store.manifest_path(run_id).read_bytes()`` is
+    unchanged. Red today: the crash-orphan branch runs the no-op stage and ``_finalize`` completes it.
+    """
+    from issueforge import engine, store
+
+    run_id = _make_kill9_crash_orphan(make_git_repo, tmp_path)
+    before_bytes = store.manifest_path(run_id).read_bytes()
+
+    with pytest.raises(engine.IllegalTransition):
+        engine.continue_run(run_id)
+
+    assert _status(run_id) == "running"  # never fabricated to "completed"
+    assert _transitions(run_id) == ["queued", "running"]  # nothing appended
+    assert store.manifest_path(run_id).read_bytes() == before_bytes  # record byte-untouched
 
 
 # ---------------------------------------------------------------------------
