@@ -70,6 +70,7 @@ class RedProof:
     base_sha: str
     added_ids: tuple[str, ...]
     head_sha: str = ""
+    offending_ids: tuple[str, ...] = ()
 
 
 def red_evidence_from_proof(proof: RedProof) -> str:
@@ -378,6 +379,7 @@ def _proof_dict(proof: RedProof) -> dict:
         "base_sha": proof.base_sha,
         "head_sha": proof.head_sha,
         "added_ids": list(proof.added_ids),
+        "offending_ids": list(proof.offending_ids),
         "records": [
             {
                 "nodeid": r.nodeid,
@@ -430,10 +432,22 @@ def _pause(store: RunStore, run_id: str) -> None:
 
 
 def _reject(
-    store: RunStore, run_id: str, reason: str, base_sha: str, records: tuple[RedRecord, ...]
+    store: RunStore,
+    run_id: str,
+    reason: str,
+    base_sha: str,
+    records: tuple[RedRecord, ...],
+    *,
+    added: tuple[str, ...] = (),
+    offending: tuple[str, ...] = (),
 ) -> RedProof:
     proof = RedProof(
-        accepted=False, reason=reason, records=records, base_sha=base_sha or "", added_ids=()
+        accepted=False,
+        reason=reason,
+        records=records,
+        base_sha=base_sha or "",
+        added_ids=added,
+        offending_ids=offending,
     )
     _pause(store, run_id)
     _persist(store, run_id, proof, "rejected")
@@ -540,11 +554,11 @@ def prove_red(
     # An untrustworthy candidate report-log (no report present) is its own reason, not a false
     # baseline_not_green on a base that is green at the bound sha.
     if not candidate_evidence.report_present:
-        return _reject(st, run_id, "no_candidate_evidence", base_sha, ())
+        return _reject(st, run_id, "no_candidate_evidence", base_sha, (), added=added)
 
     # (6) EVERY base id must still be green when run at the candidate.
     if any(not _node_passed(bid, by_node) for bid in base_ids):
-        return _reject(st, run_id, "baseline_not_green", base_sha, ())
+        return _reject(st, run_id, "baseline_not_green", base_sha, (), added=added)
 
     # An empty-``parametrize`` targeted unit collects only a ``[NOTSET]`` node — detected before the
     # identity check, whose exact-id comparison would otherwise misreport it as a missing id.
@@ -552,21 +566,29 @@ def prove_red(
     for t in targeted:
         notset = f"{t}[NOTSET]"
         if notset in candidate_set and _is_empty_parametrize(notset, by_node):
-            return _reject(st, run_id, "empty_parametrize", base_sha, ())
+            return _reject(st, run_id, "empty_parametrize", base_sha, (), added=added)
 
     # (7) Collection IDENTITY: the computed ADDED set must equal the targeted set (SET equality, not
     # a count). An empty ADDED means the candidate authored no new test at all.
     if not added:
         return _reject(st, run_id, "no_tests_collected", base_sha, ())
     if set(added) != set(targeted):
-        return _reject(st, run_id, "missing_targeted_id", base_sha, ())
+        return _reject(st, run_id, "missing_targeted_id", base_sha, (), added=added)
 
     # (8) Call-phase discrimination over EVERY targeted id — all must be valid behavioral reds.
     records: list[RedRecord] = []
     for t in targeted:
         reason, record = _classify_targeted(t, by_node, secrets)
         if reason != "behavioral_red":
-            return _reject(st, run_id, reason, base_sha, (record,) if record else ())
+            return _reject(
+                st,
+                run_id,
+                reason,
+                base_sha,
+                (record,) if record else (),
+                added=added,
+                offending=(t,),
+            )
         records.append(record)
 
     return _accept(st, run_id, base_sha, tuple(records), added, _resolve_head(candidate_worktree))
