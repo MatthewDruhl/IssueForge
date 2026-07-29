@@ -758,15 +758,17 @@ def continue_run(
         queue = s.read_queue()
         active = queue.get("active")
         if current == State.RUNNING:
-            # Crash-orphan: accept the slot it already owns, claim a free one, else refuse.
-            if active == run_id:
-                pass
-            elif active is None:
-                queue["active"] = run_id
-                s.write_queue_unlocked(queue)
-            else:
-                raise WorkerBusyError(f"cannot continue {run_id!r}: worker slot held by {active!r}")
-            # Already "running": no manifest transition, no duplicate running event.
+            # #206: a run left `running` is a crash-orphan (the worker died mid-stage) — it carries no
+            # resumable stage state, and genuinely re-entering the composed stage on resume is deferred
+            # (#124 item 4). Refuse LOUDLY instead of running the no-op `_resume_stage` and letting
+            # `_finalize` stamp a false `completed`. Raising here (before any queue/record write, and
+            # before `_execute_stage`/`_finalize` run) leaves the record + queue byte-untouched, the
+            # same halt idiom as a reconcile `DivergenceError`. Slot reclamation for the dead worker is
+            # out of scope (#48).
+            raise IllegalTransition(
+                f"cannot continue {run_id!r}: crash-orphaned run in state 'running' has no resumable "
+                f"stage state (resume idempotency deferred, #124 item 4)"
+            )
         elif current == State.PAUSED:
             # A paused run holds its own slot; keep it, just re-mark running.
             transition(State.PAUSED, State.RUNNING)
