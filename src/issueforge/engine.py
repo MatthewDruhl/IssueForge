@@ -1401,7 +1401,6 @@ def _poc_composed_stage(
             # body ... persisted" (issue #115 acceptance criterion).
             "issue_body": issue_body,
             "issue": issue_ref,
-            "repo": issue_ref[:2],
             "default_branch": default_branch,
         },
     )
