@@ -29,8 +29,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from issueforge import contract, github, providers, store
+from issueforge import contract, github, providers, repair, store, workspace
 from issueforge import verify as _verify
+from issueforge.providers import InvocationStatus
 from issueforge.adapters.base import BaselineStatus
 from issueforge.adapters.base import registry as _adapter_registry
 from issueforge.paths import state_root
@@ -996,19 +997,47 @@ def _pause_candidate(
     )
 
 
-def run_candidate(
+@dataclass
+class _FrozenContract:
+    """The approved, engine-frozen contract state shared by the single-shot and repair-loop drivers:
+    everything the retryable impl+verify sub-stage needs, resolved and committed exactly once."""
+
+    contract_commit: str
+    frozen_contract: str
+    adapter: object
+    candidate_worktree: Path
+    issue_body: str
+    write_scope: list
+    contract_paths: list
+    acceptance_command: list
+    baseline_command: list
+    base_sha: str
+
+
+@dataclass
+class _ImplVerify:
+    """One impl+verify sub-stage outcome: whether the implementer PROCESS succeeded, whether the
+    AUTHORITATIVE verify was all-green, the per-command evidence, and a compact failure trace (never
+    the provider transcript — that would re-seed context rot on a retry)."""
+
+    impl_ok: bool
+    green: bool
+    evidence: dict | None
+    trace: str
+
+
+def _author_and_freeze(
     record: dict,
     *,
     profile: object,
     approver: Callable[[object], bool],
-    invoke: Callable[..., Any] = providers.invoke,
-    prove_red: Callable[..., Any] = contract.prove_red,
-    run_baseline: Callable[..., Any] = _verify.run_baseline,
-) -> CandidateResult:
-    """Produce ONE engine-owned local candidate SHA from one already-shaped pytest issue (see the
-    section doc). Reuses the real provider/red-proof/verify seams; resolves the normal checkout and
-    the pytest adapter from the REGISTERED repository entry; the engine (never the provider) freezes the
-    contract after approval; the AUTHORITATIVE acceptance + baseline verdicts decide landing."""
+    invoke: Callable[..., Any],
+    prove_red: Callable[..., Any],
+    st: store.RunStore,
+) -> tuple[_FrozenContract | None, CandidateResult | None]:
+    """Steps 1-4 (author -> derive contract -> red-proof -> approve -> freeze), run EXACTLY ONCE for
+    a run (a retry never re-authors/re-approves). Returns ``(frozen, None)`` on success, or
+    ``(None, paused_result)`` on any early clean pause."""
     run_id = record["run_id"]
     issue_body = record["issue"]
     contract_paths = list(record["contract_paths"])
@@ -1023,8 +1052,6 @@ def run_candidate(
     entry = Registry.load().get(record["repo"])
     base_checkout = Path(entry.path)
     adapter = _adapter_registry.resolve(framework=entry.framework, reporter=entry.reporter)
-
-    st = store.RunStore()
 
     # 1) Authoring: ONE provider invocation in the candidate worktree; it MAY edit files but MAY NOT
     #    run git/push/PR/merge. The provider edits the worktree; it never commits.
@@ -1044,14 +1071,14 @@ def run_candidate(
     #     commit, instead of staging an empty pathspec and crashing at an empty-index commit.
     contract_paths = _added_paths(candidate_worktree)
     if not contract_paths:
-        return _pause_candidate(st, run_id, "no_contract_paths")
+        return None, _pause_candidate(st, run_id, "no_contract_paths")
 
     # 2) Red proof (reused) BEFORE approval: the authored tests must collect and FAIL for the named
     #    behavior while the baseline stays green. A REFUSED proof pauses cold — no approval, no commit.
     try:
         targeted_ids = _added_node_ids(candidate_worktree, base_sha, adapter)
     except ValueError:
-        return _pause_candidate(st, run_id, "baseline_command_missing")
+        return None, _pause_candidate(st, run_id, "baseline_command_missing")
     # ``prove_red``'s real seam ``_checkout_detached``-es the registered base checkout to run the base
     # suite at the bound sha, changing its HEAD attachment. Capture the checkout's exact attachment
     # and restore it in a ``finally`` so the registered normal checkout is left byte-for-byte
@@ -1069,7 +1096,7 @@ def run_candidate(
     finally:
         _restore_head_ref(base_checkout, base_ref)
     if not getattr(proof, "accepted", False):
-        return _pause_candidate(st, run_id, "red_proof_rejected")
+        return None, _pause_candidate(st, run_id, "red_proof_rejected")
 
     # 3) Approval: the human sees the EXACT authored test diff (vs base) and the machine-checked red
     #    evidence. Stage the authored contract paths (index only — HEAD stays at base_sha) so the
@@ -1078,82 +1105,246 @@ def run_candidate(
     diff = _candidate_git(candidate_worktree, "diff", "--cached")
     review = SimpleNamespace(diff=diff, red_evidence=proof)
     if not approver(review):
-        return _pause_candidate(st, run_id, "rejected_by_approver")
+        return None, _pause_candidate(st, run_id, "rejected_by_approver")
 
     # 4) Contract commit: the ENGINE (never the provider) freezes the approved tests as a commit whose
     #    parent is base_sha.
     _candidate_git(candidate_worktree, "commit", "-m", "Freeze authored acceptance contract (#114)")
     contract_commit = _candidate_head(candidate_worktree)
 
-    # 5) Implementation: a SECOND provider invocation, on top of the frozen contract, carrying the
-    #    issue, the frozen authored test blob, the approved write scope, and both verification commands.
     frozen_contract = "\n".join(
         (candidate_worktree / rel).read_text(encoding="utf-8")
         for rel in contract_paths
         if (candidate_worktree / rel).exists()
     )
-    invoke(
-        profile,
-        _implementation_prompt(
-            issue_body, write_scope, frozen_contract, acceptance_command, baseline_command
+    return (
+        _FrozenContract(
+            contract_commit=contract_commit,
+            frozen_contract=frozen_contract,
+            adapter=adapter,
+            candidate_worktree=candidate_worktree,
+            issue_body=issue_body,
+            write_scope=write_scope,
+            contract_paths=contract_paths,
+            acceptance_command=acceptance_command,
+            baseline_command=baseline_command,
+            base_sha=base_sha,
         ),
-        cwd=candidate_worktree,
+        None,
+    )
+
+
+def _implement_and_verify(
+    frozen: _FrozenContract,
+    *,
+    profile: object,
+    run_id: str,
+    prompt: str,
+    invoke: Callable[..., Any],
+    run_baseline: Callable[..., Any],
+    session: str | None = None,
+) -> _ImplVerify:
+    """The RETRYABLE sub-stage: ONE implementation invocation (a FRESH session when ``session`` is
+    ``None``) followed by the AUTHORITATIVE acceptance + baseline verify. The verify ALWAYS runs (it
+    is the only authority on green/red); the returned ``impl_ok`` reports the provider PROCESS status
+    separately. ``run_candidate`` lands on ``green`` alone (its original always-verify semantics); the
+    repair driver additionally writes off on a failed process (``not (impl_ok and green)``)."""
+    impl = invoke(
+        profile,
+        prompt,
+        cwd=frozen.candidate_worktree,
         run_id=run_id,
         role="primary",
         timeout=_CANDIDATE_TIMEOUT,
+        session=session,
     )
+    impl_ok = getattr(impl, "status", None) is InvocationStatus.OK
 
-    # 6) Authoritative verification (reused): run the acceptance AND full baseline commands, each once
-    #    (no retry). The green/red verdict comes from IT, per command, never the provider's self-report.
-    acceptance_ev = run_baseline(candidate_worktree, acceptance_command, adapter=adapter)
-    baseline_ev = run_baseline(candidate_worktree, baseline_command, adapter=adapter)
+    acceptance_ev = run_baseline(
+        frozen.candidate_worktree, frozen.acceptance_command, adapter=frozen.adapter
+    )
+    baseline_ev = run_baseline(
+        frozen.candidate_worktree, frozen.baseline_command, adapter=frozen.adapter
+    )
     evidence = {
-        "acceptance": _evidence_entry(acceptance_command, acceptance_ev),
-        "baseline": _evidence_entry(baseline_command, baseline_ev),
+        "acceptance": _evidence_entry(frozen.acceptance_command, acceptance_ev),
+        "baseline": _evidence_entry(frozen.baseline_command, baseline_ev),
     }
-
-    # Either command non-green PAUSES with the candidate HEAD left at the contract commit (no impl
-    # commit lands): the self-report never overrides the authoritative verdict.
-    if not (
+    green = (
         acceptance_ev.status is BaselineStatus.GREEN and baseline_ev.status is BaselineStatus.GREEN
-    ):
-        return _pause_candidate(
-            st, run_id, "verification_not_green", contract_commit=contract_commit
-        )
+    )
+    # The trace is derived from the AUTHORITATIVE verdicts, never the provider stdout, so a retry
+    # prompt carries a compact failure summary without re-seeding the prior session's transcript.
+    trace = (
+        f"impl_ok={impl_ok} acceptance={evidence['acceptance']['status']} "
+        f"baseline={evidence['baseline']['status']}"
+    )
+    return _ImplVerify(impl_ok=impl_ok, green=green, evidence=evidence, trace=trace)
 
-    # 7) Green landing: the ENGINE commits a SEPARATE implementation commit (child of the contract
-    #    commit); the worktree is clean at the resulting candidate SHA.
-    _candidate_git(candidate_worktree, "add", "-A")
-    _candidate_git(candidate_worktree, "commit", "-m", "Land candidate implementation (#114)")
-    candidate_sha = _candidate_head(candidate_worktree)
 
-    # 8) Persist the candidate run-record fields as FLAT keys plus summarized evidence. The status is
-    #    left ``running`` here ON PURPOSE: when this stage is driven through ``engine.run(stage=...)``,
-    #    ``_finalize`` performs the running->completed transition AND releases/advances the queue slot
-    #    (it only acts on a still-``running`` run). Writing ``completed`` here would wedge the queue —
-    #    ``_finalize`` would see a non-running status and skip the slot release.
+def _land_candidate(
+    st: store.RunStore, run_id: str, frozen: _FrozenContract, evidence: dict
+) -> CandidateResult:
+    """Green landing (steps 7-8): commit a SEPARATE implementation commit (child of the contract
+    commit), persist the flat candidate record fields + evidence, and return the landed result. The
+    status stays ``running`` on purpose so ``_finalize`` performs the running->completed transition
+    and releases the queue slot."""
+    _candidate_git(frozen.candidate_worktree, "add", "-A")
+    _candidate_git(
+        frozen.candidate_worktree, "commit", "-m", "Land candidate implementation (#114)"
+    )
+    candidate_sha = _candidate_head(frozen.candidate_worktree)
     st.apply(
         run_id,
         lambda _r: {
-            "contract_commit": contract_commit,
+            "contract_commit": frozen.contract_commit,
             "candidate_sha": candidate_sha,
-            "candidate_worktree": str(candidate_worktree),
-            "base_sha": base_sha,
-            "write_scope": write_scope,
-            "contract_paths": contract_paths,
-            "acceptance_command": acceptance_command,
-            "baseline_command": baseline_command,
+            "candidate_worktree": str(frozen.candidate_worktree),
+            "base_sha": frozen.base_sha,
+            "write_scope": frozen.write_scope,
+            "contract_paths": frozen.contract_paths,
+            "acceptance_command": frozen.acceptance_command,
+            "baseline_command": frozen.baseline_command,
             "evidence": evidence,
         },
     )
-
     return CandidateResult(
         paused=False,
         pause_reason=None,
-        contract_commit=contract_commit,
+        contract_commit=frozen.contract_commit,
         candidate_sha=candidate_sha,
         evidence=evidence,
     )
+
+
+def run_candidate(
+    record: dict,
+    *,
+    profile: object,
+    approver: Callable[[object], bool],
+    invoke: Callable[..., Any] = providers.invoke,
+    prove_red: Callable[..., Any] = contract.prove_red,
+    run_baseline: Callable[..., Any] = _verify.run_baseline,
+) -> CandidateResult:
+    """Produce ONE engine-owned local candidate SHA from one already-shaped pytest issue (see the
+    section doc). Reuses the real provider/red-proof/verify seams; resolves the normal checkout and
+    the pytest adapter from the REGISTERED repository entry; the engine (never the provider) freezes the
+    contract after approval; the AUTHORITATIVE acceptance + baseline verdicts decide landing."""
+    run_id = record["run_id"]
+    st = store.RunStore()
+
+    frozen, paused = _author_and_freeze(
+        record, profile=profile, approver=approver, invoke=invoke, prove_red=prove_red, st=st
+    )
+    if paused is not None:
+        return paused
+
+    # 5+6) One implementation + authoritative verification (no retry in this single-shot driver).
+    outcome = _implement_and_verify(
+        frozen,
+        profile=profile,
+        run_id=run_id,
+        prompt=_implementation_prompt(
+            frozen.issue_body,
+            frozen.write_scope,
+            frozen.frozen_contract,
+            frozen.acceptance_command,
+            frozen.baseline_command,
+        ),
+        invoke=invoke,
+        run_baseline=run_baseline,
+    )
+
+    # Either command non-green PAUSES with the candidate HEAD left at the contract commit (no impl
+    # commit lands): the AUTHORITATIVE verdict decides landing, never the provider's self-report — so
+    # a nonzero-exit provider that nonetheless produced a green tree still verifies-and-lands.
+    if not outcome.green:
+        return _pause_candidate(
+            st, run_id, "verification_not_green", contract_commit=frozen.contract_commit
+        )
+
+    return _land_candidate(st, run_id, frozen, outcome.evidence)
+
+
+def run_candidate_with_repair(
+    record: dict,
+    *,
+    profile: object,
+    approver: Callable[[object], bool],
+    invoke: Callable[..., Any] = providers.invoke,
+    prove_red: Callable[..., Any] = contract.prove_red,
+    run_baseline: Callable[..., Any] = _verify.run_baseline,
+    reset_worktree: Callable[..., Any] = workspace.reset_worktree,
+    repair_cap: int = 2,
+    review_cap: int = 2,
+) -> CandidateResult:
+    """The two-budget repair loop (#20, S14). Authors + approves + freezes the contract ONCE, then
+    retries ONLY the impl+verify sub-stage under ``repair_cap``. A write-off (the implementer PROCESS
+    failed/died, OR the authoritative verify is red after "done") resets the worktree to the CONTRACT
+    COMMIT — never ``base_sha``, which would discard the frozen tests — increments the persisted
+    ``repair_attempts`` under the store lock, and redispatches a FRESH implementation session
+    (``session=None``, never a resume) carrying the frozen contract + a compact trace but NOT the
+    prior transcript. Exhausting ``repair_cap`` pauses the run with a schema-valid terminal record.
+
+    ``review_cap`` bounds the (separate) in-place review budget; its TRIGGER is produced downstream
+    by S15/#21, so the review->preserve routing is deferred to #214 — only the counter exists today.
+    """
+    run_id = record["run_id"]
+    st = store.RunStore()
+
+    frozen, paused = _author_and_freeze(
+        record, profile=profile, approver=approver, invoke=invoke, prove_red=prove_red, st=st
+    )
+    if paused is not None:
+        return paused
+
+    # Every impl dispatch — first AND each retry — carries the FULL implementation prompt (issue,
+    # approved write scope, frozen contract, both verification commands) so the fresh implementer stays
+    # in scope; the retry additionally appends the prior attempt's compact trace and still excludes the
+    # prior session transcript. Every dispatch is a FRESH session (session=None): never a resume.
+    base_impl_prompt = _implementation_prompt(
+        frozen.issue_body,
+        frozen.write_scope,
+        frozen.frozen_contract,
+        frozen.acceptance_command,
+        frozen.baseline_command,
+    )
+    prompt = base_impl_prompt
+    attempt = 0
+    last_trace = ""
+    notes: list[str] = []
+    while True:
+        attempt += 1
+        outcome = _implement_and_verify(
+            frozen,
+            profile=profile,
+            run_id=run_id,
+            prompt=prompt,
+            invoke=invoke,
+            run_baseline=run_baseline,
+            session=None,
+        )
+        if outcome.impl_ok and outcome.green:
+            return _land_candidate(st, run_id, frozen, outcome.evidence)
+
+        # Write-off: this attempt is discarded. Gate on the repair budget BEFORE any reset/redispatch.
+        last_trace = outcome.trace
+        notes.append(f"attempt {attempt}: {outcome.trace}")
+        if repair.next_action(attempt, cap=repair_cap) != "retry":
+            repair.pause_exhausted(run_id, "repair_attempts", "\n".join(notes))
+            return CandidateResult(
+                paused=True,
+                pause_reason="repair_exhausted",
+                contract_commit=frozen.contract_commit,
+                candidate_sha=None,
+                evidence=outcome.evidence,
+            )
+
+        # Retry: reset to the CONTRACT COMMIT (frozen tests survive), count the write-off under the
+        # lock, and redispatch a fresh session with the compact retry prompt.
+        repair.record_repair_attempt(run_id)
+        reset_worktree(frozen.candidate_worktree, frozen.contract_commit)
+        prompt = repair.build_retry_prompt(last_trace, base_impl_prompt)
 
 
 # ---------------------------------------------------------------------------

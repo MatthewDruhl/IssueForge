@@ -102,7 +102,6 @@ def _read(run_id: str) -> dict:
 # ===========================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 def test_next_action_retries_until_cap_then_escalates() -> None:
     """A repair budget is bounded: within the cap the driver retries; past it, it escalates. The cap
     defaults to 2 and is a parameter, so a wave (or one budget vs the other) can tighten or loosen
@@ -130,7 +129,6 @@ def test_next_action_retries_until_cap_then_escalates() -> None:
     assert next_action(6, cap=5) == "escalate"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 def test_retry_prompt_carries_trace_and_contract_not_transcript() -> None:
     """The write-off retry dispatch prompt carries the frozen contract (the committed acceptance
     tests a retry must still satisfy) and the prior attempt's compact trace, and DELIBERATELY omits
@@ -182,7 +180,6 @@ def test_retry_prompt_carries_trace_and_contract_not_transcript() -> None:
         )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 def test_repair_attempt_counter_increments_through_store_apply(monkeypatch) -> None:
     """Each write-off attempt increments the PERSISTED ``repair_attempts`` counter CUMULATIVELY, one
     per call, THROUGH the under-lock ``RunStore.apply`` primitive — a lock-free read-then-write or a
@@ -227,7 +224,6 @@ def test_repair_attempt_counter_increments_through_store_apply(monkeypatch) -> N
     assert inc["n"] == 2, "each increment must go through the under-lock RunStore.apply"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 def test_review_round_counter_increments_in_store(monkeypatch) -> None:
     """Each in-place review round increments the PERSISTED ``review_rounds`` counter cumulatively,
     one per call, through the under-lock ``RunStore.apply`` primitive — the review budget is engine
@@ -268,7 +264,6 @@ def test_review_round_counter_increments_in_store(monkeypatch) -> None:
     assert inc["n"] == 2, "each increment must go through the under-lock RunStore.apply"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 def test_two_budgets_increment_independently() -> None:
     """The two budgets are SEPARATE counters: incrementing one never touches the other. Collapsing
     them into one counter (what US-6.2 warns "would hide both") lets a transient implementer failure
@@ -294,7 +289,6 @@ def test_two_budgets_increment_independently() -> None:
     assert end["repair_attempts"] == 2, "a review round must not touch the repair budget"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 def test_corrupt_persisted_counter_is_rejected_on_read_not_coerced() -> None:
     """A persisted budget counter that is not a real int (bool included) is rejected loud on read,
     never silently coerced — ``int(True)`` is 1 and ``int(1.9)`` is 1, either of which would forge a
@@ -324,7 +318,6 @@ def test_corrupt_persisted_counter_is_rejected_on_read_not_coerced() -> None:
         store.RunStore().read(run_id)
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 def test_pause_exhausted_writes_schema_valid_paused_record() -> None:
     """Exhausting a budget PAUSES the run with a schema-valid terminal record (never a crash, never a
     half-written record): the status becomes the real ``paused`` State and the accumulated failure
@@ -592,7 +585,6 @@ def _drive(loop, record, fakes, **kw):
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 @pytest.mark.parametrize("trigger", ["reported_done_but_red", "implementer_failed"])
 def test_writeoff_resets_to_contract_commit_and_redispatches_fresh(make_git_repo, trigger) -> None:
     """A write-off (implementer reported done but the authoritative verify is RED, OR the implementer
@@ -669,7 +661,6 @@ def test_writeoff_resets_to_contract_commit_and_redispatches_fresh(make_git_repo
     assert result.candidate_sha, "a landed run has a candidate sha"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 def test_repair_cap_zero_pauses_immediately_without_retry(make_git_repo) -> None:
     """The engine GATES on repair_cap: with the budget set to 0, a red first attempt pauses at once —
     no reset, no redispatch. Proves the engine actually reads the cap rather than retrying blindly.
@@ -688,7 +679,6 @@ def test_repair_cap_zero_pauses_immediately_without_retry(make_git_repo) -> None
     assert result.paused is True, "an unrecovered run pauses"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 def test_repair_budget_bounds_retries_and_pauses_on_exhaustion(make_git_repo) -> None:
     """A persistently-red run is BOUNDED by repair_cap, terminates PAUSED (never loops forever), and
     writes a schema-valid paused terminal record naming the exhausted budget.
@@ -722,7 +712,6 @@ def test_repair_budget_bounds_retries_and_pauses_on_exhaustion(make_git_repo) ->
     )
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 def test_green_first_attempt_lands_without_reset_or_retry(make_git_repo) -> None:
     """The loop adds NO overhead to the happy path: a first attempt that verifies green lands with no
     write-off reset, no retry, and the repair budget untouched. (Anti-tautology baseline for the
@@ -748,7 +737,6 @@ def test_green_first_attempt_lands_without_reset_or_retry(make_git_repo) -> None
     assert result.paused is False and result.candidate_sha, "green first attempt lands"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 def test_repair_loop_never_pushes(make_git_repo, monkeypatch) -> None:
     """Across a full red->green write-off loop the engine performs NO push, PR, or merge — this slice
     produces only a LOCAL candidate sha (US-7.1: only S16 pushes). Spies every engine git invocation.
@@ -772,10 +760,15 @@ def test_repair_loop_never_pushes(make_git_repo, monkeypatch) -> None:
     fakes = _LoopFakes(candidate, base_sha, attempt_verdicts=["red", "green"])
     _drive(loop, record, fakes)
 
-    flat = " ".join(" ".join(a) for a in seen)
+    # Per-TOKEN membership (mirrors test_engine_candidate_poc.py:912-915): a flatten-and-substring
+    # check false-positives on git args that merely CONTAIN "push" — e.g. the pytest tmp-dir path
+    # ``.../test_repair_loop_never_pushes0/...`` that flows into the collection ``worktree add`` — so
+    # assert on exact tokens, which still catches a real ``git push``/``merge``/``gh pr`` verb.
     assert seen, "the loop must exercise engine git (else the spy proves nothing)"
-    assert "push" not in flat, f"the implementer stage must never push: {seen!r}"
-    assert "merge" not in flat and "pr " not in flat, "no PR/merge in the implementer stage"
+    for argv in seen:
+        assert "push" not in argv, f"the implementer stage must never push: {argv!r}"
+        assert "merge" not in argv, f"no merge in the implementer stage: {argv!r}"
+        assert not ("gh" in argv and "pr" in argv), f"no PR in the implementer stage: {argv!r}"
 
 
 # ===========================================================================
