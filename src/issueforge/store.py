@@ -77,15 +77,19 @@ def require_int(name: str, value: Any) -> int:
 def validate_record(record: dict) -> dict:
     """The ONE record validator, called on BOTH write and read.
 
-    Rejects an unknown ``status`` (allowed: queued/running/completed) and any non-int ``attempts``.
+    Rejects an unknown ``status`` and any non-int persisted counter (``attempts``,
+    ``review_rounds``, ``repair_attempts``).
     """
     if not isinstance(record, dict):
         raise TypeError(f"run record must be a dict, got {record!r}")
     status = record.get("status")
     if status is not None and status not in ALLOWED_STATUS:
         raise ValueError(f"invalid status {status!r} (allowed: {sorted(ALLOWED_STATUS)})")
-    if "attempts" in record:
-        require_int("attempts", record["attempts"])
+    # Every persisted int counter is guarded the same way: a bool/float/str would forge a
+    # valid-looking budget and under-enforce the cap (#20, S14).
+    for field in ("attempts", "review_rounds", "repair_attempts"):
+        if field in record:
+            require_int(field, record[field])
     return record
 
 
