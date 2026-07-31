@@ -737,7 +737,6 @@ def test_green_first_attempt_lands_without_reset_or_retry(make_git_repo) -> None
     assert result.paused is False and result.candidate_sha, "green first attempt lands"
 
 
-@pytest.mark.xfail(strict=True, reason="PENDING (#20)")
 def test_repair_loop_never_pushes(make_git_repo, monkeypatch) -> None:
     """Across a full red->green write-off loop the engine performs NO push, PR, or merge — this slice
     produces only a LOCAL candidate sha (US-7.1: only S16 pushes). Spies every engine git invocation.
@@ -761,10 +760,15 @@ def test_repair_loop_never_pushes(make_git_repo, monkeypatch) -> None:
     fakes = _LoopFakes(candidate, base_sha, attempt_verdicts=["red", "green"])
     _drive(loop, record, fakes)
 
-    flat = " ".join(" ".join(a) for a in seen)
+    # Per-TOKEN membership (mirrors test_engine_candidate_poc.py:912-915): a flatten-and-substring
+    # check false-positives on git args that merely CONTAIN "push" — e.g. the pytest tmp-dir path
+    # ``.../test_repair_loop_never_pushes0/...`` that flows into the collection ``worktree add`` — so
+    # assert on exact tokens, which still catches a real ``git push``/``merge``/``gh pr`` verb.
     assert seen, "the loop must exercise engine git (else the spy proves nothing)"
-    assert "push" not in flat, f"the implementer stage must never push: {seen!r}"
-    assert "merge" not in flat and "pr " not in flat, "no PR/merge in the implementer stage"
+    for argv in seen:
+        assert "push" not in argv, f"the implementer stage must never push: {argv!r}"
+        assert "merge" not in argv, f"no merge in the implementer stage: {argv!r}"
+        assert not ("gh" in argv and "pr" in argv), f"no PR in the implementer stage: {argv!r}"
 
 
 # ===========================================================================

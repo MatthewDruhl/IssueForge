@@ -1145,9 +1145,10 @@ def _implement_and_verify(
     session: str | None = None,
 ) -> _ImplVerify:
     """The RETRYABLE sub-stage: ONE implementation invocation (a FRESH session when ``session`` is
-    ``None``) followed by the AUTHORITATIVE acceptance + baseline verify. A failed implementer PROCESS
-    is a write-off on its own — the verify is NOT trusted after it (a dead implementer that wrote
-    nothing must never be verified green), so verify is skipped when the process failed."""
+    ``None``) followed by the AUTHORITATIVE acceptance + baseline verify. The verify ALWAYS runs (it
+    is the only authority on green/red); the returned ``impl_ok`` reports the provider PROCESS status
+    separately. ``run_candidate`` lands on ``green`` alone (its original always-verify semantics); the
+    repair driver additionally writes off on a failed process (``not (impl_ok and green)``)."""
     impl = invoke(
         profile,
         prompt,
@@ -1157,10 +1158,7 @@ def _implement_and_verify(
         timeout=_CANDIDATE_TIMEOUT,
         session=session,
     )
-    if getattr(impl, "status", None) is not InvocationStatus.OK:
-        return _ImplVerify(
-            impl_ok=False, green=False, evidence=None, trace="implementer process failed"
-        )
+    impl_ok = getattr(impl, "status", None) is InvocationStatus.OK
 
     acceptance_ev = run_baseline(
         frozen.candidate_worktree, frozen.acceptance_command, adapter=frozen.adapter
@@ -1178,9 +1176,10 @@ def _implement_and_verify(
     # The trace is derived from the AUTHORITATIVE verdicts, never the provider stdout, so a retry
     # prompt carries a compact failure summary without re-seeding the prior session's transcript.
     trace = (
-        f"acceptance={evidence['acceptance']['status']} baseline={evidence['baseline']['status']}"
+        f"impl_ok={impl_ok} acceptance={evidence['acceptance']['status']} "
+        f"baseline={evidence['baseline']['status']}"
     )
-    return _ImplVerify(impl_ok=True, green=green, evidence=evidence, trace=trace)
+    return _ImplVerify(impl_ok=impl_ok, green=green, evidence=evidence, trace=trace)
 
 
 def _land_candidate(
@@ -1256,9 +1255,10 @@ def run_candidate(
         run_baseline=run_baseline,
     )
 
-    # Either command non-green (or a failed implementer) PAUSES with the candidate HEAD left at the
-    # contract commit (no impl commit lands): the self-report never overrides the authoritative verdict.
-    if not (outcome.impl_ok and outcome.green):
+    # Either command non-green PAUSES with the candidate HEAD left at the contract commit (no impl
+    # commit lands): the AUTHORITATIVE verdict decides landing, never the provider's self-report — so
+    # a nonzero-exit provider that nonetheless produced a green tree still verifies-and-lands.
+    if not outcome.green:
         return _pause_candidate(
             st, run_id, "verification_not_green", contract_commit=frozen.contract_commit
         )
@@ -1298,16 +1298,18 @@ def run_candidate_with_repair(
     if paused is not None:
         return paused
 
-    # The first attempt carries the full implementation prompt; each retry carries the compact
-    # retry prompt (frozen contract + trace, never the prior transcript). Every impl dispatch is a
-    # FRESH session (session=None): the loop never resumes a prior implementer.
-    prompt = _implementation_prompt(
+    # Every impl dispatch — first AND each retry — carries the FULL implementation prompt (issue,
+    # approved write scope, frozen contract, both verification commands) so the fresh implementer stays
+    # in scope; the retry additionally appends the prior attempt's compact trace and still excludes the
+    # prior session transcript. Every dispatch is a FRESH session (session=None): never a resume.
+    base_impl_prompt = _implementation_prompt(
         frozen.issue_body,
         frozen.write_scope,
         frozen.frozen_contract,
         frozen.acceptance_command,
         frozen.baseline_command,
     )
+    prompt = base_impl_prompt
     attempt = 0
     last_trace = ""
     notes: list[str] = []
@@ -1342,7 +1344,7 @@ def run_candidate_with_repair(
         # lock, and redispatch a fresh session with the compact retry prompt.
         repair.record_repair_attempt(run_id)
         reset_worktree(frozen.candidate_worktree, frozen.contract_commit)
-        prompt = repair.build_retry_prompt(last_trace, frozen.frozen_contract)
+        prompt = repair.build_retry_prompt(last_trace, base_impl_prompt)
 
 
 # ---------------------------------------------------------------------------
